@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:15-alpine
+    container_name: tg-auto-msg-db
+    environment:
+      POSTGRES_DB: tg_auto_msg
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: your_password_here
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis 缓存
+  redis:
+    image: redis:7-alpine
+    container_name: tg-auto-msg-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 应用服务
+  app:
+    build: .
+    container_name: tg-auto-msg-app
+    environment:
+      - API_ID=${API_ID}
+      - API_HASH=${API_HASH}
+      - BOT_TOKEN=${BOT_TOKEN}
+      - USERBOT_PHONE=${USERBOT_PHONE}
+      - DATABASE_URL=postgresql+asyncpg://postgres:your_password_here@postgres:5432/tg_auto_msg
+      - REDIS_URL=redis://redis:6379/0
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - TIMEZONE=${TIMEZONE:-Asia/Shanghai}
+      - WORKER_INTERVAL=${WORKER_INTERVAL:-60}
+      - MAX_FAILURE_COUNT=${MAX_FAILURE_COUNT:-5}
+    volumes:
+      - ./logs:/app/logs
+      - bot_session:/app/bot_session
+      - userbot_session:/app/userbot_session
+    ports:
+      - "8000:8000"  # H5 API
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  bot_session:
+    driver: local
+  userbot_session:
+    driver: local
