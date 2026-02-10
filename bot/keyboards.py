@@ -7,7 +7,6 @@ from telethon.tl.types import KeyboardButton, KeyboardButtonUrl
 
 from database.models import ScheduledMessageTask, MediaType
 
-
 # ============ 任务列表页 ============
 
 def get_task_list_keyboard(

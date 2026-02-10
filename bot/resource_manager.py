@@ -75,35 +75,33 @@ class ResourceManager:
             dialogs = await client.get_dialogs()
             logger.info(f"获取到 {len(dialogs)} 个 Dialogs")
 
-            # 标记所有现有资源为待删除
+            # 在同一会话中完成 upsert 与失活标记，避免脱离会话对象导致更新丢失
             async with get_async_session() as session:
                 existing_resources = await session.execute(
-                    select(Resource).where(
-                        Resource.account_id == account_id,
-                        Resource.is_active == True
-                    )
+                    select(Resource).where(Resource.account_id == account_id)
                 )
                 existing = {r.peer_id: r for r in existing_resources.scalars().all()}
 
-            # 处理每个 Dialog
-            for dialog in dialogs:
-                try:
-                    peer = dialog.entity
-                    sync_result = await self._sync_peer(
-                        account_id, peer, existing, session=None
-                    )
-                    result.synced += 1
-                    if sync_result == "new":
-                        result.new += 1
-                    elif sync_result == "updated":
-                        result.updated += 1
+                # 处理每个 Dialog
+                for dialog in dialogs:
+                    try:
+                        peer = dialog.entity
+                        sync_result = await self._sync_peer(
+                            account_id=account_id,
+                            peer=peer,
+                            existing=existing,
+                            session=session
+                        )
+                        result.synced += 1
+                        if sync_result == "new":
+                            result.new += 1
+                        elif sync_result == "updated":
+                            result.updated += 1
+                    except Exception as e:
+                        logger.error(f"同步 Peer 失败: {e}")
+                        result.failed += 1
 
-                except Exception as e:
-                    logger.error(f"同步 Peer 失败: {e}")
-                    result.failed += 1
-
-            # 删除不活跃的资源
-            async with get_async_session() as session:
+                # remaining existing 即“本次未扫描到”的资源，标记为 inactive
                 for peer_id, resource in existing.items():
                     if resource.is_active:
                         resource.is_active = False
@@ -168,8 +166,16 @@ class ResourceManager:
             resource = existing[peer_id]
             existing.pop(peer_id)  # 从待删除列表移除
 
-            # 检查是否有更新
-            if self._has_resource_changed(resource, resource_data):
+            # inactive -> active 也算更新
+            changed = self._has_resource_changed(resource, resource_data) or (not resource.is_active)
+
+            # 每次同步都覆盖元数据，保证可重新激活并刷新 last_sync_at
+            for key, value in resource_data.items():
+                if key != "account_id":  # 不更新 account_id
+                    setattr(resource, key, value)
+
+            if session is None:
+                # 兜底：未传会话时显式落库
                 async with get_async_session() as sess:
                     result = await sess.execute(
                         select(Resource).where(Resource.resource_id == resource.resource_id)
@@ -177,18 +183,20 @@ class ResourceManager:
                     r = result.scalar_one_or_none()
                     if r:
                         for key, value in resource_data.items():
-                            if key != "account_id":  # 不更新 account_id
+                            if key != "account_id":
                                 setattr(r, key, value)
                         await sess.commit()
-                return "updated"
 
-            return "unchanged"
+            return "updated" if changed else "unchanged"
         else:
             # 新增
-            async with get_async_session() as sess:
-                new_resource = Resource(**resource_data)
-                sess.add(new_resource)
-                await sess.commit()
+            new_resource = Resource(**resource_data)
+            if session is not None:
+                session.add(new_resource)
+            else:
+                async with get_async_session() as sess:
+                    sess.add(new_resource)
+                    await sess.commit()
             return "new"
 
     def _get_peer_type(self, peer: Any) -> Optional[str]:

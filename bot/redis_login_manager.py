@@ -37,6 +37,7 @@ class LoginSession:
     phone: str = ""
     error: str = ""
     bind_code: str = ""
+    system_user_id: Optional[int] = None
 
 
 class RedisLoginManager:
@@ -116,6 +117,7 @@ class RedisLoginManager:
             "phone": "",
             "error": "",
             "bind_code": "",
+            "system_user_id": "",
         }
 
         key = self.SESSION_KEY_PREFIX + login_id
@@ -151,7 +153,16 @@ class RedisLoginManager:
             if datetime.now() > expires_at:
                 # 标记为过期
                 await self.update_status(login_id, LoginStatus.EXPIRED)
-                return LoginSession(**{**data, "status": LoginStatus.EXPIRED.value})
+                expired_data = {**data, "status": LoginStatus.EXPIRED}
+                raw_owner = expired_data.get("system_user_id")
+                if raw_owner in ("", None):
+                    expired_data["system_user_id"] = None
+                else:
+                    try:
+                        expired_data["system_user_id"] = int(raw_owner)
+                    except (TypeError, ValueError):
+                        expired_data["system_user_id"] = None
+                return LoginSession(**expired_data)
         except ValueError:
             # 日期格式错误，视为过期
             logger.warning(f"会话 {login_id} 的 expires_at 格式错误")
@@ -159,6 +170,14 @@ class RedisLoginManager:
 
         # 转换为 LoginSession 对象
         data["status"] = LoginStatus(data.get("status", LoginStatus.PENDING.value))
+        raw_owner = data.get("system_user_id")
+        if raw_owner in ("", None):
+            data["system_user_id"] = None
+        else:
+            try:
+                data["system_user_id"] = int(raw_owner)
+            except (TypeError, ValueError):
+                data["system_user_id"] = None
 
         return LoginSession(**data)
 
@@ -242,6 +261,10 @@ class RedisLoginManager:
         # 生成绑定码
         bind_code = generate_bind_code()
 
+        # 读取会话中的系统用户归属（由 H5 登录态写入）
+        session = await self.get_session(login_id)
+        system_user_id = session.system_user_id if session else ""
+
         # 更新登录会话
         await self.update_status(
             login_id,
@@ -260,6 +283,7 @@ class RedisLoginManager:
             "tg_user_id": str(tg_user_id),
             "username": username,
             "phone": phone,
+            "system_user_id": str(system_user_id or ""),
         }
 
         await r.hset(bind_key, mapping=bind_data)
@@ -289,6 +313,55 @@ class RedisLoginManager:
         logger.info(f"更新 QR URL: {login_id}")
         return True
 
+    async def update_bind_code(self, login_id: str, bind_code: str) -> bool:
+        """
+        更新绑定码
+
+        Args:
+            login_id: 登录会话 ID
+            bind_code: 6 位数字绑定码
+
+        Returns:
+            是否更新成功
+        """
+        r = await self._get_redis()
+        key = self.SESSION_KEY_PREFIX + login_id
+        exists = await r.hexists(key, "login_id")
+        if not exists:
+            logger.warning(f"尝试更新不存在的会话的 bind_code: {login_id}")
+            return False
+        await r.hset(key, "bind_code", bind_code)
+        logger.info(f"更新 bind_code: {login_id} -> {bind_code}")
+        return True
+
+    async def update_user_info(self, login_id: str, tg_user_id: str, username: str, phone: str) -> bool:
+        """
+        更新用户信息
+
+        Args:
+            login_id: 登录会话 ID
+            tg_user_id: Telegram 用户 ID
+            username: 用户名
+            phone: 手机号
+
+        Returns:
+            是否更新成功
+        """
+        r = await self._get_redis()
+        key = self.SESSION_KEY_PREFIX + login_id
+        exists = await r.hexists(key, "login_id")
+        if not exists:
+            logger.warning(f"尝试更新不存在的会话的用户信息: {login_id}")
+            return False
+
+        await r.hset(key, mapping={
+            "tg_user_id": tg_user_id,
+            "username": username,
+            "phone": phone
+        })
+        logger.info(f"更新用户信息: {login_id} -> {username}")
+        return True
+
     async def get_account_by_bind_code(self, bind_code: str) -> Optional[Dict[str, Any]]:
         """
         通过绑定码获取账号信息
@@ -309,6 +382,9 @@ class RedisLoginManager:
 
         # 转换类型
         data["tg_user_id"] = int(data.get("tg_user_id", 0))
+        system_user_id = data.get("system_user_id")
+        if system_user_id not in (None, ""):
+            data["system_user_id"] = int(system_user_id)
         return data
 
     async def consume_bind_code(self, bind_code: str) -> bool:

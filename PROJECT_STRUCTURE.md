@@ -35,17 +35,17 @@ tg-auto-msg/
 │   ├── __init__.py
 │   └── worker.py                # 调度 Worker
 │
-├── h5/                          # H5 控制台
+├── h5_backend/                  # H5 后端 API（FastAPI）
 │   ├── __init__.py
 │   ├── api.py                   # FastAPI 服务
-│   ├── templates/               # HTML 模板
-│   │   ├── index.html           # 首页
-│   │   └── task_detail.html     # 任务详情页
-│   └── static/                  # 静态资源
-│       ├── css/
-│       │   └── style.css        # 样式文件
-│       └── js/
-│           └── app.js          # JavaScript 文件
+│   └── routers/                 # API 路由
+│       └── auth.py              # 认证路由
+│
+├── h5-frontend/                 # H5 前端（唯一前端实现）
+│   ├── src/
+│   ├── public/
+│   ├── package.json
+│   └── vite.config.ts
 │
 ├── logs/                        # 日志目录（运行时生成）
 │
@@ -85,11 +85,15 @@ Bot 模块
 调度器模块
 - `worker.py`: 定时扫描和发送任务的 Worker
 
-### h5/
-H5 控制台
-- `api.py`: FastAPI 服务（RESTful API）
-- `templates/`: Jinja2 HTML 模板
-- `static/`: 静态资源（CSS/JS）
+### h5_backend/
+H5 后端 API
+- `api.py`: FastAPI 服务（RESTful API + SPA 静态托管）
+- `routers/auth.py`: 系统登录认证接口
+
+### h5-frontend/
+H5 前端（唯一前端）
+- Vue 3 + TypeScript + Vite
+- 统一承载登录、账号、资源、代理、任务页面
 
 ## 数据流
 
@@ -108,9 +112,9 @@ Telegram 群组/频道
 ## H5 控制台
 
 ```
-用户 → H5 页面 (FastAPI)
+用户 → H5 页面 (h5-frontend)
     ↓
-API 接口
+API 接口 (h5_backend/api.py)
     ↓
 数据库 (PostgreSQL)
 ```

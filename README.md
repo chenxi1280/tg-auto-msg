@@ -38,8 +38,8 @@
 - **FastAPI** - H5 API 服务
 
 ### 前端
-- **原生 HTML/CSS/JavaScript** - H5 控制台
-- **响应式设计** - 移动端友好
+- **Vue 3 + TypeScript + Vite** - 统一 H5 控制台（目录：`h5-frontend/`）
+- **Element Plus** - UI 组件库
 
 ## 📦 安装部署
 
@@ -111,9 +111,11 @@ python main.py
 H5_BASE_URL = "https://your-domain.com"
 ```
 
-编辑 `h5/api.py` 中的签名密钥：
-```python
-secret = "your-secret-key"  # 替换为你的密钥
+构建前端（生产环境）：
+```bash
+cd h5-frontend
+npm install
+npm run build
 ```
 
 ## 🚀 运行
@@ -234,8 +236,8 @@ docker run -d \
 
 ## 🔒 安全说明
 
-1. **签名验证**：H5 链接使用 HMAC-SHA256 签名，防止伪造
-2. **时间戳验证**：链接有效期 5 分钟，防止重放攻击
+1. **JWT 认证**：H5 API 使用 Bearer Token 认证
+2. **用户隔离**：任务/账号/代理接口按系统用户权限校验
 3. **分布式锁**：使用 Redis 锁防止任务重复执行
 4. **权限检测**：自动检测置顶/删除权限，失败时记录日志
 

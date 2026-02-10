@@ -16,6 +16,24 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 Base = declarative_base()
 
 
+class User(Base):
+    """系统用户表"""
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, comment="用户名")
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False, comment="密码哈希")
+    email: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, comment="邮箱")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, comment="是否激活")
+
+    # 时间戳
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    # 关系
+    accounts: Mapped[List["Account"]] = relationship("Account", back_populates="user", cascade="all, delete-orphan")
+
+
 class MediaType(str, Enum):
     """媒体类型枚举"""
     NONE = "none"
@@ -55,7 +73,7 @@ class ScheduledMessageTask(Base):
     task_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
 
     # 基础信息
-    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, comment="归属用户 ID")
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, comment="归属系统用户 ID")
     account_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("accounts.account_id"), nullable=True, comment="执行账号 ID")
     chat_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, comment="群组/频道 ID（兼容旧数据）")
     title: Mapped[str] = mapped_column(String(100), nullable=False, comment="显示名")
@@ -68,9 +86,14 @@ class ScheduledMessageTask(Base):
     # 启用状态
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否启用")
 
+    # 优先级（用于紧急任务插队）
+    priority: Mapped[int] = mapped_column(Integer, default=0, comment="任务优先级，越大越优先")
+
     # 重复设置
     repeat_interval_min: Mapped[int] = mapped_column(Integer, nullable=False, comment="重复间隔（分钟）")
     jitter_seconds: Mapped[int] = mapped_column(Integer, default=0, comment="随机抖动秒数（0-300）")
+    delay_min_seconds: Mapped[int] = mapped_column(Integer, default=0, comment="随机延迟下限（秒）")
+    delay_max_seconds: Mapped[int] = mapped_column(Integer, default=0, comment="随机延迟上限（秒）")
 
     # 每日时段限制
     day_start_hour: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="每日发送起始小时")
@@ -191,7 +214,7 @@ class Account(Base):
     account_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
 
     # 用户信息
-    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, comment="归属用户 UID（Telegram）")
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, comment="归属系统用户 ID")
     tg_user_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, index=True, comment="登录后的 Telegram UID")
     username: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, comment="Telegram 用户名")
     first_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, comment="名字")
@@ -226,6 +249,7 @@ class Account(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间")
 
     # 关系
+    user: Mapped["User"] = relationship("User", back_populates="accounts")
     proxy: Mapped[Optional["Proxy"]] = relationship(
         "Proxy",
         foreign_keys=[proxy_id]
@@ -303,7 +327,7 @@ class AccountBindLog(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     account_id: Mapped[str] = mapped_column(String(36), ForeignKey("accounts.account_id"), nullable=True, comment="账号 ID")
-    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, comment="绑定用户 ID")
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, comment="绑定用户 ID")
     bind_code: Mapped[Optional[str]] = mapped_column(String(6), nullable=True, comment="绑定码")
     bound_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), comment="绑定时间")
     ip_address: Mapped[Optional[str]] = mapped_column(String(45), nullable=True, comment="IP 地址")

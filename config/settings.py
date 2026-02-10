@@ -21,6 +21,12 @@ class Settings(BaseSettings):
 
     # 安全配置
     encryption_key: Optional[str] = Field(None, alias="ENCRYPTION_KEY", description="数据加密密钥（Base64 编码）")
+    jwt_secret_key: str = Field(default="your-secret-key-change-in-production", alias="JWT_SECRET_KEY", description="JWT 签名密钥")
+
+    @property
+    def secret_key(self) -> str:
+        """获取 JWT 签名密钥"""
+        return self.jwt_secret_key
 
     # 应用配置
     log_level: str = Field(default="INFO", alias="LOG_LEVEL", description="日志级别")
@@ -29,6 +35,11 @@ class Settings(BaseSettings):
     # 调度配置
     worker_interval: int = Field(default=60, alias="WORKER_INTERVAL", description="Worker 扫描间隔（秒）")
     max_failure_count: int = Field(default=5, alias="MAX_FAILURE_COUNT", description="最大失败次数")
+    scheduler_mode: str = Field(
+        default="all",
+        alias="SCHEDULER_MODE",
+        description="调度模式: all/producer/consumer"
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",

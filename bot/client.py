@@ -6,12 +6,15 @@ Telegram 客户端初始化
 2. 验证码登录：通过手机号和验证码登录
 """
 import asyncio
+import time
 from typing import Optional
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 from loguru import logger
 
 from config.settings import settings
 from bot.redis_login_manager import RedisLoginManager, LoginStatus
+from utils.crypto import encrypt_string_session
 
 
 # Bot 客户端（用于接收命令和按钮交互）
@@ -78,8 +81,16 @@ async def start_qr_login(login_id: str) -> bool:
         # 检查是否已登录
         if await userbot_client.is_user_authorized():
             me = await userbot_client.get_me()
-            await redis_manager.update_status(login_id, LoginStatus.CONFIRMED, tg_user_id=str(me.id))
-            logger.info(f"Userbot 已登录: {me.first_name}")
+            string_session = StringSession.save(userbot_client.session)
+            string_session_encrypted = encrypt_string_session(string_session)
+            bind_code = await redis_manager.save_string_session(
+                login_id=login_id,
+                string_session=string_session_encrypted,
+                tg_user_id=me.id,
+                username=me.username or me.first_name or "",
+                phone=me.phone or ""
+            )
+            logger.info(f"Userbot 已登录: {me.first_name}, bind_code={bind_code}")
             return True
 
         # 开始二维码登录流程
@@ -108,7 +119,17 @@ async def start_qr_login(login_id: str) -> bool:
         return False
 
 
-async def _wait_for_qr_login(login_id: str, qr_login):
+def generate_bind_code() -> str:
+    """生成 6 位数字绑定码"""
+    import random
+    return ''.join([str(random.randint(0, 9)) for _ in range(6)])
+
+
+async def _wait_for_qr_login(
+    login_id: str,
+    qr_login,
+    login_client: Optional[TelegramClient] = None
+):
     """
     等待二维码登录完成
 
@@ -118,6 +139,8 @@ async def _wait_for_qr_login(login_id: str, qr_login):
     """
     global _current_qr_login_id
 
+    active_client = login_client or userbot_client
+
     # 使用 RedisLoginManager
     redis_manager = RedisLoginManager()
 
@@ -125,37 +148,122 @@ async def _wait_for_qr_login(login_id: str, qr_login):
         # 更新状态为等待扫码
         await redis_manager.update_status(login_id, LoginStatus.SCANNING)
 
-        # 等待登录完成（设置超时）
-        result = await asyncio.wait_for(
-            qr_login.wait(),
-            timeout=300  # 5 分钟超时
-        )
+        deadline = time.monotonic() + 300  # 总超时 5 分钟
+        refresh_attempts = 0
 
-        if result:
-            me = await userbot_client.get_me()
-            await redis_manager.update_status(login_id, LoginStatus.CONFIRMED, tg_user_id=str(me.id))
-            logger.info(f"二维码登录成功: {me.first_name} (@{me.username})")
-        else:
+        async def refresh_qr(reason: str) -> bool:
+            """
+            刷新二维码。
+            优先使用 recreate()，失败则退化为重新发起 qr_login()。
+            """
+            nonlocal qr_login, refresh_attempts
+
+            last_error: Optional[Exception] = None
+
+            # 策略1：在原 QR 会话上 recreate
+            try:
+                qr_login = await qr_login.recreate()
+                await redis_manager.update_qr_url(login_id, qr_login.url)
+                await redis_manager.update_status(login_id, LoginStatus.SCANNING, error="")
+                refresh_attempts += 1
+                logger.info(f"二维码已刷新({reason}): {login_id}, attempt={refresh_attempts}, strategy=recreate")
+                return True
+            except Exception as e:
+                last_error = e
+
+            # 策略2：重新创建 QR 登录对象
+            try:
+                qr_login = await active_client.qr_login()
+                await redis_manager.update_qr_url(login_id, qr_login.url)
+                await redis_manager.update_status(login_id, LoginStatus.SCANNING, error="")
+                refresh_attempts += 1
+                logger.info(f"二维码已刷新({reason}): {login_id}, attempt={refresh_attempts}, strategy=new")
+                return True
+            except Exception as e:
+                last_error = e
+
+            error_msg = str(last_error) if last_error else "二维码刷新失败"
+            logger.error(f"刷新二维码失败: {error_msg}")
+            await redis_manager.update_status(login_id, LoginStatus.ERROR, error=error_msg)
+            return False
+
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                await redis_manager.update_status(login_id, LoginStatus.EXPIRED)
+                logger.error(f"二维码登录超时: {login_id}")
+                return
+
+            try:
+                # 单次等待不超过 60 秒，便于刷新二维码
+                result = await asyncio.wait_for(qr_login.wait(), timeout=min(60, remaining))
+            except asyncio.TimeoutError:
+                # 超时未扫码，刷新二维码
+                refreshed = await refresh_qr(reason="timeout")
+                if not refreshed:
+                    return
+                continue
+            except Exception as e:
+                error_msg = str(e)
+                # ImportLoginTokenRequest 过期：刷新二维码并继续等待
+                lowered = error_msg.lower()
+                if (
+                    "authorization token has expired" in lowered
+                    or "token has expired" in lowered
+                    or "updated qr-code must be re-scanned" in lowered
+                    or "importlogintokenrequest" in lowered
+                    or "acceptlogintokenrequest" in lowered
+                ):
+                    refreshed = await refresh_qr(reason="token-expired")
+                    if not refreshed:
+                        return
+                    continue
+
+                # 检查是否需要两步验证
+                if "Two-step verification" in error_msg or "password" in error_msg.lower():
+                    await redis_manager.update_status(
+                        login_id,
+                        LoginStatus.ERROR,
+                        error="该账户启用了两步验证，请暂时关闭或使用验证码登录"
+                    )
+                else:
+                    await redis_manager.update_status(login_id, LoginStatus.ERROR, error=error_msg)
+                return
+
+            if result:
+                # 获取用户信息
+                me = await active_client.get_me()
+
+                # 将当前登录会话导出为 StringSession 并加密，供后续绑定落库使用
+                string_session = StringSession.save(active_client.session)
+                string_session_encrypted = encrypt_string_session(string_session)
+
+                # 使用统一接口保存绑定码映射(login:bind:*),避免绑定阶段取不到会话
+                bind_code = await redis_manager.save_string_session(
+                    login_id=login_id,
+                    string_session=string_session_encrypted,
+                    tg_user_id=me.id,
+                    username=me.username or me.first_name or "",
+                    phone=me.phone or ""
+                )
+
+                logger.info(f"二维码登录成功: {me.first_name} (@{me.username}), bind_code: {bind_code}")
+                return
+
             await redis_manager.update_status(login_id, LoginStatus.ERROR, error="登录被取消")
+            return
 
-    except asyncio.TimeoutError:
-        await redis_manager.update_status(login_id, LoginStatus.EXPIRED)
-        logger.error(f"二维码登录超时: {login_id}")
     except Exception as e:
         error_msg = str(e)
         logger.error(f"二维码登录失败: {error_msg}")
-
-        # 检查是否需要两步验证
-        if "Two-step verification" in error_msg or "password" in error_msg.lower():
-            await redis_manager.update_status(
-                login_id,
-                LoginStatus.ERROR,
-                error="该账户启用了两步验证，请暂时关闭或使用验证码登录"
-            )
-        else:
-            await redis_manager.update_status(login_id, LoginStatus.ERROR, error=error_msg)
+        await redis_manager.update_status(login_id, LoginStatus.ERROR, error=error_msg)
     finally:
         _current_qr_login_id = None
+        if login_client:
+            try:
+                await login_client.disconnect()
+            except Exception as e:
+                logger.warning(f"关闭临时二维码登录客户端失败: {e}")
 
 
 async def get_peer(chat_id: int):
@@ -172,6 +280,8 @@ async def get_peer(chat_id: int):
     return entity
 
 
-def is_userbot_ready() -> bool:
+async def is_userbot_ready() -> bool:
     """检查 Userbot 是否已就绪（已登录）"""
-    return userbot_client.is_connected() and userbot_client.is_user_authorized()
+    if not userbot_client.is_connected():
+        return False
+    return await userbot_client.is_user_authorized()

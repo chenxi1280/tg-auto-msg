@@ -172,9 +172,9 @@ class RateLimiter:
             logger.debug(f"获取时间槽成功: account={account_id}, peer={peer_id}, 等待={waited:.2f}s")
             return waited
 
-        # 超时
+        # 超时后抛错，调用方必须显式处理，避免继续发送导致破限
         logger.warning(f"等待时间槽超时: account={account_id}, peer={peer_id}")
-        return waited
+        raise TimeoutError(f"等待发送时间槽超时: account={account_id}, peer={peer_id}")
 
     # ==================== 零宽字符去重 ====================
 

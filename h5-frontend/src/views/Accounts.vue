@@ -3,7 +3,6 @@
     <!-- 头部 -->
     <header class="header">
       <div class="container">
-        <router-link to="/" class="back-link">← 返回首页</router-link>
         <h1>账号管理</h1>
       </div>
     </header>
@@ -18,6 +17,9 @@
         <el-button @click="refreshAccounts" :loading="loading">
           <el-icon><Refresh /></el-icon>
           刷新状态
+        </el-button>
+        <el-button type="danger" plain @click="handleLogout">
+          注销
         </el-button>
         <div class="stats">
           <el-tag>总计: {{ accounts.length }}</el-tag>
@@ -76,6 +78,14 @@
                 <span class="label">消息发送:</span>
                 <span class="value">{{ account.messages_sent }} 条</span>
               </div>
+              <div class="detail-row">
+                <span class="label">绑定码:</span>
+                <span class="value mono">{{ account.bind_code || '未生成' }}</span>
+              </div>
+              <div v-if="account.bind_code_expires_at" class="detail-row">
+                <span class="label">绑定码到期:</span>
+                <span class="value">{{ formatDateTime(account.bind_code_expires_at) }}</span>
+              </div>
               <div v-if="account.last_used_at" class="detail-row">
                 <span class="label">最后使用:</span>
                 <span class="value">{{ formatDate(account.last_used_at) }}</span>
@@ -88,6 +98,27 @@
 
             <!-- 操作按钮 -->
             <div class="account-actions">
+              <el-button size="small" type="primary" plain @click="viewAccountGroups(account.account_id)">
+                查看群组
+              </el-button>
+              <el-button size="small" type="success" plain @click="createTaskFromAccount(account.account_id)">
+                创建任务
+              </el-button>
+              <el-button
+                size="small"
+                type="info"
+                :loading="bindCodeLoading[account.account_id] === true"
+                @click="refreshBindCode(account)"
+              >
+                {{ account.bind_code ? '刷新绑定码' : '获取绑定码' }}
+              </el-button>
+              <el-button
+                size="small"
+                :disabled="!account.bind_code"
+                @click="copyBindCommand(account)"
+              >
+                复制 /bind
+              </el-button>
               <el-button size="small" @click="syncAccount(account.account_id)">
                 <el-icon><Refresh /></el-icon>
                 同步资源
@@ -127,12 +158,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { reactive, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Check, Close, Delete } from '@element-plus/icons-vue'
 import { useAccountStore } from '@/stores/account'
 import { useUserStore } from '@/stores/user'
+import * as authApi from '@/api/auth'
+import { refreshAccountBindCode, type Account } from '@/api/account'
 
 const router = useRouter()
 const accountStore = useAccountStore()
@@ -144,16 +177,75 @@ const loading = computed(() => accountStore.loading)
 const onlineAccounts = computed(() => accountStore.onlineAccounts)
 const floodingAccounts = computed(() => accountStore.floodingAccounts)
 const bannedAccounts = computed(() => accountStore.bannedAccounts)
+const bindCodeLoading = reactive<Record<string, boolean>>({})
 
-// 跳转到登录页
+// 跳转到 TG 账号绑定页
 const goToLogin = () => {
-  router.push('/login')
+  router.push('/bind-tg')
+}
+
+const handleLogout = async () => {
+  try {
+    await authApi.logout()
+  } catch (_err) {
+    // 后端登出失败不阻塞本地态清理
+  } finally {
+    userStore.logout()
+    router.replace('/login')
+  }
 }
 
 // 刷新账号列表
 const refreshAccounts = async () => {
   if (userStore.userId) {
     await accountStore.fetchAccounts(userStore.userId)
+  }
+}
+
+const viewAccountGroups = (accountId: string) => {
+  router.push({
+    path: '/resources',
+    query: {
+      account_id: accountId
+    }
+  })
+}
+
+const createTaskFromAccount = (accountId: string) => {
+  router.push({
+    path: '/tasks',
+    query: {
+      account_id: accountId
+    }
+  })
+}
+
+const refreshBindCode = async (account: Account) => {
+  bindCodeLoading[account.account_id] = true
+  try {
+    const res = await refreshAccountBindCode(account.account_id, true)
+    account.bind_code = res.data.bind_code
+    account.bind_code_expires_at = res.data.expires_at
+    ElMessage.success(`绑定码已更新: ${res.data.bind_code}`)
+  } catch (err: any) {
+    ElMessage.error(err.message || '获取绑定码失败')
+  } finally {
+    bindCodeLoading[account.account_id] = false
+  }
+}
+
+const copyBindCommand = async (account: Account) => {
+  if (!account.bind_code) {
+    ElMessage.warning('请先获取绑定码')
+    return
+  }
+
+  const command = `/bind ${account.bind_code}`
+  try {
+    await navigator.clipboard.writeText(command)
+    ElMessage.success('已复制绑定命令')
+  } catch (_err) {
+    ElMessage.error('复制失败，请手动复制')
   }
 }
 
@@ -168,7 +260,7 @@ const syncAccount = async (accountId: string) => {
 }
 
 // 禁用账号
-const confirmDisable = async (account: any) => {
+const confirmDisable = async (account: Account) => {
   try {
     await ElMessageBox.confirm(
       `确定要禁用账号 ${account.username || account.phone} 吗？`,
@@ -197,7 +289,7 @@ const enableAccount = async (accountId: string) => {
 }
 
 // 删除账号
-const confirmDelete = async (account: any) => {
+const confirmDelete = async (account: Account) => {
   try {
     await ElMessageBox.confirm(
       `确定要删除账号 ${account.username || account.phone} 吗？此操作不可恢复！`,
@@ -218,7 +310,7 @@ const confirmDelete = async (account: any) => {
 }
 
 // 获取状态类型
-const getStatusType = (account: any) => {
+const getStatusType = (account: Account) => {
   if (account.is_banned) return 'danger'
   if (account.is_flooding) return 'warning'
   if (!account.is_active) return 'info'
@@ -227,7 +319,7 @@ const getStatusType = (account: any) => {
 }
 
 // 获取状态文本
-const getStatusText = (account: any) => {
+const getStatusText = (account: Account) => {
   if (account.is_banned) return '已封禁'
   if (account.is_flooding) return '限制中'
   if (!account.is_active) return '已禁用'
@@ -406,6 +498,11 @@ onMounted(() => {
   color: #2c3e50;
   font-size: 0.9rem;
   font-weight: 500;
+}
+
+.detail-row .value.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  letter-spacing: 0.5px;
 }
 
 .account-actions {

@@ -7,22 +7,68 @@
 -- CREATE DATABASE tg_auto_msg;
 
 -- ========================================
--- 2. 任务表
+-- 2. 系统用户表 (新增)
+-- ========================================
+CREATE TABLE IF NOT EXISTS users (
+    -- 主键
+    id SERIAL PRIMARY KEY,
+
+    -- 用户凭证
+    username VARCHAR(50) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+
+    -- 用户信息
+    email VARCHAR(100),
+
+    -- 状态
+    is_active BOOLEAN DEFAULT TRUE NOT NULL,
+
+    -- 时间戳
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+-- 创建索引
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active);
+
+-- 添加注释
+COMMENT ON TABLE users IS '系统用户表';
+COMMENT ON COLUMN users.id IS '用户 ID（自增）';
+COMMENT ON COLUMN users.username IS '用户名（唯一）';
+COMMENT ON COLUMN users.password_hash IS '密码哈希（bcrypt）';
+COMMENT ON COLUMN users.email IS '电子邮箱';
+COMMENT ON COLUMN users.is_active IS '是否激活';
+COMMENT ON COLUMN users.created_at IS '创建时间';
+COMMENT ON COLUMN users.updated_at IS '更新时间';
+
+-- ========================================
+-- 3. 任务表
 -- ========================================
 CREATE TABLE IF NOT EXISTS scheduled_message_tasks (
     -- 主键
     task_id VARCHAR(36) PRIMARY KEY,
 
     -- 基础信息
-    user_id BIGINT NOT NULL,
-    chat_id BIGINT NOT NULL,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    account_id VARCHAR(36),
+    chat_id BIGINT,
     title VARCHAR(100) NOT NULL,
+
+    -- 目标 Peer 信息（新架构）
+    target_peer_id BIGINT,
+    target_peer_type VARCHAR(20),
+    target_access_hash BIGINT,
 
     -- 启用状态
     enabled BOOLEAN DEFAULT FALSE NOT NULL,
+    priority INTEGER DEFAULT 0 NOT NULL,
 
     -- 重复设置
     repeat_interval_min INTEGER NOT NULL,
+    jitter_seconds INTEGER DEFAULT 0 NOT NULL,
+    delay_min_seconds INTEGER DEFAULT 0 NOT NULL,
+    delay_max_seconds INTEGER DEFAULT 0 NOT NULL,
 
     -- 每日时段限制
     day_start_hour INTEGER,
@@ -54,6 +100,7 @@ CREATE TABLE IF NOT EXISTS scheduled_message_tasks (
 
 -- 创建索引
 CREATE INDEX IF NOT EXISTS idx_user_chat ON scheduled_message_tasks(user_id, chat_id);
+CREATE INDEX IF NOT EXISTS idx_account_id ON scheduled_message_tasks(account_id);
 CREATE INDEX IF NOT EXISTS idx_enabled_next_run ON scheduled_message_tasks(enabled, next_run_at);
 CREATE INDEX IF NOT EXISTS idx_next_run_at ON scheduled_message_tasks(next_run_at);
 CREATE INDEX IF NOT EXISTS idx_created_at ON scheduled_message_tasks(created_at DESC);
@@ -61,11 +108,19 @@ CREATE INDEX IF NOT EXISTS idx_created_at ON scheduled_message_tasks(created_at 
 -- 添加注释
 COMMENT ON TABLE scheduled_message_tasks IS '定时消息任务表';
 COMMENT ON COLUMN scheduled_message_tasks.task_id IS '任务唯一标识（UUID）';
-COMMENT ON COLUMN scheduled_message_tasks.user_id IS '归属用户 ID';
+COMMENT ON COLUMN scheduled_message_tasks.user_id IS '归属系统用户 ID（关联 users.id）';
+COMMENT ON COLUMN scheduled_message_tasks.account_id IS '执行账号 ID';
 COMMENT ON COLUMN scheduled_message_tasks.chat_id IS '群组/频道 ID';
+COMMENT ON COLUMN scheduled_message_tasks.target_peer_id IS '目标 Peer ID';
+COMMENT ON COLUMN scheduled_message_tasks.target_peer_type IS '目标 Peer 类型';
+COMMENT ON COLUMN scheduled_message_tasks.target_access_hash IS '目标 Access Hash';
 COMMENT ON COLUMN scheduled_message_tasks.title IS '显示名';
 COMMENT ON COLUMN scheduled_message_tasks.enabled IS '是否启用';
+COMMENT ON COLUMN scheduled_message_tasks.priority IS '任务优先级（越大越优先）';
 COMMENT ON COLUMN scheduled_message_tasks.repeat_interval_min IS '重复间隔（分钟）';
+COMMENT ON COLUMN scheduled_message_tasks.jitter_seconds IS '随机抖动秒数（0-300）';
+COMMENT ON COLUMN scheduled_message_tasks.delay_min_seconds IS '随机延迟下限（秒）';
+COMMENT ON COLUMN scheduled_message_tasks.delay_max_seconds IS '随机延迟上限（秒）';
 COMMENT ON COLUMN scheduled_message_tasks.day_start_hour IS '每日发送起始小时';
 COMMENT ON COLUMN scheduled_message_tasks.day_end_hour IS '每日发送结束小时';
 COMMENT ON COLUMN scheduled_message_tasks.start_at IS '开始时间（Unix 时间戳）';
@@ -83,7 +138,7 @@ COMMENT ON COLUMN scheduled_message_tasks.created_at IS '创建时间';
 COMMENT ON COLUMN scheduled_message_tasks.updated_at IS '更新时间';
 
 -- ========================================
--- 3. 任务日志表
+-- 4. 任务日志表
 -- ========================================
 CREATE TABLE IF NOT EXISTS task_logs (
     -- 主键
@@ -117,7 +172,7 @@ COMMENT ON COLUMN task_logs.error_message IS '错误信息';
 COMMENT ON COLUMN task_logs.message_id IS '消息 ID';
 
 -- ========================================
--- 4. 创建更新时间触发器
+-- 5. 创建更新时间触发器
 -- ========================================
 
 -- 创建更新时间函数
@@ -129,6 +184,13 @@ BEGIN
 END;
 $$ language 'plpgsql';
 
+-- 为 users 表添加触发器
+DROP TRIGGER IF EXISTS update_users_updated_at ON users;
+CREATE TRIGGER update_users_updated_at
+    BEFORE UPDATE ON users
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
 -- 为 scheduled_message_tasks 表添加触发器
 DROP TRIGGER IF EXISTS update_scheduled_message_tasks_updated_at ON scheduled_message_tasks;
 CREATE TRIGGER update_scheduled_message_tasks_updated_at
@@ -137,7 +199,7 @@ CREATE TRIGGER update_scheduled_message_tasks_updated_at
     EXECUTE FUNCTION update_updated_at_column();
 
 -- ========================================
--- 5. 初始化数据（可选）
+-- 6. 初始化数据（可选）
 -- ========================================
 
 -- 示例任务（注释掉，避免自动创建）
@@ -157,7 +219,7 @@ INSERT INTO scheduled_message_tasks (
     pin_message
 ) VALUES (
     '550e8400-e29b-41d4-a716-446655440000',
-    123456789,
+    1,
     -1001234567890,
     '示例任务',
     FALSE,
@@ -172,7 +234,7 @@ INSERT INTO scheduled_message_tasks (
 */
 
 -- ========================================
--- 6. 性能优化建议
+-- 7. 性能优化建议
 -- ========================================
 
 -- 定期清理旧日志（保留最近 30 天）
@@ -182,7 +244,7 @@ INSERT INTO scheduled_message_tasks (
 -- CREATE INDEX IF NOT EXISTS idx_enabled_tasks ON scheduled_message_tasks(task_id) WHERE enabled = TRUE;
 
 -- ========================================
--- 7. 备份与恢复
+-- 8. 备份与恢复
 -- ========================================
 
 -- 备份
@@ -192,7 +254,7 @@ INSERT INTO scheduled_message_tasks (
 -- psql -U postgres -d tg_auto_msg -f backup.sql
 
 -- ========================================
--- 8. 监控查询示例
+-- 9. 监控查询示例
 -- ========================================
 
 -- 查看任务统计

@@ -17,14 +17,14 @@ from typing import Optional
 import redis.asyncio as redis
 
 from loguru import logger
-from telethon.errors import FloodWaitError, RPCError
+from telethon.errors import FloodWaitError, PeerFloodError
 
 from config.settings import settings
 from database.session import get_async_session
 from database.models import ScheduledMessageTask, TaskLog, MediaType
-from bot.account_manager import get_account_manager, AccountSelectionStrategy
+from bot.account_manager import get_account_manager
 from bot.resource_manager import get_resource_manager
-from bot.rate_limiter import get_rate_limiter, acquire_locks_and_send
+from bot.rate_limiter import get_rate_limiter
 from bot.circuit_breaker import get_circuit_breaker, FloodWaitAction
 from bot.keyboards import build_inline_buttons
 
@@ -49,6 +49,7 @@ class TaskScheduler:
     # 配置
     SCAN_INTERVAL = 10  # 10 秒扫描间隔
     JITTER_RANGE = 300  # 最大抖动 5 分钟（300秒）
+    URGENT_PRIORITY_THRESHOLD = 100
 
     def __init__(self):
         self.redis_client: Optional[redis.Redis] = None
@@ -73,11 +74,12 @@ class TaskScheduler:
     async def start(self):
         """启动调度器"""
         self.running = True
-        logger.info(f"任务调度器已启动（扫描间隔: {self.SCAN_INTERVAL}秒）")
+        mode = getattr(settings, "scheduler_mode", "all").lower()
+        logger.info(f"任务调度器已启动（模式: {mode}, 扫描间隔: {self.SCAN_INTERVAL}秒）")
 
         while self.running:
             try:
-                await self.tick()
+                await self.tick(mode=mode)
                 await asyncio.sleep(self.SCAN_INTERVAL)
             except Exception as e:
                 logger.error(f"调度器运行错误: {e}")
@@ -88,15 +90,19 @@ class TaskScheduler:
         self.running = False
         logger.info("任务调度器已停止")
 
-    async def tick(self):
-        """执行一次扫描和发送"""
+    async def tick(self, mode: str = "all"):
+        """执行一次扫描和发送（支持 producer/consumer 分离模式）"""
         now = int(datetime.now().timestamp())
         current_hour = datetime.now().hour
 
         logger.debug(f"执行调度扫描，当前时间: {datetime.now()}")
 
-        # 1. 从数据库获取待执行任务，加入 Redis 队列
-        await self._enqueue_tasks(now)
+        if mode in ("all", "producer"):
+            # 1. 从数据库获取待执行任务，加入 Redis 队列
+            await self._enqueue_tasks(now)
+
+        if mode not in ("all", "consumer"):
+            return
 
         # 2. 从 Redis 队列获取需要执行的任务
         tasks_to_execute = await self._get_pending_tasks(now)
@@ -128,6 +134,10 @@ class TaskScheduler:
                     ScheduledMessageTask.next_run_at.isnot(None),
                     ScheduledMessageTask.next_run_at <= now
                 )
+                .order_by(
+                    ScheduledMessageTask.priority.desc(),
+                    ScheduledMessageTask.next_run_at.asc()
+                )
                 .limit(100)
             )
 
@@ -136,16 +146,44 @@ class TaskScheduler:
 
             # 加入 Redis 队列
             for task in tasks:
-                # 计算带抖动的执行时间
-                jitter = random.randint(0, min(task.jitter_seconds, self.JITTER_RANGE))
+                # 计算带抖动的执行时间（优先使用 [delay_min_seconds, delay_max_seconds]）
+                delay_min = max(0, int(getattr(task, "delay_min_seconds", 0) or 0))
+                delay_max = max(delay_min, int(getattr(task, "delay_max_seconds", 0) or 0))
+
+                if delay_max > 0:
+                    upper = min(delay_max, self.JITTER_RANGE)
+                    lower = min(delay_min, upper)
+                    jitter = random.randint(lower, upper)
+                else:
+                    jitter = random.randint(0, min(task.jitter_seconds, self.JITTER_RANGE))
+
+                # 紧急任务插队：高优先级任务尽可能降低额外抖动
+                if (task.priority or 0) >= self.URGENT_PRIORITY_THRESHOLD:
+                    jitter = min(jitter, 3)
+
+                # 权重感知：低权重账号额外增加随机延迟，降低风控风险
+                if task.account_id:
+                    account = await self._account_manager.get_account(task.account_id)
+                    if account and account.weight < 100:
+                        extra_max = min(120, (100 - account.weight) * 2)
+                        jitter += random.randint(0, extra_max)
+
                 execution_time = now + jitter
 
-                # 队列成员格式：task_id
-                # 分数：执行时间戳
-                await self.redis_client.zadd(
-                    self.TASK_QUEUE_KEY,
-                    {task.task_id: execution_time}
-                )
+                # 队列成员格式：task_id；分数：执行时间戳
+                # 关键策略：仅允许把已有任务“提前”，不允许“延后”，
+                # 避免扫描时反复覆盖导致任务长期不触发。
+                existing_score = await self.redis_client.zscore(self.TASK_QUEUE_KEY, task.task_id)
+                if existing_score is None:
+                    await self.redis_client.zadd(
+                        self.TASK_QUEUE_KEY,
+                        {task.task_id: execution_time}
+                    )
+                elif execution_time < int(existing_score):
+                    await self.redis_client.zadd(
+                        self.TASK_QUEUE_KEY,
+                        {task.task_id: execution_time}
+                    )
 
                 logger.debug(
                     f"任务 {task.task_id} 加入队列，"
@@ -246,6 +284,7 @@ class TaskScheduler:
                 target_peer_id = task.target_peer_id or chat_id
                 if not target_peer_id:
                     logger.warning(f"任务 {task_id} 没有目标 Peer ID")
+                    await self._handle_task_failure(session, task, "缺少目标 Peer ID")
                     return
 
                 # 获取执行账号
@@ -255,6 +294,9 @@ class TaskScheduler:
                     client = userbot_client
                     account_id_str = "default"
                 else:
+                    # 执行前检测代理健康，失效则自动替换
+                    await self._account_manager.ensure_account_proxy(account_id)
+
                     # 新架构：使用 AccountManager
                     client = await self._account_manager.get_client(account_id)
                     account_id_str = account_id
@@ -266,7 +308,9 @@ class TaskScheduler:
 
                 # 检查日期范围
                 if task.start_at and now < task.start_at:
-                    logger.debug(f"任务 {task_id} 未到开始时间")
+                    task.next_run_at = max(task.next_run_at or 0, task.start_at)
+                    await session.commit()
+                    logger.debug(f"任务 {task_id} 未到开始时间，next_run_at={task.next_run_at}")
                     return
 
                 if task.end_at and now > task.end_at:
@@ -294,19 +338,45 @@ class TaskScheduler:
                         await self._handle_task_failure(session, task, "发送失败")
 
                 except FloodWaitError as e:
+                    if account_id_str == "default":
+                        await self._handle_task_failure(session, task, f"FloodWait: {e.seconds}秒")
+                        return
+
                     # FloodWait 错误处理
                     action = await self._circuit_breaker.handle_flood_wait(
                         account_id_str, e
                     )
 
                     if action == FloodWaitAction.BAN:
-                        # 账号被封禁，禁用任务
-                        task.enabled = False
-                        await session.commit()
+                        await self._handle_task_failure(session, task, f"FloodWait: {e.seconds}秒")
+
+                        # 24h 以上：暂停该账号全部任务，避免持续触发风控
+                        suspend_until = now + 24 * 3600
+                        account = await self._account_manager.get_account(account_id_str)
+                        if account and account.flood_until:
+                            suspend_until = max(suspend_until, int(account.flood_until.timestamp()))
+                        await self._suspend_account_tasks(
+                            session,
+                            account_id_str,
+                            suspend_until,
+                            reason=f"FloodWait({e.seconds}s)"
+                        )
                     elif action == FloodWaitAction.SKIP:
                         # 跳过本次，稍后重试
                         await self._handle_task_failure(
                             session, task, f"FloodWait: {e.seconds}秒"
+                        )
+
+                except PeerFloodError:
+                    # Telegram PeerFlood 风险：按账号级别熔断 24h
+                    await self._handle_task_failure(session, task, "PeerFloodError")
+                    if account_id_str != "default":
+                        suspend_until_dt = await self._circuit_breaker.handle_peer_flood(account_id_str)
+                        await self._suspend_account_tasks(
+                            session,
+                            account_id_str,
+                            int(suspend_until_dt.timestamp()),
+                            reason="PeerFloodError"
                         )
 
                 except Exception as e:
@@ -343,6 +413,10 @@ class TaskScheduler:
         # 获取发送锁（速率限制）
         await rate_limiter.wait_for_slot(account_id, target_peer_id)
 
+        # 兼容旧数据：default userbot 不参与账号熔断器
+        if account_id == "default":
+            return await self._do_send_message(client, task, target_peer_id)
+
         # 使用熔断器包装发送
         return await circuit_breaker.execute_with_circuit_breaker(
             account_id,
@@ -377,6 +451,13 @@ class TaskScheduler:
         buttons = build_inline_buttons(task.buttons)
 
         # 发送消息
+        # 需要先删除上一条时，先尝试清理历史消息
+        if task.delete_previous and task.last_sent_message_id:
+            try:
+                await client.delete_messages(target_peer_id, [task.last_sent_message_id])
+            except Exception as e:
+                logger.warning(f"删除上一条消息失败 task={task.task_id}: {e}")
+
         if task.media_type != MediaType.NONE:
             # 带媒体的消息
             if task.media_type == MediaType.PHOTO:
@@ -420,6 +501,13 @@ class TaskScheduler:
                 buttons=buttons,
                 parse_mode='html'
             )
+
+        # 发送成功后按配置置顶
+        if msg and task.pin_message:
+            try:
+                await client.pin_message(target_peer_id, msg.id, notify=False)
+            except Exception as e:
+                logger.warning(f"置顶消息失败 task={task.task_id}: {e}")
 
         return msg.id if msg else None
 
@@ -503,6 +591,11 @@ class TaskScheduler:
         # 增加失败计数
         task.failure_count += 1
 
+        # 失败后推进下次运行时间，避免连续即时重试
+        now = int(datetime.now().timestamp())
+        retry_after = max(30, task.repeat_interval_min * 60)
+        task.next_run_at = now + retry_after
+
         # 连续失败多次，自动禁用
         if task.failure_count >= settings.max_failure_count:
             task.enabled = False
@@ -512,6 +605,32 @@ class TaskScheduler:
             )
 
         await session.commit()
+
+    async def _suspend_account_tasks(
+        self,
+        session,
+        account_id: str,
+        suspend_until: int,
+        reason: str
+    ):
+        """暂停账号下全部启用任务到指定时间。"""
+        from sqlalchemy import select
+
+        result = await session.execute(
+            select(ScheduledMessageTask).where(
+                ScheduledMessageTask.account_id == account_id,
+                ScheduledMessageTask.enabled == True
+            )
+        )
+        tasks = result.scalars().all()
+
+        for t in tasks:
+            t.next_run_at = max(t.next_run_at or 0, suspend_until)
+
+        await session.commit()
+        logger.warning(
+            f"账号 {account_id} 任务已暂停到 {suspend_until}，原因: {reason}，影响任务数: {len(tasks)}"
+        )
 
     def _calculate_next_run(self, now: int, target_hour: int, interval_min: int) -> int:
         """计算下一次运行时间"""

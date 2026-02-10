@@ -3,24 +3,72 @@ Bot 主处理器：命令、回调按钮、消息处理
 """
 from datetime import datetime
 from typing import Optional
-import re
-import hashlib
-import hmac
+from loguru import logger
 
 from telethon import events
 from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
+from sqlalchemy import select
 
-from bot.client import bot_client, userbot_client, is_userbot_ready
+from bot.client import bot_client
 from bot.fsm import fsm_storage, FSMState
 from bot.keyboards import (
     get_task_list_keyboard, get_task_settings_keyboard,
     get_interval_keyboard, get_hour_select_keyboard,
-    get_confirm_delete_keyboard, get_cancel_keyboard,
-    build_inline_buttons, INTERVAL_OPTIONS
+    get_confirm_delete_keyboard, get_cancel_keyboard
 )
 from bot.messages import *
 from database.session import get_async_session
-from database.models import ScheduledMessageTask, MediaType, TaskLog
+from database.models import ScheduledMessageTask, MediaType, Account, User
+
+
+async def _resolve_db_user_id(session, actor_user_id: int) -> Optional[int]:
+    """
+    将 Telegram 发送者 ID 映射为系统用户 ID。
+    - 新链路：通过已绑定账号的 tg_user_id 找到 owner user_id
+    - 兼容链路：如果 actor_user_id 本身是系统用户 ID，则直接返回
+    """
+    account_result = await session.execute(
+        select(Account.user_id)
+        .where(Account.tg_user_id == actor_user_id)
+        .order_by(Account.created_at.desc())
+        .limit(1)
+    )
+    mapped_user_id = account_result.scalar_one_or_none()
+    if mapped_user_id is not None:
+        return int(mapped_user_id)
+
+    legacy_user = await session.execute(
+        select(User.id).where(User.id == actor_user_id)
+    )
+    legacy_user_id = legacy_user.scalar_one_or_none()
+    if legacy_user_id is not None:
+        return int(legacy_user_id)
+
+    return None
+
+
+async def _require_db_user_id(event, actor_user_id: int, *, alert: bool = False) -> Optional[int]:
+    """获取并校验系统用户 ID，不存在时给出统一提示。"""
+    async with get_async_session() as session:
+        db_user_id = await _resolve_db_user_id(session, actor_user_id)
+
+    if db_user_id is not None:
+        return db_user_id
+
+    msg = (
+        "当前 Telegram 账号还未绑定系统用户。\n"
+        "请先打开 H5 完成系统登录与扫码绑定，再发送 /bind <绑定码>。"
+    )
+    if alert and hasattr(event, "answer"):
+        await event.answer(msg, alert=True)
+    else:
+        await event.respond(
+            "⚠️ 当前 Telegram 账号还未绑定系统用户。\n\n"
+            "请先在 H5 登录并扫码绑定，然后发送 `/bind <绑定码>`。",
+            parse_mode="markdown",
+            buttons=[[Button.url("🔐 前往 H5 登录", f"{H5_BASE_URL}/login")]]
+        )
+    return None
 
 
 # ============ 命令处理 ============
@@ -28,12 +76,18 @@ from database.models import ScheduledMessageTask, MediaType, TaskLog
 @bot_client.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
     """开始命令"""
-    user_id = event.sender_id
-    fsm_storage.reset_state(user_id)
+    actor_user_id = event.sender_id
+    fsm_storage.reset_state(actor_user_id)
 
-    # 检查 Userbot 是否已登录
-    if not is_userbot_ready():
-        # Userbot 未登录，引导用户扫码登录
+    async with get_async_session() as session:
+        db_user_id = await _resolve_db_user_id(session, actor_user_id)
+
+    from bot.account_manager import get_account_manager
+    account_manager = get_account_manager()
+    accounts = await account_manager.get_accounts(db_user_id, is_active=False) if db_user_id else []
+
+    # 当前 Telegram 用户未绑定任何执行账号
+    if not accounts:
         text = """👋 欢迎使用 **定时消息推送管理系统**！
 
 ⚠️ **需要先登录 Userbot**
@@ -52,7 +106,7 @@ Userbot 负责实际发送消息到群组/频道。请先完成登录：
         await event.respond(text, buttons=keyboard, parse_mode='markdown')
         return
 
-    # Userbot 已登录，显示正常欢迎消息
+    # 已有绑定账号，显示正常欢迎消息
     text = """👋 欢迎使用 **定时消息推送管理系统**！
 
 本系统可以帮助你在 Telegram 群组/频道中自动发送定时消息。
@@ -76,7 +130,9 @@ async def tasks_handler(event):
     """任务列表命令"""
     user_id = event.sender_id
     fsm_storage.reset_state(user_id)
-    await show_task_list(event)
+    if await _require_db_user_id(event, user_id) is None:
+        return
+    await show_task_list(event, user_id)
 
 
 @bot_client.on(events.NewMessage(pattern='/bind'))
@@ -112,6 +168,8 @@ async def bind_handler(event):
 async def accounts_handler(event):
     """账号列表命令 /accounts"""
     user_id = event.sender_id
+    if await _require_db_user_id(event, user_id) is None:
+        return
     await show_accounts_list(event, user_id)
 
 
@@ -126,6 +184,8 @@ async def sync_handler(event):
     if len(parts) >= 2:
         account_id = parts[1].strip()
 
+    if await _require_db_user_id(event, user_id) is None:
+        return
     await sync_account_resources(event, user_id, account_id)
 
 
@@ -133,6 +193,8 @@ async def sync_handler(event):
 async def proxy_handler(event):
     """代理管理命令 /proxy"""
     user_id = event.sender_id
+    if await _require_db_user_id(event, user_id) is None:
+        return
     await show_proxy_management(event, user_id)
 
 
@@ -180,8 +242,12 @@ async def show_accounts_list(event, user_id: int):
     from bot.account_manager import get_account_manager
     from database.models import HealthStatus
 
+    db_user_id = await _require_db_user_id(event, user_id)
+    if db_user_id is None:
+        return
+
     account_manager = get_account_manager()
-    accounts = await account_manager.get_accounts(user_id)
+    accounts = await account_manager.get_accounts(db_user_id)
 
     if not accounts:
         text = """📱 **我的账号**
@@ -237,12 +303,16 @@ async def sync_account_resources(event, user_id: int, account_id: Optional[str])
     from bot.account_manager import get_account_manager
     from bot.resource_manager import get_resource_manager
 
+    db_user_id = await _require_db_user_id(event, user_id)
+    if db_user_id is None:
+        return
+
     account_manager = get_account_manager()
     resource_manager = get_resource_manager()
 
     # 如果没有指定账号，获取用户的第一个账号
     if not account_id:
-        accounts = await account_manager.get_accounts(user_id)
+        accounts = await account_manager.get_accounts(db_user_id)
         if not accounts:
             await event.respond(
                 "❌ 您还没有绑定任何账号\n\n"
@@ -346,7 +416,7 @@ async def callback_handler(event):
         if data.startswith("settings:"):
             fsm_storage.reset_state(user_id)
             task_id = data.split(":")[1]
-            await show_task_settings(event, task_id)
+            await show_task_settings(event, user_id, task_id)
         else:
             await event.answer("请先完成当前输入，或点击取消", alert=True)
 
@@ -355,6 +425,9 @@ async def handle_callback(event, user_id: int, data: str):
     """处理所有回调按钮"""
     parts = data.split(":")
     action = parts[0]
+
+    if await _require_db_user_id(event, user_id, alert=True) is None:
+        return
 
     # ============ 新增回调 ============
     if action == "accounts_list":
@@ -366,53 +439,53 @@ async def handle_callback(event, user_id: int, data: str):
 
     # ============ 列表页操作 ============
     elif action == "task_list":
-        await show_task_list(event)
+        await show_task_list(event, user_id)
 
     elif action == "refresh":
-        await show_task_list(event)
+        await show_task_list(event, user_id)
 
     elif action == "add_task":
         await create_new_task(event, user_id)
 
     elif action == "view":
         task_id = parts[1]
-        await show_task_settings(event, task_id)
+        await show_task_settings(event, user_id, task_id)
 
     elif action == "toggle":
         task_id = parts[1]
-        await toggle_task(event, task_id)
+        await toggle_task(event, user_id, task_id)
 
     elif action == "delete":
         task_id = parts[1]
-        await confirm_delete_task(event, task_id)
+        await confirm_delete_task(event, user_id, task_id)
 
     elif action == "confirm_delete":
         task_id = parts[1]
-        await delete_task(event, task_id)
+        await delete_task(event, user_id, task_id)
 
     elif action == "back_to_list":
-        await show_task_list(event)
+        await show_task_list(event, user_id)
 
     # ============ 设置页操作 ============
     elif action == "settings":
         task_id = parts[1]
-        await show_task_settings(event, task_id)
+        await show_task_settings(event, user_id, task_id)
 
     elif action == "set_enable":
         task_id = parts[1]
-        await update_task_enabled(event, task_id, True)
+        await update_task_enabled(event, user_id, task_id, True)
 
     elif action == "set_disable":
         task_id = parts[1]
-        await update_task_enabled(event, task_id, False)
+        await update_task_enabled(event, user_id, task_id, False)
 
     elif action == "toggle_delete":
         task_id = parts[1]
-        await toggle_delete_previous(event, task_id)
+        await toggle_delete_previous(event, user_id, task_id)
 
     elif action == "toggle_pin":
         task_id = parts[1]
-        await toggle_pin_message(event, task_id)
+        await toggle_pin_message(event, user_id, task_id)
 
     elif action == "edit_text":
         task_id = parts[1]
@@ -428,7 +501,7 @@ async def handle_callback(event, user_id: int, data: str):
 
     elif action == "edit_interval":
         task_id = parts[1]
-        await show_interval_selection(event, task_id)
+        await show_interval_selection(event, user_id, task_id)
 
     elif action == "edit_hours":
         task_id = parts[1]
@@ -450,7 +523,7 @@ async def handle_callback(event, user_id: int, data: str):
     elif action == "set_interval":
         task_id = parts[1]
         interval = int(parts[2])
-        await set_interval(event, task_id, interval)
+        await set_interval(event, user_id, task_id, interval)
 
     elif action == "set_hour":
         task_id = parts[1]
@@ -492,12 +565,43 @@ async def message_handler(event):
 
 # ============ 任务列表展示 ============
 
-async def show_task_list(event):
+async def _get_user_task(session, task_id: str, user_id: int) -> Optional[ScheduledMessageTask]:
+    """按用户范围获取任务"""
+    db_user_id = await _resolve_db_user_id(session, user_id)
+    if db_user_id is None:
+        return None
+
+    result = await session.execute(
+        select(ScheduledMessageTask).where(
+            ScheduledMessageTask.task_id == task_id,
+            ScheduledMessageTask.user_id == db_user_id
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def show_task_list(event, user_id: int):
     """显示任务列表"""
     async with get_async_session() as session:
-        from sqlalchemy import select
+        db_user_id = await _resolve_db_user_id(session, user_id)
+        if db_user_id is None:
+            if hasattr(event, "answer"):
+                await event.answer(
+                    "当前 Telegram 账号未绑定系统用户，请先在 H5 登录并绑定。",
+                    alert=True
+                )
+            else:
+                await event.respond(
+                    "⚠️ 当前 Telegram 账号未绑定系统用户。\n\n"
+                    "请先在 H5 登录并扫码绑定，再使用任务功能。",
+                    buttons=[[Button.url("🔐 前往 H5 登录", f"{H5_BASE_URL}/login")]]
+                )
+            return
+
         result = await session.execute(
-            select(ScheduledMessageTask).order_by(ScheduledMessageTask.created_at.desc())
+            select(ScheduledMessageTask)
+            .where(ScheduledMessageTask.user_id == db_user_id)
+            .order_by(ScheduledMessageTask.created_at.desc())
         )
         tasks = result.scalars().all()
 
@@ -529,14 +633,10 @@ async def show_task_list(event):
 
 # ============ 任务设置展示 ============
 
-async def show_task_settings(event, task_id: str):
+async def show_task_settings(event, user_id: int, task_id: str):
     """显示任务设置页"""
     async with get_async_session() as session:
-        from sqlalchemy import select
-        result = await session.execute(
-            select(ScheduledMessageTask).where(ScheduledMessageTask.task_id == task_id)
-        )
-        task = result.scalar_one_or_none()
+        task = await _get_user_task(session, task_id, user_id)
 
     if not task:
         await event.answer("任务不存在", alert=True)
@@ -574,44 +674,46 @@ async def create_new_task(event, user_id: int):
     task_id = str(uuid.uuid4())
 
     async with get_async_session() as session:
+        db_user_id = await _resolve_db_user_id(session, user_id)
+        if db_user_id is None:
+            await event.answer("未找到对应系统用户，请先完成绑定", alert=True)
+            return
+
         task = ScheduledMessageTask(
             task_id=task_id,
-            user_id=user_id,
+            user_id=db_user_id,
             chat_id=0,  # 需要用户设置
             title="新任务",
             repeat_interval_min=60,
             enabled=False,
+            next_run_at=int(datetime.now().timestamp()) + 3600,
         )
         session.add(task)
         await session.commit()
 
-    await show_task_settings(event, task_id)
+    await show_task_settings(event, user_id, task_id)
 
 
-async def toggle_task(event, task_id: str):
+async def toggle_task(event, user_id: int, task_id: str):
     """切换任务启用状态"""
     async with get_async_session() as session:
-        from sqlalchemy import select
-        result = await session.execute(
-            select(ScheduledMessageTask).where(ScheduledMessageTask.task_id == task_id)
-        )
-        task = result.scalar_one_or_none()
+        task = await _get_user_task(session, task_id, user_id)
 
         if task:
             task.enabled = not task.enabled
+            if task.enabled and task.next_run_at is None:
+                now_ts = int(datetime.now().timestamp())
+                start_at_ts = int(task.start_at or 0)
+                task.next_run_at = max(now_ts, start_at_ts) if start_at_ts > 0 else now_ts
             await session.commit()
             await event.answer(f"任务已{'启用' if task.enabled else '禁用'}")
-            await show_task_list(event)
+            await show_task_list(event, user_id)
 
 
-async def confirm_delete_task(event, task_id: str):
+async def confirm_delete_task(event, user_id: int, task_id: str):
     """确认删除任务"""
     async with get_async_session() as session:
-        from sqlalchemy import select
-        result = await session.execute(
-            select(ScheduledMessageTask).where(ScheduledMessageTask.task_id == task_id)
-        )
-        task = result.scalar_one_or_none()
+        task = await _get_user_task(session, task_id, user_id)
 
         if task:
             text = CONFIRM_DELETE.format(title=task.title)
@@ -619,63 +721,63 @@ async def confirm_delete_task(event, task_id: str):
             await event.edit(text, buttons=keyboard, parse_mode='markdown')
 
 
-async def delete_task(event, task_id: str):
+async def delete_task(event, user_id: int, task_id: str):
     """删除任务"""
     async with get_async_session() as session:
+        db_user_id = await _resolve_db_user_id(session, user_id)
+        if db_user_id is None:
+            await event.answer("未找到对应系统用户，请先完成绑定", alert=True)
+            return
+
         from sqlalchemy import delete
         await session.execute(
-            delete(ScheduledMessageTask).where(ScheduledMessageTask.task_id == task_id)
+            delete(ScheduledMessageTask).where(
+                ScheduledMessageTask.task_id == task_id,
+                ScheduledMessageTask.user_id == db_user_id
+            )
         )
         await session.commit()
 
     await event.answer("任务已删除")
-    await show_task_list(event)
+    await show_task_list(event, user_id)
 
 
-async def update_task_enabled(event, task_id: str, enabled: bool):
+async def update_task_enabled(event, user_id: int, task_id: str, enabled: bool):
     """更新任务启用状态"""
     async with get_async_session() as session:
-        from sqlalchemy import select
-        result = await session.execute(
-            select(ScheduledMessageTask).where(ScheduledMessageTask.task_id == task_id)
-        )
-        task = result.scalar_one_or_none()
+        task = await _get_user_task(session, task_id, user_id)
 
         if task:
             task.enabled = enabled
+            if enabled and task.next_run_at is None:
+                now_ts = int(datetime.now().timestamp())
+                start_at_ts = int(task.start_at or 0)
+                task.next_run_at = max(now_ts, start_at_ts) if start_at_ts > 0 else now_ts
             await session.commit()
             await event.answer(SUCCESS_TASK_ENABLED if enabled else SUCCESS_TASK_DISABLED)
-            await show_task_settings(event, task_id)
+            await show_task_settings(event, user_id, task_id)
 
 
-async def toggle_delete_previous(event, task_id: str):
+async def toggle_delete_previous(event, user_id: int, task_id: str):
     """切换删除上一条设置"""
     async with get_async_session() as session:
-        from sqlalchemy import select
-        result = await session.execute(
-            select(ScheduledMessageTask).where(ScheduledMessageTask.task_id == task_id)
-        )
-        task = result.scalar_one_or_none()
+        task = await _get_user_task(session, task_id, user_id)
 
         if task:
             task.delete_previous = not task.delete_previous
             await session.commit()
-            await show_task_settings(event, task_id)
+            await show_task_settings(event, user_id, task_id)
 
 
-async def toggle_pin_message(event, task_id: str):
+async def toggle_pin_message(event, user_id: int, task_id: str):
     """切换置顶设置"""
     async with get_async_session() as session:
-        from sqlalchemy import select
-        result = await session.execute(
-            select(ScheduledMessageTask).where(ScheduledMessageTask.task_id == task_id)
-        )
-        task = result.scalar_one_or_none()
+        task = await _get_user_task(session, task_id, user_id)
 
         if task:
             task.pin_message = not task.pin_message
             await session.commit()
-            await show_task_settings(event, task_id)
+            await show_task_settings(event, user_id, task_id)
 
 
 # ============ 编辑功能 ============
@@ -683,11 +785,7 @@ async def toggle_pin_message(event, task_id: str):
 async def start_edit_text(event, user_id: int, task_id: str):
     """开始编辑文本"""
     async with get_async_session() as session:
-        from sqlalchemy import select
-        result = await session.execute(
-            select(ScheduledMessageTask).where(ScheduledMessageTask.task_id == task_id)
-        )
-        task = result.scalar_one_or_none()
+        task = await _get_user_task(session, task_id, user_id)
 
         if not task:
             return
@@ -707,11 +805,7 @@ async def handle_text_input(event, user_id: int, task_id: str, text: str):
         return
 
     async with get_async_session() as session:
-        from sqlalchemy import select
-        result = await session.execute(
-            select(ScheduledMessageTask).where(ScheduledMessageTask.task_id == task_id)
-        )
-        task = result.scalar_one_or_none()
+        task = await _get_user_task(session, task_id, user_id)
 
         if task:
             task.text = text
@@ -719,17 +813,13 @@ async def handle_text_input(event, user_id: int, task_id: str, text: str):
 
     fsm_storage.reset_state(user_id)
     await event.respond(SUCCESS_TEXT_UPDATED)
-    await show_task_settings(event, task_id)
+    await show_task_settings(event, user_id, task_id)
 
 
 async def start_edit_media(event, user_id: int, task_id: str):
     """开始编辑媒体"""
     async with get_async_session() as session:
-        from sqlalchemy import select
-        result = await session.execute(
-            select(ScheduledMessageTask).where(ScheduledMessageTask.task_id == task_id)
-        )
-        task = result.scalar_one_or_none()
+        task = await _get_user_task(session, task_id, user_id)
 
         if not task:
             return
@@ -765,11 +855,7 @@ async def handle_media_input(event, user_id: int, task_id: str, media):
         return
 
     async with get_async_session() as session:
-        from sqlalchemy import select
-        result = await session.execute(
-            select(ScheduledMessageTask).where(ScheduledMessageTask.task_id == task_id)
-        )
-        task = result.scalar_one_or_none()
+        task = await _get_user_task(session, task_id, user_id)
 
         if task:
             task.media_type = media_type
@@ -778,17 +864,13 @@ async def handle_media_input(event, user_id: int, task_id: str, media):
 
     fsm_storage.reset_state(user_id)
     await event.respond(SUCCESS_MEDIA_UPDATED)
-    await show_task_settings(event, task_id)
+    await show_task_settings(event, user_id, task_id)
 
 
 async def start_edit_buttons(event, user_id: int, task_id: str):
     """开始编辑按钮"""
     async with get_async_session() as session:
-        from sqlalchemy import select
-        result = await session.execute(
-            select(ScheduledMessageTask).where(ScheduledMessageTask.task_id == task_id)
-        )
-        task = result.scalar_one_or_none()
+        task = await _get_user_task(session, task_id, user_id)
 
         if not task:
             return
@@ -808,11 +890,7 @@ async def handle_buttons_input(event, user_id: int, task_id: str, text: str):
         buttons = parse_buttons(text)
 
         async with get_async_session() as session:
-            from sqlalchemy import select
-            result = await session.execute(
-                select(ScheduledMessageTask).where(ScheduledMessageTask.task_id == task_id)
-            )
-            task = result.scalar_one_or_none()
+            task = await _get_user_task(session, task_id, user_id)
 
             if task:
                 task.buttons = buttons
@@ -820,33 +898,33 @@ async def handle_buttons_input(event, user_id: int, task_id: str, text: str):
 
         fsm_storage.reset_state(user_id)
         await event.respond(SUCCESS_BUTTONS_UPDATED)
-        await show_task_settings(event, task_id)
+        await show_task_settings(event, user_id, task_id)
 
     except Exception as e:
         await event.respond(f"{ERROR_INVALID_BUTTON_FORMAT}\n错误: {str(e)}")
 
 
-async def show_interval_selection(event, task_id: str):
+async def show_interval_selection(event, user_id: int, task_id: str):
     """显示间隔时间选择"""
     keyboard = get_interval_keyboard(task_id)
     text = SELECT_INTERVAL
     await event.edit(text, buttons=keyboard, parse_mode='markdown')
 
 
-async def set_interval(event, task_id: str, interval: int):
+async def set_interval(event, user_id: int, task_id: str, interval: int):
     """设置重复间隔"""
     async with get_async_session() as session:
-        from sqlalchemy import select
-        result = await session.execute(
-            select(ScheduledMessageTask).where(ScheduledMessageTask.task_id == task_id)
-        )
-        task = result.scalar_one_or_none()
+        task = await _get_user_task(session, task_id, user_id)
 
         if task:
             task.repeat_interval_min = interval
+            if task.enabled:
+                now_ts = int(datetime.now().timestamp())
+                start_at_ts = int(task.start_at or 0)
+                task.next_run_at = max(now_ts + interval * 60, start_at_ts) if start_at_ts > 0 else now_ts + interval * 60
             await session.commit()
             await event.answer(SUCCESS_INTERVAL_UPDATED.format(interval=interval))
-            await show_task_settings(event, task_id)
+            await show_task_settings(event, user_id, task_id)
 
 
 async def start_edit_hours(event, user_id: int, task_id: str):
@@ -878,11 +956,7 @@ async def set_hour(event, user_id: int, task_id: str, is_start: bool, hour: int)
         day_end_hour = hour
 
         async with get_async_session() as session:
-            from sqlalchemy import select
-            result = await session.execute(
-                select(ScheduledMessageTask).where(ScheduledMessageTask.task_id == task_id)
-            )
-            task = result.scalar_one_or_none()
+            task = await _get_user_task(session, task_id, user_id)
 
             if task:
                 task.day_start_hour = day_start_hour
@@ -893,7 +967,7 @@ async def set_hour(event, user_id: int, task_id: str, is_start: bool, hour: int)
         await event.answer(
             SUCCESS_TIME_RANGE_UPDATED.format(start=day_start_hour, end=day_end_hour)
         )
-        await show_task_settings(event, task_id)
+        await show_task_settings(event, user_id, task_id)
 
 
 async def start_edit_start_at(event, user_id: int, task_id: str):
@@ -913,11 +987,7 @@ async def handle_start_at_input(event, user_id: int, task_id: str, text: str):
         timestamp = int(dt.timestamp())
 
         async with get_async_session() as session:
-            from sqlalchemy import select
-            result = await session.execute(
-                select(ScheduledMessageTask).where(ScheduledMessageTask.task_id == task_id)
-            )
-            task = result.scalar_one_or_none()
+            task = await _get_user_task(session, task_id, user_id)
 
             if task:
                 # 检查是否早于结束时间
@@ -930,7 +1000,7 @@ async def handle_start_at_input(event, user_id: int, task_id: str, text: str):
 
         fsm_storage.reset_state(user_id)
         await event.respond(SUCCESS_START_AT_UPDATED)
-        await show_task_settings(event, task_id)
+        await show_task_settings(event, user_id, task_id)
 
     except ValueError:
         await event.respond(ERROR_INVALID_TIME_FORMAT)
@@ -953,11 +1023,7 @@ async def handle_end_at_input(event, user_id: int, task_id: str, text: str):
         timestamp = int(dt.timestamp())
 
         async with get_async_session() as session:
-            from sqlalchemy import select
-            result = await session.execute(
-                select(ScheduledMessageTask).where(ScheduledMessageTask.task_id == task_id)
-            )
-            task = result.scalar_one_or_none()
+            task = await _get_user_task(session, task_id, user_id)
 
             if task:
                 # 检查是否早于开始时间
@@ -970,7 +1036,7 @@ async def handle_end_at_input(event, user_id: int, task_id: str, text: str):
 
         fsm_storage.reset_state(user_id)
         await event.respond(SUCCESS_END_AT_UPDATED)
-        await show_task_settings(event, task_id)
+        await show_task_settings(event, user_id, task_id)
 
     except ValueError:
         await event.respond(ERROR_INVALID_TIME_FORMAT)
@@ -978,8 +1044,14 @@ async def handle_end_at_input(event, user_id: int, task_id: str, text: str):
 
 async def open_h5_webapp(event, user_id: int, task_id: str):
     """打开 H5 控制台"""
-    # 生成带签名的 URL
-    url = generate_h5_url(user_id, task_id)
+    async with get_async_session() as session:
+        task = await _get_user_task(session, task_id, user_id)
+        if not task:
+            await event.answer("任务不存在或无权限", alert=True)
+            return
+
+    # 统一前端入口，使用 SPA 路由并携带 task_id 供前端定位
+    url = generate_h5_url(task_id)
 
     # 使用 WebApp 或直接发送链接
     await event.answer(f"🌐 请点击下方链接进入 H5 控制台:\n{url}", alert=True)
@@ -1043,20 +1115,9 @@ def parse_buttons(text: str) -> list:
     return buttons
 
 
-def generate_h5_url(user_id: int, task_id: str) -> str:
-    """生成 H5 访问 URL（带签名）"""
-    timestamp = int(datetime.now().timestamp())
-    params = f"user_id={user_id}&task_id={task_id}&timestamp={timestamp}"
-
-    # 生成签名（使用 HMAC-SHA256）
-    secret = "your-secret-key"  # 应从配置中读取
-    sign = hmac.new(
-        secret.encode(),
-        params.encode(),
-        hashlib.sha256
-    ).hexdigest()
-
-    return f"{H5_BASE_URL}/task/{task_id}?{params}&sign={sign}"
+def generate_h5_url(task_id: str) -> str:
+    """生成 H5 访问 URL（统一跳转到 SPA 任务页）"""
+    return f"{H5_BASE_URL}/tasks?task_id={task_id}"
 
 
 # 需要导入 Button

@@ -118,7 +118,7 @@
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" width="100" fixed="right">
+          <el-table-column label="操作" width="140" fixed="right">
             <template #default="{ row }">
               <el-button
                 size="small"
@@ -127,6 +127,14 @@
                 @click="viewResource(row)"
               >
                 查看
+              </el-button>
+              <el-button
+                size="small"
+                type="success"
+                link
+                @click="goCreateTask(row)"
+              >
+                建任务
               </el-button>
             </template>
           </el-table-column>
@@ -149,15 +157,17 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Search, Refresh } from '@element-plus/icons-vue'
 import { useAccountStore } from '@/stores/account'
 import { useUserStore } from '@/stores/user'
 import type { Resource } from '@/api/resource'
-import { PeerType } from '@/api/resource'
 
 const accountStore = useAccountStore()
 const userStore = useUserStore()
+const route = useRoute()
+const router = useRouter()
 
 // 状态
 const accounts = computed(() => accountStore.activeAccounts)
@@ -221,6 +231,17 @@ const viewResource = (resource: Resource) => {
   ElMessage.info(`资源 ID: ${resource.resource_id}, Peer ID: ${resource.peer_id}`)
 }
 
+const goCreateTask = (resource: Resource) => {
+  router.push({
+    path: '/tasks',
+    query: {
+      account_id: selectedAccountId.value,
+      peer_id: String(resource.peer_id),
+      peer_type: resource.peer_type
+    }
+  })
+}
+
 // 获取 Peer 类型颜色（返回 Element Plus Tag 类型）
 const getPeerTypeColor = (type: string): 'primary' | 'success' | 'warning' | 'info' | 'danger' | undefined => {
   const colors: Record<string, 'primary' | 'success' | 'warning' | 'info' | 'danger'> = {
@@ -261,10 +282,26 @@ const formatDateTime = (dateStr: string) => {
 }
 
 // 组件挂载
-onMounted(() => {
+onMounted(async () => {
   userStore.restoreUser()
   if (userStore.userId) {
-    accountStore.fetchAccounts(userStore.userId)
+    await accountStore.fetchAccounts(userStore.userId)
+    const accountIdFromQuery = typeof route.query.account_id === 'string' ? route.query.account_id : ''
+    const peerTypeFromQuery = typeof route.query.peer_type === 'string' ? route.query.peer_type : ''
+
+    if (accountIdFromQuery && accounts.value.some(a => a.account_id === accountIdFromQuery)) {
+      selectedAccountId.value = accountIdFromQuery
+    } else if (accounts.value.length > 0) {
+      selectedAccountId.value = accounts.value[0]!.account_id
+    }
+
+    if (peerTypeFromQuery) {
+      selectedPeerType.value = peerTypeFromQuery
+    }
+
+    if (selectedAccountId.value) {
+      await loadResources()
+    }
   } else {
     ElMessage.warning('请先登录')
   }

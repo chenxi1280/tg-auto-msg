@@ -46,6 +46,7 @@ class CircuitBreaker:
 
     # FloodWait 阈值（秒）
     FLOOD_WAIT_BAN_THRESHOLD = 24 * 3600  # 24 小时以上标记为封禁
+    PEER_FLOOD_BAN_SECONDS = 24 * 3600     # PeerFlood 固定熔断 24 小时
 
     # 健康检查间隔
     HEALTH_CHECK_INTERVAL = 3600  # 1 小时
@@ -125,6 +126,21 @@ class CircuitBreaker:
             await self._notify_flood_wait(account_id, seconds, is_banned=False)
 
             return FloodWaitAction.SKIP
+
+    async def handle_peer_flood(self, account_id: str) -> datetime:
+        """
+        处理 PeerFloodError：
+        按账号级别熔断 24 小时，避免账号进一步受限。
+        """
+        flood_until = datetime.now() + timedelta(seconds=self.PEER_FLOOD_BAN_SECONDS)
+        await self._account_manager.update_account(
+            account_id,
+            is_flooding=True,
+            flood_until=flood_until
+        )
+        logger.error(f"账号 {account_id} 触发 PeerFlood，已熔断至 {flood_until}")
+        await self._notify_flood_wait(account_id, self.PEER_FLOOD_BAN_SECONDS, is_banned=False)
+        return flood_until
 
     def _start_recovery_task(self, account_id: str, delay_seconds: int):
         """启动恢复任务"""
@@ -409,7 +425,9 @@ class CircuitBreaker:
                 # 还在等待期
                 remaining = (account.flood_until - now).total_seconds()
                 logger.warning(f"账号 {account_id} 还在 FloodWait 中，剩余 {remaining:.0f} 秒")
-                raise FloodWaitError(request=None, seconds=int(remaining))
+                # Telethon FloodWaitError 构造参数为 (request, capture)，
+                # capture 会被解析为 seconds
+                raise FloodWaitError(request=None, capture=int(remaining))
             else:
                 # FloodWait 已过，尝试恢复
                 await self.recover_account(account_id)

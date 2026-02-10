@@ -10,6 +10,7 @@ export interface ApiResponse<T = any> {
   data: T
   message?: string
   error?: string
+  detail?: string
 }
 
 // 创建 axios 实例
@@ -20,6 +21,12 @@ const api: AxiosInstance = axios.create({
     'Content-Type': 'application/json'
   }
 })
+
+const clearAuthStorage = () => {
+  localStorage.removeItem('token')
+  localStorage.removeItem('user_id')
+  localStorage.removeItem('username')
+}
 
 // 请求拦截器
 api.interceptors.request.use(
@@ -58,24 +65,28 @@ api.interceptors.response.use(
 
       switch (status) {
         case 400:
-          ElMessage.error(data?.message || '请求参数错误')
+          ElMessage.error(data?.detail || data?.message || data?.error || '请求参数错误')
           break
         case 401:
           ElMessage.error('未授权，请重新登录')
-          localStorage.removeItem('token')
-          window.location.href = '/login'
+          clearAuthStorage()
+
+          if (!window.location.pathname.startsWith('/login')) {
+            const redirect = encodeURIComponent(window.location.pathname + window.location.search)
+            window.location.href = `/login?redirect=${redirect}`
+          }
           break
         case 403:
-          ElMessage.error(data?.message || '无权访问')
+          ElMessage.error(data?.detail || data?.message || data?.error || '无权访问')
           break
         case 404:
-          ElMessage.error(data?.message || '请求的资源不存在')
+          ElMessage.error(data?.detail || data?.message || data?.error || '请求的资源不存在')
           break
         case 500:
-          ElMessage.error(data?.message || '服务器错误')
+          ElMessage.error(data?.detail || data?.message || data?.error || '服务器错误')
           break
         default:
-          ElMessage.error(data?.message || `请求失败 (${status})`)
+          ElMessage.error(data?.detail || data?.message || data?.error || `请求失败 (${status})`)
       }
     } else if (error.code === 'ECONNABORTED') {
       ElMessage.error('请求超时，请稍后重试')

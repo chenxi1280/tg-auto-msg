@@ -56,3 +56,26 @@ export const getLoginStatus = (loginId: string): Promise<ApiResponse<LoginStatus
 export const checkLoginStatus = (): Promise<ApiResponse<{ is_logged_in: boolean }>> => {
   return request.get('/login/check')
 }
+
+/**
+ * 绑定账号响应接口
+ */
+export interface BindAccountResponse {
+  token: string
+  user_id: number
+  username: string
+}
+
+/**
+ * 验证绑定码并获取 token
+ */
+export const bindAccount = (bindCode: string): Promise<ApiResponse<BindAccountResponse>> => {
+  return request.post('/login/bind', { bind_code: bindCode })
+}
+
+/**
+ * 获取已登录 userbot 的 token
+ */
+export const getExistingToken = (): Promise<ApiResponse<BindAccountResponse>> => {
+  return request.get('/login/get-token')
+}

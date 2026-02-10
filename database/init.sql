@@ -17,6 +17,39 @@ CREATE DATABASE tg_auto_msg
 \c tg_auto_msg
 
 -- ============================================
+-- 表: 系统用户表 (users)
+-- ============================================
+CREATE TABLE IF NOT EXISTS users (
+    -- 主键
+    id SERIAL PRIMARY KEY,
+
+    -- 用户凭证
+    username VARCHAR(50) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+
+    -- 用户信息
+    email VARCHAR(100),
+
+    -- 状态
+    is_active BOOLEAN DEFAULT TRUE,
+
+    -- 时间戳
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 索引
+CREATE INDEX idx_users_username ON users(username);
+CREATE INDEX idx_users_is_active ON users(is_active);
+
+-- 注释
+COMMENT ON TABLE users IS '系统用户表';
+COMMENT ON COLUMN users.username IS '用户名（唯一）';
+COMMENT ON COLUMN users.password_hash IS '密码哈希（bcrypt）';
+COMMENT ON COLUMN users.email IS '电子邮箱';
+COMMENT ON COLUMN users.is_active IS '是否激活';
+
+-- ============================================
 -- 表: 代理池表 (proxies)
 -- ============================================
 CREATE TABLE IF NOT EXISTS proxies (
@@ -70,7 +103,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     account_id VARCHAR(36) PRIMARY KEY,
 
     -- 用户信息
-    user_id BIGINT NOT NULL,                            -- 归属用户 UID（Telegram）
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,  -- 关联到系统用户
     tg_user_id BIGINT,                                  -- 登录后的 Telegram UID
     username VARCHAR(50),                               -- Telegram 用户名
     first_name VARCHAR(100),                            -- 名字
@@ -107,6 +140,12 @@ CREATE TABLE IF NOT EXISTS accounts (
     -- 约束
     CONSTRAINT unique_bind_code UNIQUE (bind_code)
 );
+
+-- 兼容旧库：为已存在的 accounts 补齐绑定码字段
+ALTER TABLE IF EXISTS accounts
+    ADD COLUMN IF NOT EXISTS bind_code VARCHAR(6);
+ALTER TABLE IF EXISTS accounts
+    ADD COLUMN IF NOT EXISTS bind_code_expires_at TIMESTAMP;
 
 -- 索引
 CREATE INDEX idx_accounts_user_id ON accounts(user_id);
@@ -187,7 +226,7 @@ COMMENT ON COLUMN resources.is_scam IS '是否诈骗';
 CREATE TABLE IF NOT EXISTS account_bind_logs (
     id SERIAL PRIMARY KEY,
     account_id VARCHAR(36) REFERENCES accounts(account_id),
-    user_id BIGINT NOT NULL,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     bind_code VARCHAR(6),
     bound_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     ip_address INET
@@ -209,7 +248,7 @@ CREATE TABLE IF NOT EXISTS scheduled_message_tasks (
     task_id VARCHAR(36) PRIMARY KEY,
 
     -- 基础信息
-    user_id BIGINT NOT NULL,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     account_id VARCHAR(36) REFERENCES accounts(account_id),  -- 执行账号 ID
     chat_id BIGINT,                                        -- 兼容旧数据
     title VARCHAR(100) NOT NULL,
@@ -221,10 +260,13 @@ CREATE TABLE IF NOT EXISTS scheduled_message_tasks (
 
     -- 启用状态
     enabled BOOLEAN DEFAULT FALSE,
+    priority INTEGER DEFAULT 0,                          -- 任务优先级（越大越优先）
 
     -- 重复设置
     repeat_interval_min INTEGER NOT NULL,
     jitter_seconds INTEGER DEFAULT 0,                      -- 随机抖动秒数（0-300）
+    delay_min_seconds INTEGER DEFAULT 0,                   -- 随机延迟下限（秒）
+    delay_max_seconds INTEGER DEFAULT 0,                   -- 随机延迟上限（秒）
 
     -- 每日时段限制
     day_start_hour INTEGER,
@@ -257,6 +299,26 @@ CREATE TABLE IF NOT EXISTS scheduled_message_tasks (
     CONSTRAINT text_length_check CHECK (LENGTH(text) <= 4096)
 );
 
+-- 兼容旧库：为已存在的 scheduled_message_tasks 补齐新字段
+ALTER TABLE IF EXISTS scheduled_message_tasks
+    ADD COLUMN IF NOT EXISTS account_id VARCHAR(36) REFERENCES accounts(account_id);
+ALTER TABLE IF EXISTS scheduled_message_tasks
+    ADD COLUMN IF NOT EXISTS target_peer_id BIGINT;
+ALTER TABLE IF EXISTS scheduled_message_tasks
+    ADD COLUMN IF NOT EXISTS target_peer_type VARCHAR(20);
+ALTER TABLE IF EXISTS scheduled_message_tasks
+    ADD COLUMN IF NOT EXISTS target_access_hash BIGINT;
+ALTER TABLE IF EXISTS scheduled_message_tasks
+    ADD COLUMN IF NOT EXISTS priority INTEGER DEFAULT 0;
+ALTER TABLE IF EXISTS scheduled_message_tasks
+    ADD COLUMN IF NOT EXISTS jitter_seconds INTEGER DEFAULT 0;
+ALTER TABLE IF EXISTS scheduled_message_tasks
+    ADD COLUMN IF NOT EXISTS delay_min_seconds INTEGER DEFAULT 0;
+ALTER TABLE IF EXISTS scheduled_message_tasks
+    ADD COLUMN IF NOT EXISTS delay_max_seconds INTEGER DEFAULT 0;
+ALTER TABLE IF EXISTS scheduled_message_tasks
+    ADD COLUMN IF NOT EXISTS next_run_at BIGINT;
+
 -- 索引
 CREATE INDEX idx_scheduled_user_chat ON scheduled_message_tasks(user_id, chat_id);
 CREATE INDEX idx_scheduled_account_id ON scheduled_message_tasks(account_id);
@@ -269,7 +331,10 @@ COMMENT ON COLUMN scheduled_message_tasks.chat_id IS '群组/频道 ID（兼容�
 COMMENT ON COLUMN scheduled_message_tasks.target_peer_id IS '目标 Peer ID（新架构）';
 COMMENT ON COLUMN scheduled_message_tasks.target_peer_type IS '目标 Peer 类型';
 COMMENT ON COLUMN scheduled_message_tasks.target_access_hash IS '目标 Access Hash';
+COMMENT ON COLUMN scheduled_message_tasks.priority IS '任务优先级（越大越优先）';
 COMMENT ON COLUMN scheduled_message_tasks.jitter_seconds IS '随机抖动秒数（0-300）';
+COMMENT ON COLUMN scheduled_message_tasks.delay_min_seconds IS '随机延迟下限（秒）';
+COMMENT ON COLUMN scheduled_message_tasks.delay_max_seconds IS '随机延迟上限（秒）';
 
 -- ============================================
 -- 表: 任务执行日志表 (task_logs)
@@ -304,6 +369,11 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- 为所有需要的表创建触发器
+CREATE TRIGGER update_users_updated_at
+    BEFORE UPDATE ON users
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
 CREATE TRIGGER update_proxies_updated_at
     BEFORE UPDATE ON proxies
     FOR EACH ROW
@@ -333,6 +403,7 @@ SELECT COUNT(*) AS tables_created
 FROM information_schema.tables
 WHERE table_schema = 'public'
   AND table_name IN (
+    'users',
     'proxies',
     'accounts',
     'resources',

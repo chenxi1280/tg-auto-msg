@@ -121,7 +121,7 @@ class ProxyPool:
     async def get_proxies(
         self,
         is_active: bool = True,
-        is_healthy: bool = True
+        is_healthy: Optional[bool] = True
     ) -> List[Proxy]:
         """
         获取代理列表
@@ -138,8 +138,8 @@ class ProxyPool:
 
             if is_active:
                 query = query.where(Proxy.is_active == True)
-            if is_healthy:
-                query = query.where(Proxy.is_healthy == True)
+            if is_healthy is not None:
+                query = query.where(Proxy.is_healthy == is_healthy)
 
             query = query.order_by(Proxy.created_at.desc())
 
@@ -262,6 +262,8 @@ class ProxyPool:
             是否分配成功
         """
         async with get_async_session() as session:
+            from database.models import Account
+
             # 检查代理是否存在
             result = await session.execute(
                 select(Proxy).where(Proxy.proxy_id == proxy_id)
@@ -277,9 +279,28 @@ class ProxyPool:
                 logger.warning(f"代理 {proxy_id} 已被分配给其他账号")
                 return False
 
+            # 检查账号是否存在
+            account_result = await session.execute(
+                select(Account).where(Account.account_id == account_id)
+            )
+            account = account_result.scalar_one_or_none()
+            if not account:
+                logger.error(f"账号不存在: {account_id}")
+                return False
+
+            # 如账号已有其他代理，先解绑旧代理占用关系
+            if account.proxy_id and account.proxy_id != proxy_id:
+                old_proxy_result = await session.execute(
+                    select(Proxy).where(Proxy.proxy_id == account.proxy_id)
+                )
+                old_proxy = old_proxy_result.scalar_one_or_none()
+                if old_proxy and old_proxy.assigned_account_id == account_id:
+                    old_proxy.assigned_account_id = None
+
             # 分配代理
             proxy.assigned_account_id = account_id
             proxy.usage_count += 1
+            account.proxy_id = proxy_id
 
             await session.commit()
 
@@ -313,10 +334,12 @@ class ProxyPool:
             proxy = result.scalar_one_or_none()
 
             if proxy:
+                old_proxy_id = proxy.proxy_id
                 proxy.assigned_account_id = None
+                account.proxy_id = None
                 await session.commit()
 
-                logger.info(f"解除代理分配: {account.proxy_id} <- {account_id}")
+                logger.info(f"解除代理分配: {old_proxy_id} <- {account_id}")
                 return True
 
             return False

@@ -15,8 +15,10 @@ from enum import Enum
 from loguru import logger
 
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 from telethon.errors import SessionPasswordNeededError, RPCError
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.session import get_async_session
@@ -139,22 +141,75 @@ class AccountManager:
             logger.warning(f"无效的绑定码: {bind_code}")
             return None
 
+        # 绑定码中若包含 system_user_id，则以其为准；用于统一 H5 与 Bot 操作身份
+        owner_user_id = int(bind_data.get("system_user_id") or user_id)
+        tg_user_id = int(bind_data["tg_user_id"])
+
+        # 安全限制：
+        # - H5 绑定：user_id 应等于 owner_user_id（系统用户）
+        # - Bot 绑定：user_id 应等于 tg_user_id（Telegram 发送者）
+        if user_id != owner_user_id and user_id != tg_user_id:
+            logger.warning(
+                f"绑定请求来源非法: user_id={user_id}, owner_user_id={owner_user_id}, tg_user_id={tg_user_id}"
+            )
+            return None
+
+        if owner_user_id != user_id:
+            logger.info(
+                f"绑定请求 user_id={user_id} 与绑定码归属 owner_user_id={owner_user_id} 不一致，"
+                "将按绑定码归属入库"
+            )
+
         async with get_async_session() as session:
-            # 检查是否已有账号（避免重复绑定）
+            # 检查同一系统用户是否已绑定该 TG 账号
             existing = await session.execute(
                 select(Account).where(
-                    Account.user_id == user_id,
-                    Account.tg_user_id == int(bind_data["tg_user_id"])
+                    Account.user_id == owner_user_id,
+                    Account.tg_user_id == tg_user_id
                 )
             )
-            if existing.scalar_one_or_none():
-                logger.warning(f"用户 {user_id} 已绑定该账号")
+            existing_account = existing.scalar_one_or_none()
+            if existing_account:
+                # 幂等绑定：同一用户重复 /bind 不应失败，更新关键信息后直接返回。
+                existing_account.username = bind_data.get("username") or existing_account.username
+                existing_account.phone = bind_data.get("phone") or existing_account.phone
+                existing_account.string_session_encrypted = bind_data["string_session_encrypted"]
+                existing_account.health_status = HealthStatus.ONLINE
+
+                # 记录绑定日志
+                from database.models import AccountBindLog
+                log = AccountBindLog(
+                    account_id=existing_account.account_id,
+                    user_id=owner_user_id,
+                    bind_code=bind_code,
+                    ip_address=ip_address
+                )
+                session.add(log)
+                await session.commit()
+                await session.refresh(existing_account)
+
+                # 消费绑定码并刷新登录态
+                await login_manager.consume_bind_code(bind_code)
+                await login_manager.set_user_logged_in(owner_user_id)
+
+                logger.info(f"重复绑定已更新账号信息: {existing_account.account_id} -> user {owner_user_id}")
+                return existing_account
+
+            # 防止同一 TG 账号被绑定到多个系统用户
+            existing_any = await session.execute(
+                select(Account).where(Account.tg_user_id == tg_user_id)
+            )
+            existing_account = existing_any.scalar_one_or_none()
+            if existing_account and existing_account.user_id != owner_user_id:
+                logger.warning(
+                    f"TG 账号 {tg_user_id} 已绑定到其他用户: {existing_account.user_id}"
+                )
                 return None
 
             # 创建账号
             account = Account(
-                user_id=user_id,
-                tg_user_id=int(bind_data["tg_user_id"]),
+                user_id=owner_user_id,
+                tg_user_id=tg_user_id,
                 username=bind_data.get("username", ""),
                 phone=bind_data.get("phone", ""),
                 string_session_encrypted=bind_data["string_session_encrypted"],
@@ -169,7 +224,7 @@ class AccountManager:
             from database.models import AccountBindLog
             log = AccountBindLog(
                 account_id=account.account_id,
-                user_id=user_id,
+                user_id=owner_user_id,
                 bind_code=bind_code,
                 ip_address=ip_address
             )
@@ -180,14 +235,126 @@ class AccountManager:
             await login_manager.consume_bind_code(bind_code)
 
             # 设置用户登录状态
-            await login_manager.set_user_logged_in(user_id)
+            await login_manager.set_user_logged_in(owner_user_id)
 
-            logger.info(f"绑定账号成功: {account.account_id} -> user {user_id}")
+            logger.info(f"绑定账号成功: {account.account_id} -> user {owner_user_id}")
 
             # 触发资源同步（后台任务）
             asyncio.create_task(self._sync_resources_after_bind(account.account_id))
 
             return account
+
+    async def issue_bind_code(
+        self,
+        account_id: str,
+        refresh: bool = True,
+        ttl_seconds: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        为已绑定账号签发可用于 /bind 的短期绑定码。
+
+        绑定码写入 Redis login:bind:*，以兼容现有 bind_account 流程。
+        """
+        account = await self.get_account(account_id)
+        if not account:
+            return None
+        if not account.tg_user_id:
+            raise RuntimeError("账号缺少 Telegram 用户 ID，无法生成绑定码")
+
+        login_manager = get_redis_login_manager()
+        redis_client = await login_manager._get_redis()
+        now = datetime.now()
+        effective_ttl = int(ttl_seconds or login_manager.BIND_CODE_TTL)
+        old_bind_code = account.bind_code
+
+        def _build_bind_data() -> Dict[str, str]:
+            return {
+                "login_id": f"account_{account.account_id}",
+                "string_session_encrypted": account.string_session_encrypted,
+                "tg_user_id": str(account.tg_user_id),
+                "username": account.username or "",
+                "phone": account.phone or "",
+                "system_user_id": str(account.user_id),
+            }
+
+        # 若已有未过期绑定码且未强制刷新，则直接返回；若 Redis 映射缺失则补回
+        if (
+            not refresh
+            and old_bind_code
+            and account.bind_code_expires_at
+            and account.bind_code_expires_at > now
+        ):
+            remaining_ttl = max(0, int((account.bind_code_expires_at - now).total_seconds()))
+            bind_key = login_manager.BIND_KEY_PREFIX + old_bind_code
+            if remaining_ttl > 0 and not await redis_client.exists(bind_key):
+                await redis_client.hset(bind_key, mapping=_build_bind_data())
+                await redis_client.expire(bind_key, remaining_ttl)
+            return {
+                "bind_code": old_bind_code,
+                "expires_at": account.bind_code_expires_at,
+                "ttl_seconds": remaining_ttl,
+            }
+
+        for _attempt in range(5):
+            bind_code: Optional[str] = None
+            for _ in range(60):
+                candidate = generate_bind_code()
+                if old_bind_code and candidate == old_bind_code:
+                    continue
+
+                bind_key = login_manager.BIND_KEY_PREFIX + candidate
+                if await redis_client.exists(bind_key):
+                    continue
+
+                # DB 侧唯一性兜底，避免触发 accounts.bind_code unique 冲突
+                async with get_async_session() as session:
+                    code_owner = await session.execute(
+                        select(Account.account_id).where(
+                            Account.bind_code == candidate,
+                            Account.account_id != account_id
+                        )
+                    )
+                    if code_owner.scalar_one_or_none():
+                        continue
+
+                bind_code = candidate
+                break
+
+            if not bind_code:
+                break
+
+            bind_key = login_manager.BIND_KEY_PREFIX + bind_code
+            await redis_client.hset(bind_key, mapping=_build_bind_data())
+            await redis_client.expire(bind_key, effective_ttl)
+
+            expires_at = datetime.now() + timedelta(seconds=effective_ttl)
+            try:
+                await self.update_account(
+                    account_id,
+                    bind_code=bind_code,
+                    bind_code_expires_at=expires_at
+                )
+            except IntegrityError:
+                # 并发碰撞：清理本次临时映射并重试生成
+                await redis_client.delete(bind_key)
+                logger.warning(f"签发绑定码冲突，重试中: account_id={account_id}")
+                continue
+            except Exception:
+                await redis_client.delete(bind_key)
+                raise
+
+            # 刷新绑定码时使旧码立即失效，避免同一账号存在多个有效码
+            if old_bind_code and old_bind_code != bind_code:
+                await redis_client.delete(login_manager.BIND_KEY_PREFIX + old_bind_code)
+
+            logger.info(f"签发账号绑定码: account_id={account_id}, code={bind_code}, ttl={effective_ttl}s")
+            return {
+                "bind_code": bind_code,
+                "expires_at": expires_at,
+                "ttl_seconds": effective_ttl,
+            }
+
+        raise RuntimeError("无法生成可用绑定码，请稍后重试")
 
     async def _sync_resources_after_bind(self, account_id: str):
         """绑定后自动同步资源"""
@@ -346,9 +513,8 @@ class AccountManager:
             if account_id in self._clients:
                 return self._clients[account_id]
 
-            session_path = f"sessions/account_{account_id}"
             client = TelegramClient(
-                session_path,
+                StringSession(string_session),
                 api_id=settings.api_id,
                 api_hash=settings.api_hash,
                 proxy=proxy,
@@ -418,6 +584,59 @@ class AccountManager:
                 "password": password,
             }
 
+        return None
+
+    async def ensure_account_proxy(self, account_id: str) -> Optional[int]:
+        """
+        确保账号绑定健康代理：
+        - 若当前代理失效，自动从池中替换并更新账号
+        - 若当前无代理，尝试自动分配一个健康代理
+        """
+        from bot.proxy_pool import get_proxy_pool
+
+        account = await self.get_account(account_id)
+        if not account:
+            return None
+
+        proxy_pool = get_proxy_pool()
+
+        async def _assign_replacement() -> Optional[int]:
+            replacement = await proxy_pool.get_available_proxy()
+            if not replacement:
+                return None
+            assigned = await proxy_pool.assign_proxy(account_id, replacement.proxy_id)
+            if not assigned:
+                return None
+            await self.update_account(account_id, proxy_id=replacement.proxy_id)
+            await self._close_client(account_id)
+            logger.info(f"账号 {account_id} 已切换代理 -> {replacement.proxy_id}")
+            return replacement.proxy_id
+
+        # 无代理时，尝试自动分配
+        if not account.proxy_id:
+            return await _assign_replacement()
+
+        # 已有代理，先做健康检查
+        status = await proxy_pool.check_health(account.proxy_id)
+        if status.is_healthy:
+            return account.proxy_id
+
+        logger.warning(
+            f"账号 {account_id} 的代理 {account.proxy_id} 不健康({status.error or 'unknown'})，尝试替换"
+        )
+
+        # 解绑旧代理
+        await proxy_pool.unassign_proxy(account_id)
+        await self.update_account(account_id, proxy_id=None)
+
+        # 自动替换
+        replacement_id = await _assign_replacement()
+        if replacement_id is not None:
+            return replacement_id
+
+        # 没有可替换代理，回退为直连
+        await self._close_client(account_id)
+        logger.warning(f"账号 {account_id} 未找到可用代理，将使用直连")
         return None
 
     # ==================== 账号选择 ====================

@@ -15,9 +15,9 @@
 - ✅ 所有操作使用 editMessage（不刷屏）
 
 ### 🌐 H5 控制台
-- ✅ 首页展示
-- ✅ 任务详情页
-- ✅ 任务列表页（带签名验证）
+- ✅ 统一 H5 前端（Vue3 + TypeScript + Vite）
+- ✅ 系统登录/注册
+- ✅ Telegram 扫码绑定
 - ✅ 富文本编辑器
 - ✅ 媒体上传（UI 框架）
 - ✅ 可视化按钮编辑器
@@ -25,7 +25,7 @@
 - ✅ 执行选项（删除上一条、置顶）
 - ✅ 发送日志查看
 - ✅ RESTful API 接口
-- ✅ 签名验证（HMAC-SHA256）
+- ✅ JWT 认证与权限隔离
 
 ### ⏰ 调度器
 - ✅ 定时扫描任务
@@ -116,12 +116,10 @@
 
 ### H5 控制台
 ```
-✅ h5/__init__.py
-✅ h5/api.py                     # FastAPI 服务
-✅ h5/templates/index.html       # 首页
-✅ h5/templates/task_detail.html # 任务详情页
-✅ h5/static/css/style.css        # 样式文件
-✅ h5/static/js/app.js            # JavaScript
+✅ h5_backend/__init__.py
+✅ h5_backend/api.py             # FastAPI 服务（H5 后端 API）
+✅ h5_backend/routers/auth.py    # 认证路由
+✅ h5-frontend/                  # 统一前端（Vue3 + TS + Vite）
 ```
 
 ### 文档
@@ -147,10 +145,10 @@
 - Loguru
 
 ### 前端
-- HTML5
-- CSS3
-- JavaScript (ES6+)
-- Jinja2 Templates
+- Vue 3
+- TypeScript
+- Vite
+- Element Plus
 
 ### 部署
 - Docker
@@ -172,8 +170,8 @@
 
 ## 🔐 安全特性
 
-- ✅ HMAC-SHA256 签名验证
-- ✅ 时间戳验证（5分钟有效期）
+- ✅ JWT 认证
+- ✅ 用户权限隔离（任务/账号/代理）
 - ✅ Redis 分布式锁
 - ✅ SQL 参数化查询（防注入）
 - ✅ 环境变量隔离

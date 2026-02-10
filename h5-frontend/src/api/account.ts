@@ -20,20 +20,27 @@ export interface Account {
   messages_sent: number
   last_used_at: string | null
   created_at: string | null
+  bind_code: string | null
+  bind_code_expires_at: string | null
 }
 
 /**
  * 获取账号列表
  */
-export const getAccounts = (userId: number): Promise<ApiResponse<Account[]>> => {
-  return request.get('/accounts/', { params: { user_id: userId } })
+export const getAccounts = (userId?: number): Promise<ApiResponse<Account[]>> => {
+  return request.get('/accounts/')
 }
 
 /**
  * 同步账号资源
  */
-export const syncAccountResources = (accountId: string): Promise<ApiResponse<{ message: string }>> => {
-  return request.post(`/accounts/${accountId}/sync`)
+export const syncAccountResources = (
+  accountId: string,
+  wait = false
+): Promise<ApiResponse<{ message: string; data?: Record<string, any> }>> => {
+  return request.post(`/accounts/${accountId}/sync`, null, {
+    params: { wait }
+  })
 }
 
 /**
@@ -69,4 +76,19 @@ export const enableAccount = (accountId: string): Promise<ApiResponse<{ message:
  */
 export const deleteAccount = (accountId: string): Promise<ApiResponse<{ message: string }>> => {
   return request.delete(`/accounts/${accountId}`)
+}
+
+export interface AccountBindCode {
+  bind_code: string
+  expires_at: string | null
+  ttl_seconds: number
+}
+
+export const refreshAccountBindCode = (
+  accountId: string,
+  refresh = true
+): Promise<ApiResponse<AccountBindCode>> => {
+  return request.post(`/accounts/${accountId}/bind-code`, null, {
+    params: { refresh }
+  })
 }

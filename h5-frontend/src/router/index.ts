@@ -9,15 +9,25 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 const routes: RouteRecordRaw[] = [
   {
     path: '/',
-    name: 'Home',
-    component: () => import('@/views/Home.vue'),
-    meta: { title: '首页' }
+    redirect: () => (isAuthenticated() ? '/accounts' : '/login')
   },
   {
     path: '/login',
     name: 'Login',
-    component: () => import('@/views/Login.vue'),
-    meta: { title: '登录' }
+    component: () => import('@/views/LoginSystem.vue'),
+    meta: { title: '系统登录' }
+  },
+  {
+    path: '/register',
+    name: 'Register',
+    component: () => import('@/views/Register.vue'),
+    meta: { title: '注册账号' }
+  },
+  {
+    path: '/bind-tg',
+    name: 'BindTelegram',
+    component: () => import('@/views/BindTelegram.vue'),
+    meta: { title: '绑定 Telegram', requiresAuth: true }
   },
   {
     path: '/accounts',
@@ -44,9 +54,17 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '任务管理', requiresAuth: true }
   },
   {
+    path: '/task/:taskId',
+    name: 'TaskLegacyRedirect',
+    redirect: (to) => ({
+      path: '/tasks',
+      query: { task_id: String(to.params.taskId || '') }
+    })
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'NotFound',
-    redirect: '/'
+    redirect: () => (isAuthenticated() ? '/accounts' : '/login')
   }
 ]
 
@@ -58,8 +76,9 @@ const router = createRouter({
 // 简单的认证检查（可根据需要调整）
 const isAuthenticated = (): boolean => {
   const token = localStorage.getItem('token')
-  const userId = localStorage.getItem('user_id')
-  return !!(token && userId)
+  const rawUserId = localStorage.getItem('user_id')
+  const userId = Number(rawUserId)
+  return Boolean(token && Number.isInteger(userId) && userId > 0)
 }
 
 // 路由守卫
@@ -67,6 +86,12 @@ router.beforeEach((to, _from, next) => {
   // 设置页面标题
   if (to.meta?.title) {
     document.title = `${to.meta.title} - Telegram 定时消息`
+  }
+
+  // 已登录时访问登录/注册页，统一回到主业务页
+  if ((to.path === '/login' || to.path === '/register') && isAuthenticated()) {
+    next('/accounts')
+    return
   }
 
   // 检查认证
