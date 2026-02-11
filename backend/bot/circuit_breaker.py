@@ -15,15 +15,22 @@ import asyncio
 
 from telethon.errors import (
     FloodWaitError,
-    SessionPasswordNeededError,
-    RPCError,
 )
-from telethon import TelegramClient
-
-from backend.database.session import get_async_session
-from backend.database.models import Account, HealthStatus
+from backend.database.models import HealthStatus
 from backend.bot.account_manager import get_account_manager
-from backend.config.settings import settings
+from backend.bot.circuit.notify import (
+    notify_account_recovered,
+    notify_flood_wait,
+    notify_session_invalid,
+    send_notification,
+)
+from backend.bot.circuit.recovery import (
+    check_session_health,
+    recover_account,
+    start_health_check,
+    start_recovery_task,
+    stop_health_check,
+)
 
 
 class FloodWaitAction(str, Enum):
@@ -144,22 +151,7 @@ class CircuitBreaker:
 
     def _start_recovery_task(self, account_id: str, delay_seconds: int):
         """启动恢复任务"""
-        # 取消现有任务
-        if account_id in self._health_check_tasks:
-            self._health_check_tasks[account_id].cancel()
-
-        # 创建新任务
-        async def recovery_task():
-            try:
-                await asyncio.sleep(delay_seconds)
-                await self.recover_account(account_id)
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                logger.error(f"恢复任务失败: {e}")
-
-        task = asyncio.create_task(recovery_task())
-        self._health_check_tasks[account_id] = task
+        start_recovery_task(self, account_id, delay_seconds)
 
     async def recover_account(self, account_id: str):
         """
@@ -168,38 +160,7 @@ class CircuitBreaker:
         Args:
             account_id: 账号 ID
         """
-        logger.info(f"尝试恢复账号: {account_id}")
-
-        # 检查是否可以恢复
-        account = await self._account_manager.get_account(account_id)
-        if not account:
-            return
-
-        now = datetime.now()
-        if account.flood_until and now < account.flood_until:
-            # 还未到解除时间
-            remaining = (account.flood_until - now).total_seconds()
-            logger.info(f"账号 {account_id} 还需等待 {remaining:.0f} 秒")
-            # 重新启动恢复任务
-            self._start_recovery_task(account_id, int(remaining) + 1)
-            return
-
-        # 恢复账号
-        await self._account_manager.update_account(
-            account_id,
-            is_flooding=False,
-            flood_until=None
-        )
-
-        # 健康检查
-        health = await self._account_manager.health_check(account_id)
-
-        if health == HealthStatus.ONLINE:
-            logger.info(f"账号 {account_id} 已恢复")
-            # 通知用户
-            await self._notify_account_recovered(account_id)
-        else:
-            logger.warning(f"账号 {account_id} 恢复失败，状态为 {health}")
+        await recover_account(self, account_id)
 
     # ==================== Session 健康检查 ====================
 
@@ -213,37 +174,7 @@ class CircuitBreaker:
         Returns:
             Session 是否有效
         """
-        client = await self._account_manager.get_client(account_id)
-        if not client:
-            return False
-
-        try:
-            me = await client.get_me()
-            if me:
-                await self._account_manager.update_health_status(
-                    account_id, HealthStatus.ONLINE
-                )
-                return True
-        except SessionPasswordNeededError:
-            logger.error(f"账号 {account_id} 需要两步验证密码")
-            await self._account_manager.update_health_status(
-                account_id, HealthStatus.OFFLINE
-            )
-            return False
-        except RPCError as e:
-            logger.error(f"账号 {account_id} 健康检查失败: {e}")
-            await self._account_manager.update_health_status(
-                account_id, HealthStatus.OFFLINE
-            )
-            return False
-        except Exception as e:
-            logger.error(f"账号 {account_id} 健康检查异常: {e}")
-            await self._account_manager.update_health_status(
-                account_id, HealthStatus.OFFLINE
-            )
-            return False
-
-        return False
+        return await check_session_health(self, account_id)
 
     async def start_health_check(self, account_id: str):
         """
@@ -252,29 +183,11 @@ class CircuitBreaker:
         Args:
             account_id: 账号 ID
         """
-        # 取消现有任务
-        if account_id in self._health_check_tasks:
-            self._health_check_tasks[account_id].cancel()
-
-        async def health_check_loop():
-            while True:
-                try:
-                    await self.check_session_health(account_id)
-                    await asyncio.sleep(self.HEALTH_CHECK_INTERVAL)
-                except asyncio.CancelledError:
-                    break
-                except Exception as e:
-                    logger.error(f"健康检查循环异常: {e}")
-                    await asyncio.sleep(60)  # 出错后等待1分钟
-
-        task = asyncio.create_task(health_check_loop())
-        self._health_check_tasks[account_id] = task
+        await start_health_check(self, account_id)
 
     async def stop_health_check(self, account_id: str):
         """停止账号健康检查"""
-        if account_id in self._health_check_tasks:
-            self._health_check_tasks[account_id].cancel()
-            del self._health_check_tasks[account_id]
+        await stop_health_check(self, account_id)
 
     # ==================== 用户通知 ====================
 
@@ -292,39 +205,7 @@ class CircuitBreaker:
             seconds: 等待秒数
             is_banned: 是否被标记为封禁
         """
-        # 获取账号信息
-        account = await self._account_manager.get_account(account_id)
-        if not account or not account.user_id:
-            return
-
-        # 格式化等待时间
-        hours = seconds // 3600
-        minutes = (seconds % 3600) // 60
-
-        if hours > 0:
-            time_str = f"{hours}小时{minutes}分钟"
-        else:
-            time_str = f"{minutes}分钟"
-
-        # 构造消息
-        if is_banned:
-            message = (
-                f"⚠️ <b>账号已被限制</b>\n\n"
-                f"账号：@{account.username or account.account_id}\n"
-                f"限制时长：{time_str}\n"
-                f"解除时间：{account.flood_until.strftime('%Y-%m-%d %H:%M')}\n\n"
-                f"系统将自动检测并在解除后恢复账号。"
-            )
-        else:
-            message = (
-                f"⏳ <b>账号触发速率限制</b>\n\n"
-                f"账号：@{account.username or account.account_id}\n"
-                f"等待时长：{time_str}\n\n"
-                f"系统将自动等待后重试。"
-            )
-
-        # 发送通知到 Bot
-        await self._send_notification(account.user_id, message)
+        await notify_flood_wait(self._account_manager, account_id, seconds, is_banned)
 
     async def _notify_session_invalid(self, account_id: str):
         """
@@ -333,20 +214,7 @@ class CircuitBreaker:
         Args:
             account_id: 账号 ID
         """
-        account = await self._account_manager.get_account(account_id)
-        if not account or not account.user_id:
-            return
-
-        message = (
-            f"❌ <b>账号会话已失效</b>\n\n"
-            f"账号：@{account.username or account.account_id}\n\n"
-            f"可能原因：\n"
-            f"• 您在手机端登出了账号\n"
-            f"• Session 已过期\n\n"
-            f"请重新扫码登录该账号。"
-        )
-
-        await self._send_notification(account.user_id, message)
+        await notify_session_invalid(self._account_manager, account_id)
 
     async def _notify_account_recovered(self, account_id: str):
         """
@@ -355,17 +223,7 @@ class CircuitBreaker:
         Args:
             account_id: 账号 ID
         """
-        account = await self._account_manager.get_account(account_id)
-        if not account or not account.user_id:
-            return
-
-        message = (
-            f"✅ <b>账号已恢复</b>\n\n"
-            f"账号：@{account.username or account.account_id}\n\n"
-            f"FloodWait 限制已解除，账号可以正常使用。"
-        )
-
-        await self._send_notification(account.user_id, message)
+        await notify_account_recovered(self._account_manager, account_id)
 
     async def _send_notification(self, user_id: int, message: str):
         """
@@ -375,16 +233,7 @@ class CircuitBreaker:
             user_id: 用户 ID
             message: 消息内容
         """
-        try:
-            from backend.bot.client import bot_client
-
-            await bot_client.send_message(
-                user_id,
-                message,
-                parse_mode='html'
-            )
-        except Exception as e:
-            logger.error(f"发送通知失败: {e}")
+        await send_notification(user_id, message)
 
     # ==================== 错误处理包装器 ====================
 

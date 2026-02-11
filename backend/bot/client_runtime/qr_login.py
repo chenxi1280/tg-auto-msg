@@ -1,0 +1,217 @@
+"""QR login flow helpers for userbot."""
+from __future__ import annotations
+
+import asyncio
+import time
+from typing import Callable, Optional
+
+from loguru import logger
+from telethon import TelegramClient
+from telethon.sessions import StringSession
+
+from backend.bot.redis_login_manager import LoginStatus, RedisLoginManager
+from backend.utils.crypto import encrypt_string_session
+
+_current_qr_login_id: Optional[str] = None
+
+
+async def start_qr_login(
+    *,
+    login_id: str,
+    userbot_client: TelegramClient,
+    save_system_session_fn: Callable[..., asyncio.Future],
+    system_userbot_session_key: str,
+) -> bool:
+    """Start QR login workflow for one login session."""
+    global _current_qr_login_id
+
+    redis_manager = RedisLoginManager()
+    session = await redis_manager.get_session(login_id)
+    if not session:
+        logger.error(f"登录会话无效或已过期: {login_id}")
+        await redis_manager.update_status(login_id, LoginStatus.ERROR, error="会话无效或已过期")
+        return False
+
+    try:
+        if not userbot_client.is_connected():
+            await userbot_client.connect()
+
+        if await userbot_client.is_user_authorized():
+            me = await userbot_client.get_me()
+            string_session = StringSession.save(userbot_client.session)
+            string_session_encrypted = encrypt_string_session(string_session)
+            await save_system_session_fn(
+                system_userbot_session_key,
+                string_session,
+                session_meta={
+                    "tg_user_id": int(me.id),
+                    "username": me.username or "",
+                    "phone": me.phone or "",
+                },
+            )
+            bind_code = await redis_manager.save_string_session(
+                login_id=login_id,
+                string_session=string_session_encrypted,
+                tg_user_id=me.id,
+                username=me.username or me.first_name or "",
+                phone=me.phone or "",
+            )
+            logger.info(f"Userbot 已登录: {me.first_name}, bind_code={bind_code}")
+            return True
+
+        logger.info(f"开始二维码登录流程: {login_id}")
+        _current_qr_login_id = login_id
+
+        qr_login = await userbot_client.qr_login()
+        await redis_manager.update_qr_url(login_id, qr_login.url)
+        await redis_manager.update_status(login_id, LoginStatus.PENDING)
+        logger.info(f"QR URL 已保存: {qr_login.url}")
+
+        asyncio.create_task(
+            wait_for_qr_login(
+                login_id=login_id,
+                qr_login=qr_login,
+                userbot_client=userbot_client,
+                login_client=None,
+                save_system_session_fn=save_system_session_fn,
+                system_userbot_session_key=system_userbot_session_key,
+            )
+        )
+        return True
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"启动二维码登录失败: {error_msg}")
+        await redis_manager.update_status(login_id, LoginStatus.ERROR, error=error_msg)
+        return False
+
+
+async def wait_for_qr_login(
+    *,
+    login_id: str,
+    qr_login,
+    userbot_client: TelegramClient,
+    login_client: Optional[TelegramClient] = None,
+    save_system_session_fn: Optional[Callable[..., asyncio.Future]] = None,
+    system_userbot_session_key: Optional[str] = None,
+) -> None:
+    """Wait for QR confirmation, refresh token when expired, and persist session."""
+    global _current_qr_login_id
+
+    active_client = login_client or userbot_client
+    redis_manager = RedisLoginManager()
+
+    try:
+        await redis_manager.update_status(login_id, LoginStatus.SCANNING)
+        deadline = time.monotonic() + 300
+        refresh_attempts = 0
+
+        async def refresh_qr(reason: str) -> bool:
+            nonlocal qr_login, refresh_attempts
+            last_error: Optional[Exception] = None
+
+            try:
+                qr_login = await qr_login.recreate()
+                await redis_manager.update_qr_url(login_id, qr_login.url)
+                await redis_manager.update_status(login_id, LoginStatus.SCANNING, error="")
+                refresh_attempts += 1
+                logger.info(f"二维码已刷新({reason}): {login_id}, attempt={refresh_attempts}, strategy=recreate")
+                return True
+            except Exception as e:
+                last_error = e
+
+            try:
+                qr_login = await active_client.qr_login()
+                await redis_manager.update_qr_url(login_id, qr_login.url)
+                await redis_manager.update_status(login_id, LoginStatus.SCANNING, error="")
+                refresh_attempts += 1
+                logger.info(f"二维码已刷新({reason}): {login_id}, attempt={refresh_attempts}, strategy=new")
+                return True
+            except Exception as e:
+                last_error = e
+
+            error_msg = str(last_error) if last_error else "二维码刷新失败"
+            logger.error(f"刷新二维码失败: {error_msg}")
+            await redis_manager.update_status(login_id, LoginStatus.ERROR, error=error_msg)
+            return False
+
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                await redis_manager.update_status(login_id, LoginStatus.EXPIRED)
+                logger.error(f"二维码登录超时: {login_id}")
+                return
+
+            try:
+                result = await asyncio.wait_for(qr_login.wait(), timeout=min(60, remaining))
+            except asyncio.TimeoutError:
+                if not await refresh_qr(reason="timeout"):
+                    return
+                continue
+            except Exception as e:
+                error_msg = str(e)
+                lowered = error_msg.lower()
+                if (
+                    "authorization token has expired" in lowered
+                    or "token has expired" in lowered
+                    or "updated qr-code must be re-scanned" in lowered
+                    or "importlogintokenrequest" in lowered
+                    or "acceptlogintokenrequest" in lowered
+                ):
+                    if not await refresh_qr(reason="token-expired"):
+                        return
+                    continue
+
+                if "two-step verification" in error_msg.lower() or "password" in lowered:
+                    await redis_manager.update_status(
+                        login_id,
+                        LoginStatus.ERROR,
+                        error="该账户启用了两步验证，请暂时关闭或使用验证码登录",
+                    )
+                else:
+                    await redis_manager.update_status(login_id, LoginStatus.ERROR, error=error_msg)
+                return
+
+            if result:
+                me = await active_client.get_me()
+                string_session = StringSession.save(active_client.session)
+                string_session_encrypted = encrypt_string_session(string_session)
+
+                bind_code = await redis_manager.save_string_session(
+                    login_id=login_id,
+                    string_session=string_session_encrypted,
+                    tg_user_id=me.id,
+                    username=me.username or me.first_name or "",
+                    phone=me.phone or "",
+                )
+
+                if (
+                    login_client is None
+                    and save_system_session_fn is not None
+                    and system_userbot_session_key
+                ):
+                    await save_system_session_fn(
+                        system_userbot_session_key,
+                        string_session,
+                        session_meta={
+                            "tg_user_id": int(me.id),
+                            "username": me.username or "",
+                            "phone": me.phone or "",
+                        },
+                    )
+
+                logger.info(f"二维码登录成功: {me.first_name} (@{me.username}), bind_code: {bind_code}")
+                return
+
+            await redis_manager.update_status(login_id, LoginStatus.ERROR, error="登录被取消")
+            return
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"二维码登录失败: {error_msg}")
+        await redis_manager.update_status(login_id, LoginStatus.ERROR, error=error_msg)
+    finally:
+        _current_qr_login_id = None
+        if login_client:
+            try:
+                await login_client.disconnect()
+            except Exception as e:
+                logger.warning(f"关闭临时二维码登录客户端失败: {e}")
