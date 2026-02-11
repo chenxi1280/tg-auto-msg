@@ -66,6 +66,12 @@ def get_task_settings_keyboard(task: ScheduledMessageTask) -> list:
         else Button.inline("🔴 禁用", data=f"set_disable:{task.task_id}")
     ])
 
+    # 账号与目标选择
+    buttons.append([
+        Button.inline("👤 执行账号", data=f"edit_account:{task.task_id}"),
+        Button.inline("🎯 目标聊天", data=f"edit_targets:{task.task_id}"),
+    ])
+
     # 功能开关
     buttons.append([
         Button.inline(

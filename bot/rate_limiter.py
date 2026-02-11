@@ -57,6 +57,20 @@ class RateLimiter:
                 encoding="utf-8",
                 decode_responses=True
             )
+        try:
+            await self._redis_client.ping()
+        except Exception as e:
+            logger.warning(f"速率限制器 Redis 连接不可用，尝试重连: {e}")
+            try:
+                await self._redis_client.close()
+            except Exception:
+                pass
+            self._redis_client = await redis.from_url(
+                self._redis_url,
+                encoding="utf-8",
+                decode_responses=True
+            )
+            await self._redis_client.ping()
         return self._redis_client
 
     # ==================== 锁机制 ====================

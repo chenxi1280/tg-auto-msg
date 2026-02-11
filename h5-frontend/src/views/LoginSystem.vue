@@ -183,4 +183,19 @@ const handleLogin = async () => {
 .form-footer a:hover {
   text-decoration: underline;
 }
+
+@media (max-width: 480px) {
+  .login-container {
+    padding: 1.2rem;
+    border-radius: 12px;
+  }
+
+  .login-header {
+    margin-bottom: 1rem;
+  }
+
+  .login-header h1 {
+    font-size: 1.4rem;
+  }
+}
 </style>

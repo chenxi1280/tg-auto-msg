@@ -1,6 +1,7 @@
 """
 Bot 消息文本模板
 """
+from config.settings import settings
 
 # ============ 任务列表页 ============
 
@@ -23,6 +24,10 @@ TASK_SETTINGS_TEMPLATE = """⚙️ **任务设置**
 📊 **状态**
 • 启用状态: {enabled_status}
 • 重复间隔: 每 {interval} 分钟
+
+👤 **执行账号与目标**
+• 执行账号: {account_display}
+• 目标聊天: {target_display}
 
 ⏰ **时间控制**
 • 发送时段: {time_range}
@@ -139,4 +144,4 @@ STATUS_NOT_SET = "❌ 未设置"
 
 OPEN_H5_BUTTON = "🌐 H5 高级编辑"
 # H5 基础 URL（从配置读取，默认本地开发地址）
-H5_BASE_URL = "http://localhost:8000"  # 生产环境需替换为实际域名
+H5_BASE_URL = (settings.h5_base_url or "http://localhost:8000").rstrip("/")

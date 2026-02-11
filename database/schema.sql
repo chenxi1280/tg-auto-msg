@@ -43,7 +43,27 @@ COMMENT ON COLUMN users.created_at IS '创建时间';
 COMMENT ON COLUMN users.updated_at IS '更新时间';
 
 -- ========================================
--- 3. 任务表
+-- 3. 系统会话表
+-- ========================================
+CREATE TABLE IF NOT EXISTS system_sessions (
+    session_key VARCHAR(64) PRIMARY KEY,
+    session_encrypted TEXT NOT NULL,
+    session_meta JSONB,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_system_sessions_updated_at ON system_sessions(updated_at);
+
+COMMENT ON TABLE system_sessions IS '系统级 Telegram 会话表（bot/userbot）';
+COMMENT ON COLUMN system_sessions.session_key IS '会话键: manager_bot/global_userbot';
+COMMENT ON COLUMN system_sessions.session_encrypted IS '加密后的 Telethon StringSession';
+COMMENT ON COLUMN system_sessions.session_meta IS '附加元数据';
+COMMENT ON COLUMN system_sessions.created_at IS '创建时间';
+COMMENT ON COLUMN system_sessions.updated_at IS '更新时间';
+
+-- ========================================
+-- 4. 任务表
 -- ========================================
 CREATE TABLE IF NOT EXISTS scheduled_message_tasks (
     -- 主键
@@ -138,7 +158,7 @@ COMMENT ON COLUMN scheduled_message_tasks.created_at IS '创建时间';
 COMMENT ON COLUMN scheduled_message_tasks.updated_at IS '更新时间';
 
 -- ========================================
--- 4. 任务日志表
+-- 5. 任务日志表
 -- ========================================
 CREATE TABLE IF NOT EXISTS task_logs (
     -- 主键
@@ -172,7 +192,7 @@ COMMENT ON COLUMN task_logs.error_message IS '错误信息';
 COMMENT ON COLUMN task_logs.message_id IS '消息 ID';
 
 -- ========================================
--- 5. 创建更新时间触发器
+-- 6. 创建更新时间触发器
 -- ========================================
 
 -- 创建更新时间函数
@@ -191,6 +211,13 @@ CREATE TRIGGER update_users_updated_at
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
+-- 为 system_sessions 表添加触发器
+DROP TRIGGER IF EXISTS update_system_sessions_updated_at ON system_sessions;
+CREATE TRIGGER update_system_sessions_updated_at
+    BEFORE UPDATE ON system_sessions
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
 -- 为 scheduled_message_tasks 表添加触发器
 DROP TRIGGER IF EXISTS update_scheduled_message_tasks_updated_at ON scheduled_message_tasks;
 CREATE TRIGGER update_scheduled_message_tasks_updated_at
@@ -199,7 +226,7 @@ CREATE TRIGGER update_scheduled_message_tasks_updated_at
     EXECUTE FUNCTION update_updated_at_column();
 
 -- ========================================
--- 6. 初始化数据（可选）
+-- 7. 初始化数据（可选）
 -- ========================================
 
 -- 示例任务（注释掉，避免自动创建）

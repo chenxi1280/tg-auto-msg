@@ -11,6 +11,7 @@
 - 任务分片到 Redis 队列
 """
 import asyncio
+import os
 import random
 from datetime import datetime
 from typing import Optional
@@ -68,8 +69,30 @@ class TaskScheduler:
             settings.redis_url,
             decode_responses=True
         )
+        await self._ensure_redis_connection()
 
         logger.info("增强型任务调度器初始化完成")
+
+    async def _ensure_redis_connection(self):
+        """确保 Redis 连接可用，不可用时自动重建。"""
+        if self.redis_client is None:
+            self.redis_client = redis.from_url(
+                settings.redis_url,
+                decode_responses=True
+            )
+        try:
+            await self.redis_client.ping()
+        except Exception as e:
+            logger.warning(f"调度器 Redis 连接不可用，尝试重连: {e}")
+            try:
+                await self.redis_client.close()
+            except Exception:
+                pass
+            self.redis_client = redis.from_url(
+                settings.redis_url,
+                decode_responses=True
+            )
+            await self.redis_client.ping()
 
     async def start(self):
         """启动调度器"""
@@ -82,7 +105,7 @@ class TaskScheduler:
                 await self.tick(mode=mode)
                 await asyncio.sleep(self.SCAN_INTERVAL)
             except Exception as e:
-                logger.error(f"调度器运行错误: {e}")
+                logger.exception(f"调度器运行错误: {type(e).__name__}: {e!r}")
                 await asyncio.sleep(self.SCAN_INTERVAL)
 
     async def stop(self):
@@ -92,6 +115,7 @@ class TaskScheduler:
 
     async def tick(self, mode: str = "all"):
         """执行一次扫描和发送（支持 producer/consumer 分离模式）"""
+        await self._ensure_redis_connection()
         now = int(datetime.now().timestamp())
         current_hour = datetime.now().hour
 
@@ -155,7 +179,8 @@ class TaskScheduler:
                     lower = min(delay_min, upper)
                     jitter = random.randint(lower, upper)
                 else:
-                    jitter = random.randint(0, min(task.jitter_seconds, self.JITTER_RANGE))
+                    jitter_base = max(0, int(getattr(task, "jitter_seconds", 0) or 0))
+                    jitter = random.randint(0, min(jitter_base, self.JITTER_RANGE))
 
                 # 紧急任务插队：高优先级任务尽可能降低额外抖动
                 if (task.priority or 0) >= self.URGENT_PRIORITY_THRESHOLD:
@@ -278,11 +303,10 @@ class TaskScheduler:
 
                 # 检查账号（新架构）
                 account_id = task.account_id
-                chat_id = task.chat_id  # 兼容旧数据
 
-                # 确定目标 Peer ID
-                target_peer_id = task.target_peer_id or chat_id
-                if not target_peer_id:
+                # 收集目标列表（兼容旧结构的单目标）
+                target_specs = self._collect_task_targets(task)
+                if not target_specs:
                     logger.warning(f"任务 {task_id} 没有目标 Peer ID")
                     await self._handle_task_failure(session, task, "缺少目标 Peer ID")
                     return
@@ -325,17 +349,64 @@ class TaskScheduler:
 
                 # 使用速率限制器和熔断器执行发送
                 try:
-                    message_id = await self._send_with_protections(
-                        client, task, target_peer_id, account_id_str
-                    )
+                    last_message_id: Optional[int] = None
+                    send_errors: list[str] = []
+                    skip_delete_previous = len(target_specs) > 1
 
-                    if message_id:
-                        # 成功
-                        await self._handle_task_success(session, task, message_id, now)
-                        logger.info(f"任务 {task_id} 执行成功，消息 ID: {message_id}")
+                    for spec in target_specs:
+                        target_peer_id = int(spec["peer_id"])
+                        target_peer_type = spec.get("peer_type")
+                        target_access_hash = spec.get("access_hash")
+
+                        try:
+                            # 解析发送目标，优先使用资源表中的 peer_type/access_hash，避免误判为 PeerUser
+                            send_target = await self._resolve_send_target(
+                                client,
+                                task,
+                                target_peer_id,
+                                target_peer_type=target_peer_type,
+                                target_access_hash=target_access_hash
+                            )
+
+                            message_id = await self._send_with_protections(
+                                client,
+                                task,
+                                send_target,
+                                target_peer_id,
+                                account_id_str,
+                                skip_delete_previous=skip_delete_previous
+                            )
+                        except (FloodWaitError, PeerFloodError):
+                            raise
+                        except Exception as send_err:
+                            send_errors.append(
+                                f"peer={target_peer_id}: {type(send_err).__name__}: {send_err}"
+                            )
+                            logger.warning(
+                                f"任务 {task_id} 发送目标失败: peer={target_peer_id}, "
+                                f"error={type(send_err).__name__}: {send_err}"
+                            )
+                            continue
+
+                        if message_id:
+                            last_message_id = message_id
+                        else:
+                            send_errors.append(f"peer={target_peer_id}: send_message returned empty")
+
+                    if last_message_id:
+                        await self._handle_task_success(session, task, last_message_id, now)
+                        if send_errors:
+                            logger.warning(
+                                f"任务 {task_id} 部分目标发送失败: {len(send_errors)} 个; "
+                                f"错误示例: {send_errors[0]}"
+                            )
+                        logger.info(
+                            f"任务 {task_id} 执行成功，目标数={len(target_specs)}，"
+                            f"最后消息 ID: {last_message_id}"
+                        )
                     else:
-                        # 失败
-                        await self._handle_task_failure(session, task, "发送失败")
+                        reason = send_errors[0] if send_errors else "发送失败"
+                        await self._handle_task_failure(session, task, reason)
 
                 except FloodWaitError as e:
                     if account_id_str == "default":
@@ -380,19 +451,124 @@ class TaskScheduler:
                         )
 
                 except Exception as e:
-                    logger.error(f"执行任务 {task_id} 时出错: {e}")
+                    logger.exception(f"执行任务 {task_id} 时出错: {type(e).__name__}: {e!r}")
                     await self._handle_task_failure(session, task, str(e))
 
         finally:
             # 清除处理标记
             await self.redis_client.delete(processing_key)
 
-    async def _send_with_protections(
+    def _collect_task_targets(self, task: ScheduledMessageTask) -> list[dict]:
+        """从任务中提取目标列表，兼容新旧结构。"""
+        targets: list[dict] = []
+
+        raw_targets = getattr(task, "target_peers", None)
+        if isinstance(raw_targets, list):
+            for item in raw_targets:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    peer_id = int(item.get("peer_id"))
+                except Exception:
+                    continue
+                peer_type = str(item.get("peer_type") or "").strip().lower()
+                if peer_type not in {"user", "chat", "supergroup", "channel"}:
+                    continue
+                access_hash = item.get("access_hash")
+                if access_hash not in (None, ""):
+                    try:
+                        access_hash = int(access_hash)
+                    except Exception:
+                        access_hash = None
+                targets.append(
+                    {
+                        "peer_id": peer_id,
+                        "peer_type": peer_type,
+                        "access_hash": access_hash,
+                    }
+                )
+
+        if not targets:
+            target_peer_id = task.target_peer_id or task.chat_id
+            if target_peer_id:
+                fallback_peer_type = str(task.target_peer_type or "user").strip().lower()
+                if fallback_peer_type not in {"user", "chat", "supergroup", "channel"}:
+                    fallback_peer_type = "user"
+                targets.append(
+                    {
+                        "peer_id": int(target_peer_id),
+                        "peer_type": fallback_peer_type,
+                        "access_hash": task.target_access_hash,
+                    }
+                )
+
+        deduped: list[dict] = []
+        seen = set()
+        for target in targets:
+            key = (target["peer_type"], target["peer_id"])
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(target)
+        return deduped
+
+    async def _resolve_send_target(
         self,
         client,
         task: ScheduledMessageTask,
         target_peer_id: int,
-        account_id: str
+        target_peer_type: Optional[str] = None,
+        target_access_hash: Optional[int] = None
+    ):
+        """
+        解析可发送目标。
+        优先使用资源表 InputPeer（含 access_hash），其次回退到 Telethon 输入实体，最后保留原始 peer_id。
+        """
+        peer_type = target_peer_type or task.target_peer_type
+        access_hash = target_access_hash if target_access_hash is not None else task.target_access_hash
+
+        if task.account_id and peer_type:
+            try:
+                input_peer = await self._resource_manager.get_input_peer(
+                    account_id=task.account_id,
+                    peer_id=target_peer_id,
+                    peer_type=peer_type,
+                    access_hash=access_hash
+                )
+                if input_peer is not None:
+                    return input_peer
+            except Exception as e:
+                logger.warning(
+                    f"任务 {task.task_id} 使用资源表解析目标失败，回退 get_input_entity: "
+                    f"peer_id={target_peer_id}, peer_type={peer_type}, error={e}"
+                )
+
+        try:
+            return await client.get_input_entity(target_peer_id)
+        except Exception as e:
+            logger.warning(f"任务 {task.task_id} get_input_entity 解析失败: peer_id={target_peer_id}, error={e}")
+
+        # 兜底：从 dialogs 中回填实体（小群 Chat 常见缺 access_hash，但可直接使用 entity 发送）
+        try:
+            dialogs = await client.get_dialogs()
+            for dialog in dialogs:
+                entity = dialog.entity
+                if getattr(entity, "id", None) == target_peer_id:
+                    return entity
+        except Exception as e:
+            logger.warning(f"任务 {task.task_id} 从 dialogs 回填实体失败: peer_id={target_peer_id}, error={e}")
+
+        # 最后回退为原始 peer_id；失败会在发送处记录明确错误
+        return target_peer_id
+
+    async def _send_with_protections(
+        self,
+        client,
+        task: ScheduledMessageTask,
+        send_target,
+        lock_peer_id: int,
+        account_id: str,
+        skip_delete_previous: bool = False
     ) -> Optional[int]:
         """
         使用速率限制和熔断器发送消息
@@ -411,24 +587,30 @@ class TaskScheduler:
         circuit_breaker = get_circuit_breaker()
 
         # 获取发送锁（速率限制）
-        await rate_limiter.wait_for_slot(account_id, target_peer_id)
+        await rate_limiter.wait_for_slot(account_id, lock_peer_id)
 
         # 兼容旧数据：default userbot 不参与账号熔断器
         if account_id == "default":
-            return await self._do_send_message(client, task, target_peer_id)
+            return await self._do_send_message(
+                client,
+                task,
+                send_target,
+                skip_delete_previous=skip_delete_previous
+            )
 
         # 使用熔断器包装发送
         return await circuit_breaker.execute_with_circuit_breaker(
             account_id,
             self._do_send_message,
-            client, task, target_peer_id
+            client, task, send_target, skip_delete_previous
         )
 
     async def _do_send_message(
         self,
         client,
         task: ScheduledMessageTask,
-        target_peer_id: int
+        send_target,
+        skip_delete_previous: bool = False
     ) -> Optional[int]:
         """
         实际发送消息
@@ -436,7 +618,7 @@ class TaskScheduler:
         Args:
             client: TelegramClient
             task: 任务对象
-            target_peer_id: 目标 Peer ID
+            send_target: 目标 Peer（InputPeer 或 peer_id）
 
         Returns:
             消息 ID
@@ -450,62 +632,92 @@ class TaskScheduler:
         # 构建按钮
         buttons = build_inline_buttons(task.buttons)
 
+        def _is_button_markup_error(error: Exception) -> bool:
+            message = str(error).lower()
+            keywords = (
+                "button",
+                "reply markup",
+                "reply_markup",
+                "keyboard",
+                "inline",
+                "url invalid",
+                "bot"
+            )
+            return any(key in message for key in keywords)
+
+        async def _send_with_buttons(send_buttons):
+            # 发送消息
+            if task.media_type != MediaType.NONE:
+                if not task.media_file_id:
+                    raise ValueError("媒体任务缺少 media_file_id")
+                if os.path.isabs(task.media_file_id) and not os.path.exists(task.media_file_id):
+                    raise FileNotFoundError(f"媒体文件不存在: {task.media_file_id}")
+
+                # 带媒体的消息
+                if task.media_type == MediaType.PHOTO:
+                    return await client.send_file(
+                        send_target,
+                        file=task.media_file_id,
+                        caption=text,
+                        buttons=send_buttons,
+                        parse_mode='html'
+                    )
+                if task.media_type == MediaType.VIDEO:
+                    return await client.send_file(
+                        send_target,
+                        file=task.media_file_id,
+                        caption=text,
+                        buttons=send_buttons,
+                        parse_mode='html'
+                    )
+                if task.media_type == MediaType.ANIMATION:
+                    return await client.send_file(
+                        send_target,
+                        file=task.media_file_id,
+                        caption=text,
+                        buttons=send_buttons,
+                        parse_mode='html'
+                    )
+                if task.media_type == MediaType.STICKER:
+                    return await client.send_file(
+                        send_target,
+                        file=task.media_file_id,
+                        buttons=send_buttons
+                    )
+
+                raise ValueError(f"不支持的媒体类型: {task.media_type}")
+
+            # 纯文本消息
+            return await client.send_message(
+                send_target,
+                text,
+                buttons=send_buttons,
+                parse_mode='html'
+            )
+
         # 发送消息
         # 需要先删除上一条时，先尝试清理历史消息
-        if task.delete_previous and task.last_sent_message_id:
+        if (not skip_delete_previous) and task.delete_previous and task.last_sent_message_id:
             try:
-                await client.delete_messages(target_peer_id, [task.last_sent_message_id])
+                await client.delete_messages(send_target, [task.last_sent_message_id])
             except Exception as e:
                 logger.warning(f"删除上一条消息失败 task={task.task_id}: {e}")
 
-        if task.media_type != MediaType.NONE:
-            # 带媒体的消息
-            if task.media_type == MediaType.PHOTO:
-                msg = await client.send_file(
-                    target_peer_id,
-                    file=task.media_file_id,
-                    caption=text,
-                    buttons=buttons,
-                    parse_mode='html'
+        try:
+            msg = await _send_with_buttons(buttons)
+        except Exception as e:
+            if buttons and _is_button_markup_error(e):
+                logger.warning(
+                    f"任务 {task.task_id} 按钮发送失败，自动降级为无按钮消息: {e}"
                 )
-            elif task.media_type == MediaType.VIDEO:
-                msg = await client.send_file(
-                    target_peer_id,
-                    file=task.media_file_id,
-                    caption=text,
-                    buttons=buttons,
-                    parse_mode='html'
-                )
-            elif task.media_type == MediaType.ANIMATION:
-                msg = await client.send_file(
-                    target_peer_id,
-                    file=task.media_file_id,
-                    caption=text,
-                    buttons=buttons,
-                    parse_mode='html'
-                )
-            elif task.media_type == MediaType.STICKER:
-                msg = await client.send_file(
-                    target_peer_id,
-                    file=task.media_file_id,
-                    buttons=buttons
-                )
+                msg = await _send_with_buttons(None)
             else:
-                logger.error(f"不支持的媒体类型: {task.media_type}")
-                return None
-        else:
-            # 纯文本消息
-            msg = await client.send_message(
-                target_peer_id,
-                text,
-                buttons=buttons,
-                parse_mode='html'
-            )
+                raise
 
         # 发送成功后按配置置顶
         if msg and task.pin_message:
             try:
-                await client.pin_message(target_peer_id, msg.id, notify=False)
+                await client.pin_message(send_target, msg.id, notify=False)
             except Exception as e:
                 logger.warning(f"置顶消息失败 task={task.task_id}: {e}")
 

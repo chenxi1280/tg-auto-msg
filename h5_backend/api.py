@@ -2,12 +2,14 @@
 H5 控制台 FastAPI 服务
 """
 import asyncio
+import os
+import uuid
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, HTTPException, Depends, BackgroundTasks
+from fastapi import FastAPI, Request, HTTPException, Depends, BackgroundTasks, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Any, Dict
 import random
 import string
 from loguru import logger
@@ -25,9 +27,43 @@ from bot.redis_login_manager import get_redis_login_manager, LoginStatus
 from bot.account_manager import get_account_manager
 from bot.resource_manager import get_resource_manager
 from bot.proxy_pool import get_proxy_pool
-from bot.client import bot_client, userbot_client, init_userbot, is_userbot_ready, _wait_for_qr_login
+from bot.client import (
+    bot_client,
+    userbot_client,
+    init_userbot,
+    is_userbot_ready,
+    _wait_for_qr_login,
+    start_manager_bot,
+)
+
+# 注册 Bot 命令与回调处理器（导入即完成 handler 绑定）
+import bot.handlers.main  # noqa: F401
 from scheduler.worker import scheduler
 from h5_backend.routers.auth import get_current_user
+
+
+async def _run_manager_bot_forever():
+    """
+    持续维持 Manager Bot 连接，连接中断时自动重连。
+    """
+    while True:
+        try:
+            await bot_client.run_until_disconnected()
+            logger.warning("Manager Bot 连接已断开，3 秒后尝试重连")
+        except asyncio.CancelledError:
+            logger.info("Manager Bot 监听任务已取消")
+            raise
+        except Exception as e:
+            logger.exception(f"Manager Bot 运行异常: {type(e).__name__}: {e!r}")
+
+        await asyncio.sleep(3)
+        try:
+            bot_me = await start_manager_bot(settings.bot_token)
+            await bot_client.set_receive_updates(True)
+            logger.info(f"Manager Bot 重连成功: @{bot_me.username} (id={bot_me.id})")
+        except Exception as e:
+            logger.warning(f"Manager Bot 重连失败，将继续重试: {e}")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -58,8 +94,15 @@ async def lifespan(app: FastAPI):
 
     # 启动 Bot
     logger.info("🤖 启动 Bot...")
-    await bot_client.start(bot_token=settings.bot_token)
-    bot_task = asyncio.create_task(bot_client.run_until_disconnected())
+    expected_bot_id = str(settings.bot_token).split(":", 1)[0] if settings.bot_token else "unknown"
+    logger.info(f"BOT_TOKEN 对应的 bot_id: {expected_bot_id}")
+    try:
+        bot_me = await start_manager_bot(settings.bot_token)
+        await bot_client.set_receive_updates(True)
+        logger.info(f"✅ Manager Bot 在线: @{bot_me.username} (id={bot_me.id})")
+    except Exception as e:
+        logger.warning(f"读取 Bot 身份信息失败: {e}")
+    bot_task = asyncio.create_task(_run_manager_bot_forever())
     logger.info("✅ Bot 已启动")
     logger.info("📱 H5 登录页面: http://localhost:8000/login")
 
@@ -68,6 +111,11 @@ async def lifespan(app: FastAPI):
     # 关闭时执行
     logger.info("清理资源...")
     await scheduler.stop()
+    bot_task.cancel()
+    try:
+        await bot_task
+    except asyncio.CancelledError:
+        pass
     await bot_client.disconnect()
     await userbot_client.disconnect()
     logger.info("👋 程序已退出")
@@ -82,6 +130,152 @@ app = FastAPI(
 # 注册认证路由
 from h5_backend.routers.auth import router as auth_router
 app.include_router(auth_router)
+
+BASE_DIR = os.path.dirname(os.path.dirname(__file__))
+TASK_MEDIA_DIR = os.path.join(BASE_DIR, "uploads", "task_media")
+MAX_TASK_MEDIA_SIZE = 20 * 1024 * 1024  # 20MB
+
+
+def _media_value(value: object) -> str:
+    """兼容 Enum/字符串两种媒体类型表示，统一输出小写值。"""
+    if isinstance(value, MediaType):
+        return value.value
+    return str(value or MediaType.NONE.value).lower()
+
+
+def _normalize_media_type(raw_value: object) -> MediaType:
+    """归一化媒体类型输入。"""
+    if isinstance(raw_value, MediaType):
+        return raw_value
+    media_type = str(raw_value or MediaType.NONE.value).strip().lower()
+    if media_type == "gif":
+        media_type = MediaType.ANIMATION.value
+    try:
+        return MediaType(media_type)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"不支持的 media_type: {raw_value}")
+
+
+def _normalize_target_peers(raw_value: Any) -> List[Dict[str, Any]]:
+    """
+    归一化多目标列表。
+    每个元素格式：
+    {
+      "peer_id": int,
+      "peer_type": "user|chat|supergroup|channel",
+      "access_hash": int | None
+    }
+    """
+    if raw_value is None:
+        return []
+    if not isinstance(raw_value, list):
+        raise HTTPException(status_code=400, detail="target_peers 必须是数组")
+
+    normalized: List[Dict[str, Any]] = []
+    allowed_types = {"user", "chat", "supergroup", "channel"}
+
+    for idx, item in enumerate(raw_value):
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=400, detail=f"target_peers[{idx}] 必须是对象")
+
+        raw_peer_id = item.get("peer_id", item.get("target_peer_id"))
+        raw_peer_type = item.get("peer_type", item.get("target_peer_type"))
+        raw_access_hash = item.get("access_hash", item.get("target_access_hash"))
+
+        try:
+            peer_id = int(raw_peer_id)
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"target_peers[{idx}].peer_id 非法")
+
+        peer_type = str(raw_peer_type or "").strip().lower()
+        if peer_type not in allowed_types:
+            raise HTTPException(
+                status_code=400,
+                detail=f"target_peers[{idx}].peer_type 非法，必须为 user/chat/supergroup/channel"
+            )
+
+        access_hash: Optional[int] = None
+        if raw_access_hash not in (None, ""):
+            try:
+                access_hash = int(raw_access_hash)
+            except Exception:
+                raise HTTPException(status_code=400, detail=f"target_peers[{idx}].access_hash 非法")
+
+        normalized.append(
+            {
+                "peer_id": peer_id,
+                "peer_type": peer_type,
+                "access_hash": access_hash,
+            }
+        )
+
+    deduped: List[Dict[str, Any]] = []
+    seen = set()
+    for peer in normalized:
+        key = (peer["peer_type"], peer["peer_id"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(peer)
+
+    return deduped
+
+
+def _build_auto_delay_profile(priority: int, account: Optional[Account]) -> tuple[int, int, int]:
+    """
+    系统自动生成随机延迟参数（用户不可配置）：
+    - delay_min_seconds
+    - delay_max_seconds
+    - jitter_seconds
+    """
+    weight = int(getattr(account, "weight", 100) or 100)
+
+    if priority >= 100:
+        min_range = (0, 5)
+        max_range = (8, 20)
+    elif weight < 50:
+        min_range = (60, 120)
+        max_range = (180, 300)
+    elif weight < 100:
+        min_range = (30, 60)
+        max_range = (120, 240)
+    else:
+        min_range = (10, 30)
+        max_range = (60, 180)
+
+    delay_min = random.randint(*min_range)
+    delay_max_low = max(delay_min + 1, max_range[0])
+    delay_max = random.randint(delay_max_low, max_range[1])
+    jitter_seconds = random.randint(0, min(delay_max, 300))
+    return delay_min, delay_max, jitter_seconds
+
+
+def _resolve_upload_media_type(upload: UploadFile) -> MediaType:
+    content_type = (upload.content_type or "").lower()
+    filename = (upload.filename or "").lower()
+
+    if content_type.startswith("image/"):
+        if content_type == "image/gif" or filename.endswith(".gif"):
+            return MediaType.ANIMATION
+        return MediaType.PHOTO
+    if content_type.startswith("video/"):
+        return MediaType.VIDEO
+    if filename.endswith(".gif"):
+        return MediaType.ANIMATION
+    raise HTTPException(status_code=400, detail="仅支持图片/GIF/视频文件上传")
+
+
+def _default_upload_ext(media_type: MediaType) -> str:
+    if media_type == MediaType.PHOTO:
+        return ".jpg"
+    if media_type == MediaType.VIDEO:
+        return ".mp4"
+    if media_type == MediaType.ANIMATION:
+        return ".gif"
+    if media_type == MediaType.STICKER:
+        return ".webp"
+    return ".bin"
+
 
 # ============ 任务管理接口 ============
 
@@ -124,6 +318,7 @@ async def get_tasks(current_user: User = Depends(get_current_user)):
                     "chat_id": t.chat_id,
                     "target_peer_id": t.target_peer_id,
                     "target_peer_type": t.target_peer_type,
+                    "target_peers": t.target_peers or [],
                     "title": t.title,
                     "enabled": t.enabled,
                     "priority": t.priority,
@@ -136,7 +331,7 @@ async def get_tasks(current_user: User = Depends(get_current_user)):
                     "start_at": t.start_at,
                     "end_at": t.end_at,
                     "text": t.text,
-                    "media_type": t.media_type.value,
+                    "media_type": _media_value(t.media_type),
                     "delete_previous": t.delete_previous,
                     "pin_message": t.pin_message,
                     "next_run_at": t.next_run_at,
@@ -167,6 +362,7 @@ async def get_task(
             "target_peer_id": task.target_peer_id,
             "target_peer_type": task.target_peer_type,
             "target_access_hash": task.target_access_hash,
+            "target_peers": task.target_peers or [],
             "title": task.title,
             "enabled": task.enabled,
             "priority": task.priority,
@@ -179,7 +375,7 @@ async def get_task(
             "start_at": task.start_at,
             "end_at": task.end_at,
             "text": task.text,
-            "media_type": task.media_type.value,
+            "media_type": _media_value(task.media_type),
             "media_file_id": task.media_file_id,
             "buttons": task.buttons,
             "delete_previous": task.delete_previous,
@@ -202,22 +398,50 @@ async def create_task(
     创建任务
     """
     now_ts = int(datetime.now().timestamp())
+    account: Optional[Account] = None
 
     # 强制关联到当前用户
     task_data["user_id"] = current_user.id
 
     # 检查关联的账号是否属于当前用户
     if "account_id" in task_data and task_data["account_id"]:
-        await check_account_permission(task_data["account_id"], current_user.id)
+        account = await check_account_permission(task_data["account_id"], current_user.id)
 
-    # 目标兼容处理：优先使用 target_peer_id
-    target_peer_id = task_data.get("target_peer_id")
-    if target_peer_id and not task_data.get("chat_id"):
-        task_data["chat_id"] = target_peer_id
+    # 目标兼容处理：
+    # - 新结构：target_peers（多目标）
+    # - 兼容旧结构：target_peer_id/chat_id（单目标）
+    target_peers = _normalize_target_peers(task_data.get("target_peers"))
+    if not target_peers:
+        raw_target_peer_id = task_data.get("target_peer_id") or task_data.get("chat_id")
+        raw_target_peer_type = task_data.get("target_peer_type") or "user"
+        raw_target_access_hash = task_data.get("target_access_hash")
+        if not raw_target_peer_id:
+            raise HTTPException(status_code=400, detail="缺少发送目标（target_peers/target_peer_id/chat_id）")
+        try:
+            peer_id = int(raw_target_peer_id)
+        except Exception:
+            raise HTTPException(status_code=400, detail="target_peer_id/chat_id 非法")
+        peer_type = str(raw_target_peer_type or "").strip().lower() or "user"
+        if peer_type not in {"user", "chat", "supergroup", "channel"}:
+            raise HTTPException(status_code=400, detail="target_peer_type 非法")
+        access_hash = None
+        if raw_target_access_hash not in (None, ""):
+            try:
+                access_hash = int(raw_target_access_hash)
+            except Exception:
+                raise HTTPException(status_code=400, detail="target_access_hash 非法")
+        target_peers = [{
+            "peer_id": peer_id,
+            "peer_type": peer_type,
+            "access_hash": access_hash,
+        }]
 
-    # 基础参数校验
-    if not task_data.get("target_peer_id") and not task_data.get("chat_id"):
-        raise HTTPException(status_code=400, detail="缺少发送目标（target_peer_id/chat_id）")
+    primary_target = target_peers[0]
+    task_data["target_peers"] = target_peers
+    task_data["target_peer_id"] = primary_target["peer_id"]
+    task_data["target_peer_type"] = primary_target["peer_type"]
+    task_data["target_access_hash"] = primary_target.get("access_hash")
+    task_data["chat_id"] = primary_target["peer_id"]
 
     repeat_interval_min = int(task_data.get("repeat_interval_min", 0) or 0)
     if repeat_interval_min <= 0:
@@ -227,12 +451,25 @@ async def create_task(
     if priority < 0:
         raise HTTPException(status_code=400, detail="priority 不能小于 0")
 
-    delay_min_seconds = int(task_data.get("delay_min_seconds", 0) or 0)
-    delay_max_seconds = int(task_data.get("delay_max_seconds", 0) or 0)
-    if delay_min_seconds < 0 or delay_max_seconds < 0:
-        raise HTTPException(status_code=400, detail="delay_min_seconds/delay_max_seconds 不能为负数")
-    if delay_min_seconds > delay_max_seconds:
-        raise HTTPException(status_code=400, detail="delay_min_seconds 不能大于 delay_max_seconds")
+    # 媒体类型与文件校验
+    media_type = _normalize_media_type(task_data.get("media_type", MediaType.NONE.value))
+    task_data["media_type"] = media_type.value
+    media_file_id = task_data.get("media_file_id")
+    if media_type == MediaType.NONE:
+        task_data["media_file_id"] = None
+    elif not media_file_id:
+        raise HTTPException(status_code=400, detail="已选择媒体类型，请先上传媒体文件")
+
+    # 产品约束：H5 不支持置顶/每日时段窗口，统一禁用
+    task_data["pin_message"] = False
+    task_data["day_start_hour"] = None
+    task_data["day_end_hour"] = None
+
+    # 系统自动生成三段随机延迟参数（不接受用户自定义）
+    delay_min_seconds, delay_max_seconds, jitter_seconds = _build_auto_delay_profile(priority, account)
+    task_data["delay_min_seconds"] = delay_min_seconds
+    task_data["delay_max_seconds"] = delay_max_seconds
+    task_data["jitter_seconds"] = jitter_seconds
 
     # 启用任务时，默认进入调度队列（若设置了未来 start_at，则以 start_at 为准）
     if task_data.get("enabled") and not task_data.get("next_run_at"):
@@ -264,10 +501,13 @@ async def update_task(
     task = await check_task_permission(task_id, current_user.id)
     now_ts = int(datetime.now().timestamp())
     was_enabled = task.enabled
+    account: Optional[Account] = None
 
     # 如果更新了关联账号，检查账号权限
     if "account_id" in task_data and task_data["account_id"]:
-        await check_account_permission(task_data["account_id"], current_user.id)
+        account = await check_account_permission(task_data["account_id"], current_user.id)
+    elif task.account_id:
+        account = await check_account_permission(task.account_id, current_user.id)
 
     if "repeat_interval_min" in task_data:
         repeat_interval_min = int(task_data.get("repeat_interval_min") or 0)
@@ -277,23 +517,108 @@ async def update_task(
         priority = int(task_data.get("priority") or 0)
         if priority < 0:
             raise HTTPException(status_code=400, detail="priority 不能小于 0")
-    if "delay_min_seconds" in task_data or "delay_max_seconds" in task_data:
-        delay_min_seconds = int(task_data.get("delay_min_seconds", task.delay_min_seconds) or 0)
-        delay_max_seconds = int(task_data.get("delay_max_seconds", task.delay_max_seconds) or 0)
-        if delay_min_seconds < 0 or delay_max_seconds < 0:
-            raise HTTPException(status_code=400, detail="delay_min_seconds/delay_max_seconds 不能为负数")
-        if delay_min_seconds > delay_max_seconds:
-            raise HTTPException(status_code=400, detail="delay_min_seconds 不能大于 delay_max_seconds")
+
+    # 目标兼容处理：
+    # - 显式传入 target_peers 时，以其为准
+    # - 否则若传入单目标字段，则转换为 target_peers
+    # - 都未传则保留原有目标
+    incoming_target_peers = "target_peers" in task_data
+    incoming_single_target = any(
+        key in task_data for key in ("target_peer_id", "target_peer_type", "target_access_hash", "chat_id")
+    )
+
+    target_peers: List[Dict[str, Any]]
+    if incoming_target_peers:
+        target_peers = _normalize_target_peers(task_data.get("target_peers"))
+        if not target_peers:
+            raise HTTPException(status_code=400, detail="target_peers 不能为空")
+    elif incoming_single_target:
+        raw_target_peer_id = task_data.get("target_peer_id", task_data.get("chat_id", task.target_peer_id or task.chat_id))
+        raw_target_peer_type = task_data.get("target_peer_type", task.target_peer_type or "user")
+        raw_target_access_hash = task_data.get("target_access_hash", task.target_access_hash)
+        if not raw_target_peer_id:
+            raise HTTPException(status_code=400, detail="缺少发送目标")
+        try:
+            peer_id = int(raw_target_peer_id)
+        except Exception:
+            raise HTTPException(status_code=400, detail="target_peer_id/chat_id 非法")
+        peer_type = str(raw_target_peer_type or "").strip().lower() or "user"
+        if peer_type not in {"user", "chat", "supergroup", "channel"}:
+            raise HTTPException(status_code=400, detail="target_peer_type 非法")
+        access_hash = None
+        if raw_target_access_hash not in (None, ""):
+            try:
+                access_hash = int(raw_target_access_hash)
+            except Exception:
+                raise HTTPException(status_code=400, detail="target_access_hash 非法")
+        target_peers = [{
+            "peer_id": peer_id,
+            "peer_type": peer_type,
+            "access_hash": access_hash,
+        }]
+    else:
+        target_peers = _normalize_target_peers(task.target_peers)
+        if not target_peers:
+            fallback_peer_id = task.target_peer_id or task.chat_id
+            if fallback_peer_id:
+                target_peers = [{
+                    "peer_id": int(fallback_peer_id),
+                    "peer_type": str(task.target_peer_type or "user"),
+                    "access_hash": task.target_access_hash,
+                }]
+
+    if target_peers:
+        primary_target = target_peers[0]
+        task_data["target_peers"] = target_peers
+        task_data["target_peer_id"] = primary_target["peer_id"]
+        task_data["target_peer_type"] = primary_target["peer_type"]
+        task_data["target_access_hash"] = primary_target.get("access_hash")
+        task_data["chat_id"] = primary_target["peer_id"]
+
+    # 媒体类型与文件校验（允许清空媒体）
+    if "media_type" in task_data or "media_file_id" in task_data:
+        media_type = _normalize_media_type(task_data.get("media_type", task.media_type))
+        media_file_id = task_data.get("media_file_id", task.media_file_id)
+        task_data["media_type"] = media_type.value
+        if media_type == MediaType.NONE:
+            task_data["media_file_id"] = None
+        elif not media_file_id:
+            raise HTTPException(status_code=400, detail="已选择媒体类型，请先上传媒体文件")
+
+    # 产品约束：H5 不支持置顶/每日时段窗口，更新时强制禁用
+    task_data["pin_message"] = False
+    task_data["day_start_hour"] = None
+    task_data["day_end_hour"] = None
+
+    # 系统自动生成三段随机延迟参数（不接受用户自定义）
+    next_priority = int(task_data.get("priority", task.priority) or 0)
+    delay_min_seconds, delay_max_seconds, jitter_seconds = _build_auto_delay_profile(next_priority, account)
+    task_data["delay_min_seconds"] = delay_min_seconds
+    task_data["delay_max_seconds"] = delay_max_seconds
+    task_data["jitter_seconds"] = jitter_seconds
 
     async with get_async_session() as session:
         # 重新绑定到 session
         task = await session.merge(task)
 
+        nullable_fields = {
+            "media_file_id",
+            "day_start_hour",
+            "day_end_hour",
+            "start_at",
+            "end_at",
+            "text",
+            "buttons",
+            "target_access_hash",
+        }
+
         # 更新字段
         for key, value in task_data.items():
-            if hasattr(task, key) and value is not None:
+            if hasattr(task, key):
                 # 禁止修改 user_id
                 if key == "user_id":
+                    continue
+                if value is None and key not in nullable_fields:
                     continue
                 setattr(task, key, value)
 
@@ -305,11 +630,70 @@ async def update_task(
         if task.enabled and (not was_enabled or task.next_run_at is None):
             start_at_ts = int(task.start_at or 0)
             task.next_run_at = max(now_ts, start_at_ts) if start_at_ts > 0 else now_ts
+            # 从禁用态恢复时重置失败计数，避免刚启用就再次被自动禁用
+            if not was_enabled:
+                task.failure_count = 0
 
         await session.commit()
         await session.refresh(task)
 
         return {"success": True}
+
+
+@app.post("/api/tasks/upload-media")
+async def upload_task_media(
+    account_id: str = Form(...),
+    media: UploadFile = File(...),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    上传任务媒体文件，返回可用于任务创建的 media_type 与 media_file_id。
+    """
+    await check_account_permission(account_id, current_user.id)
+
+    if not media.filename:
+        raise HTTPException(status_code=400, detail="媒体文件名为空")
+
+    media_type = _resolve_upload_media_type(media)
+    ext = os.path.splitext(media.filename)[1].lower() or _default_upload_ext(media_type)
+    filename = f"{account_id}_{uuid.uuid4().hex}{ext}"
+    os.makedirs(TASK_MEDIA_DIR, exist_ok=True)
+    abs_path = os.path.join(TASK_MEDIA_DIR, filename)
+
+    total_size = 0
+    try:
+        with open(abs_path, "wb") as f:
+            while True:
+                chunk = await media.read(1024 * 1024)
+                if not chunk:
+                    break
+                total_size += len(chunk)
+                if total_size > MAX_TASK_MEDIA_SIZE:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"媒体文件过大，最大支持 {MAX_TASK_MEDIA_SIZE // (1024 * 1024)}MB"
+                    )
+                f.write(chunk)
+    except HTTPException:
+        if os.path.exists(abs_path):
+            os.remove(abs_path)
+        raise
+    except Exception as e:
+        if os.path.exists(abs_path):
+            os.remove(abs_path)
+        raise HTTPException(status_code=500, detail=f"保存媒体文件失败: {e}")
+    finally:
+        await media.close()
+
+    return {
+        "success": True,
+        "data": {
+            "media_type": media_type.value,
+            "media_file_id": abs_path,
+            "filename": filename,
+            "size": total_size,
+        }
+    }
 
 
 @app.delete("/api/tasks/{task_id}")
@@ -674,6 +1058,8 @@ async def sync_account_resources(
         result = await resource_manager.full_sync(account_id)
         if result.error:
             raise HTTPException(status_code=400, detail=f"资源同步失败: {result.error}")
+        if result.synced == 0 and result.failed > 0:
+            raise HTTPException(status_code=400, detail=f"资源同步失败: 全部 {result.failed} 项同步失败")
 
         message = "资源同步完成"
         if result.failed > 0:
@@ -780,7 +1166,10 @@ async def get_account_resources(
                 "peer_id": r.peer_id,
                 "peer_type": r.peer_type,
                 "access_hash": r.access_hash,
-                "title": r.title,
+                "title": (
+                    (r.title or "").strip()
+                    or (f"@{r.username}" if r.username else f"{r.peer_type}:{r.peer_id}")
+                ),
                 "username": r.username,
                 "description": r.description,
                 "is_muted": r.is_muted,
@@ -840,7 +1229,10 @@ async def delete_account(
     await check_account_permission(account_id, current_user.id)
 
     account_manager = get_account_manager()
-    await account_manager.delete_account(account_id)
+    try:
+        await account_manager.delete_account(account_id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     return {"success": True, "message": "账号已删除"}
 

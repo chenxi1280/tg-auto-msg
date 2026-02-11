@@ -3,7 +3,7 @@
     <!-- 头部 -->
     <header class="header">
       <div class="container">
-        <router-link to="/" class="back-link">← 返回首页</router-link>
+        <router-link to="/accounts" class="back-link">← 返回账号列表</router-link>
         <h1>资源列表</h1>
       </div>
     </header>
@@ -77,68 +77,70 @@
           </el-button>
         </el-empty>
 
-        <el-table v-else :data="resources" stripe v-loading="loading">
-          <el-table-column prop="title" label="名称" min-width="200">
-            <template #default="{ row }">
-              <div class="resource-name">
-                <span>{{ row.title }}</span>
-                <el-tag v-if="row.is_verified" type="success" size="small">✓</el-tag>
-              </div>
-            </template>
-          </el-table-column>
+        <div v-else class="table-wrap">
+          <el-table :data="resources" stripe v-loading="loading">
+            <el-table-column prop="title" label="名称" min-width="200">
+              <template #default="{ row }">
+                <div class="resource-name">
+                  <span>{{ row.title }}</span>
+                  <el-tag v-if="row.is_verified" type="success" size="small">✓</el-tag>
+                </div>
+              </template>
+            </el-table-column>
 
-          <el-table-column prop="peer_type" label="类型" width="120">
-            <template #default="{ row }">
-              <el-tag :type="getPeerTypeColor(row.peer_type)" size="small">
-                {{ getPeerTypeName(row.peer_type) }}
-              </el-tag>
-            </template>
-          </el-table-column>
+            <el-table-column prop="peer_type" label="类型" width="120">
+              <template #default="{ row }">
+                <el-tag :type="getPeerTypeColor(row.peer_type)" size="small">
+                  {{ getPeerTypeName(row.peer_type) }}
+                </el-tag>
+              </template>
+            </el-table-column>
 
-          <el-table-column prop="username" label="用户名" width="150">
-            <template #default="{ row }">
-              <span v-if="row.username">@{{ row.username }}</span>
-              <span v-else class="text-muted">-</span>
-            </template>
-          </el-table-column>
+            <el-table-column prop="username" label="用户名" width="150">
+              <template #default="{ row }">
+                <span v-if="row.username">@{{ row.username }}</span>
+                <span v-else class="text-muted">-</span>
+              </template>
+            </el-table-column>
 
-          <el-table-column prop="participants_count" label="成员数" width="100" align="right">
-            <template #default="{ row }">
-              <span v-if="row.participants_count">
-                {{ formatNumber(row.participants_count) }}
-              </span>
-              <span v-else class="text-muted">-</span>
-            </template>
-          </el-table-column>
+            <el-table-column prop="participants_count" label="成员数" width="100" align="right">
+              <template #default="{ row }">
+                <span v-if="row.participants_count">
+                  {{ formatNumber(row.participants_count) }}
+                </span>
+                <span v-else class="text-muted">-</span>
+              </template>
+            </el-table-column>
 
-          <el-table-column prop="last_sync_at" label="同步时间" width="180">
-            <template #default="{ row }">
-              <span v-if="row.last_sync_at">{{ formatDateTime(row.last_sync_at) }}</span>
-              <span v-else class="text-muted">-</span>
-            </template>
-          </el-table-column>
+            <el-table-column prop="last_sync_at" label="同步时间" width="180">
+              <template #default="{ row }">
+                <span v-if="row.last_sync_at">{{ formatDateTime(row.last_sync_at) }}</span>
+                <span v-else class="text-muted">-</span>
+              </template>
+            </el-table-column>
 
-          <el-table-column label="操作" width="140" fixed="right">
-            <template #default="{ row }">
-              <el-button
-                size="small"
-                type="primary"
-                link
-                @click="viewResource(row)"
-              >
-                查看
-              </el-button>
-              <el-button
-                size="small"
-                type="success"
-                link
-                @click="goCreateTask(row)"
-              >
-                建任务
-              </el-button>
-            </template>
-          </el-table-column>
-        </el-table>
+            <el-table-column label="操作" width="140" fixed="right">
+              <template #default="{ row }">
+                <el-button
+                  size="small"
+                  type="primary"
+                  link
+                  @click="viewResource(row)"
+                >
+                  查看
+                </el-button>
+                <el-button
+                  size="small"
+                  type="success"
+                  link
+                  @click="goCreateTask(row)"
+                >
+                  建任务
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
 
         <!-- 分页 -->
         <div v-if="resources.length > 0" class="pagination">
@@ -170,7 +172,7 @@ const route = useRoute()
 const router = useRouter()
 
 // 状态
-const accounts = computed(() => accountStore.activeAccounts)
+const accounts = computed(() => accountStore.accounts)
 const selectedAccountId = ref('')
 const selectedPeerType = ref('')
 const searchQuery = ref('')
@@ -215,12 +217,9 @@ const syncResources = async () => {
   if (!selectedAccountId.value) return
 
   try {
-    await accountStore.syncAccount(selectedAccountId.value)
-    ElMessage.success('资源同步已启动，请稍后刷新查看')
-    // 3秒后自动刷新
-    setTimeout(() => {
-      loadResources()
-    }, 3000)
+    await accountStore.syncAccount(selectedAccountId.value, true)
+    ElMessage.success('资源同步完成')
+    await loadResources()
   } catch (err: any) {
     ElMessage.error(err.message || '同步失败')
   }
@@ -367,6 +366,11 @@ onMounted(async () => {
   gap: 0.5rem;
 }
 
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
 .text-muted {
   color: #adb5bd;
 }
@@ -375,5 +379,45 @@ onMounted(async () => {
   margin-top: 1.5rem;
   display: flex;
   justify-content: center;
+}
+
+@media (max-width: 900px) {
+  .container {
+    padding: 0 0.9rem;
+  }
+
+  .main {
+    padding: 1rem 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .header {
+    padding: 1rem 0;
+  }
+
+  .header h1 {
+    font-size: 1.25rem;
+  }
+
+  .toolbar .container {
+    gap: 0.6rem;
+  }
+
+  .toolbar :deep(.el-select),
+  .toolbar :deep(.el-input),
+  .toolbar :deep(.el-button) {
+    width: 100% !important;
+  }
+
+  .table-wrap {
+    margin: 0 -0.15rem;
+    padding: 0 0.15rem;
+  }
+
+  .pagination {
+    justify-content: flex-start;
+    overflow-x: auto;
+  }
 }
 </style>

@@ -7,26 +7,40 @@ Telegram 客户端初始化
 """
 import asyncio
 import time
-from typing import Optional
+from typing import Optional, Any
+from pathlib import Path
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from loguru import logger
+from sqlalchemy import select
 
 from config.settings import settings
 from bot.redis_login_manager import RedisLoginManager, LoginStatus
-from utils.crypto import encrypt_string_session
+from database.session import get_async_session
+from database.models import SystemSession
+from utils.crypto import encrypt_string_session, decrypt_string_session
 
+
+# 系统级会话键
+_SYSTEM_BOT_SESSION_KEY = "manager_bot"
+_SYSTEM_USERBOT_SESSION_KEY = "global_userbot"
+_LEGACY_SESSION_FILES = (
+    "bot_session.session",
+    "bot_session.session-journal",
+    "userbot_session.session",
+    "userbot_session.session-journal",
+)
 
 # Bot 客户端（用于接收命令和按钮交互）
 bot_client = TelegramClient(
-    "bot_session",
+    StringSession(),
     api_id=settings.api_id,
     api_hash=settings.api_hash,
 )
 
 # Userbot 客户端（用于实际发送消息）
 userbot_client = TelegramClient(
-    "userbot_session",
+    StringSession(),
     api_id=settings.api_id,
     api_hash=settings.api_hash,
 )
@@ -35,16 +49,210 @@ userbot_client = TelegramClient(
 _current_qr_login_id: Optional[str] = None
 
 
+def _extract_expected_bot_id(bot_token: str) -> Optional[int]:
+    """从 Bot Token 提取预期 bot_id。"""
+    if not bot_token:
+        return None
+    try:
+        return int(str(bot_token).split(":", 1)[0])
+    except Exception:
+        return None
+
+
+def _build_session_meta(extra: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    meta = {"updated_at": int(time.time())}
+    if extra:
+        meta.update(extra)
+    return meta
+
+
+async def _load_system_session_string(session_key: str) -> Optional[str]:
+    """从数据库加载并解密系统会话字符串。"""
+    try:
+        async with get_async_session() as session:
+            result = await session.execute(
+                select(SystemSession).where(SystemSession.session_key == session_key)
+            )
+            row = result.scalar_one_or_none()
+            if not row or not row.session_encrypted:
+                return None
+
+            try:
+                return decrypt_string_session(row.session_encrypted)
+            except Exception as e:
+                logger.error(f"系统会话解密失败，已清理损坏记录: key={session_key}, error={e}")
+                await session.delete(row)
+                return None
+    except Exception as e:
+        logger.warning(f"读取系统会话失败: key={session_key}, error={e}")
+        return None
+
+
+async def _save_system_session_string(
+    session_key: str,
+    session_string: str,
+    *,
+    session_meta: Optional[dict[str, Any]] = None,
+) -> None:
+    """将系统会话字符串加密后写入数据库。"""
+    if not session_string:
+        return
+
+    encrypted = encrypt_string_session(session_string)
+    meta = _build_session_meta(session_meta)
+
+    try:
+        async with get_async_session() as session:
+            row = await session.get(SystemSession, session_key)
+            if row is None:
+                row = SystemSession(
+                    session_key=session_key,
+                    session_encrypted=encrypted,
+                    session_meta=meta,
+                )
+                session.add(row)
+            else:
+                row.session_encrypted = encrypted
+                row.session_meta = meta
+    except Exception as e:
+        logger.warning(f"保存系统会话失败: key={session_key}, error={e}")
+
+
+async def _delete_system_session(session_key: str) -> None:
+    """删除数据库中的系统会话。"""
+    try:
+        async with get_async_session() as session:
+            row = await session.get(SystemSession, session_key)
+            if row is not None:
+                await session.delete(row)
+    except Exception as e:
+        logger.warning(f"删除系统会话失败: key={session_key}, error={e}")
+
+
+async def _restore_client_session(client: TelegramClient, session_key: str) -> None:
+    """
+    从数据库恢复客户端 Session。
+    仅在未连接时调用，避免运行中切换 session。
+    """
+    if client.is_connected():
+        return
+
+    session_string = await _load_system_session_string(session_key)
+    if not session_string:
+        return
+
+    try:
+        client.session = StringSession(session_string)
+        logger.info(f"已从数据库恢复系统会话: {session_key}")
+    except Exception as e:
+        logger.warning(f"恢复系统会话失败: key={session_key}, error={e}")
+
+
+async def _persist_client_session(
+    client: TelegramClient,
+    session_key: str,
+    *,
+    session_meta: Optional[dict[str, Any]] = None,
+) -> None:
+    """将当前客户端 Session 持久化到数据库。"""
+    try:
+        session_string = StringSession.save(client.session)
+    except Exception as e:
+        logger.warning(f"导出客户端会话失败: key={session_key}, error={e}")
+        return
+
+    if not session_string:
+        return
+    await _save_system_session_string(
+        session_key,
+        session_string,
+        session_meta=session_meta,
+    )
+
+
+def _cleanup_legacy_session_files() -> None:
+    """清理历史 SQLite .session 文件，避免误判仍在使用本地会话。"""
+    for filename in _LEGACY_SESSION_FILES:
+        path = Path(filename)
+        if not path.exists():
+            continue
+        try:
+            path.unlink()
+            logger.info(f"已清理历史本地会话文件: {filename}")
+        except Exception as e:
+            logger.warning(f"清理历史本地会话文件失败: {filename}, error={e}")
+
+
+async def start_manager_bot(bot_token: str):
+    """
+    启动管理 Bot，并确保会话与当前 BOT_TOKEN 一致。
+
+    Telethon 在已有授权会话时会忽略新 bot_token。
+    因此当会话 bot_id 与 token 不一致时，清理并重建数据库会话后重新登录。
+    """
+    expected_bot_id = _extract_expected_bot_id(bot_token)
+    current_me = None
+
+    _cleanup_legacy_session_files()
+
+    if not bot_client.is_connected():
+        await _restore_client_session(bot_client, _SYSTEM_BOT_SESSION_KEY)
+        await bot_client.connect()
+
+    try:
+        if await bot_client.is_user_authorized():
+            current_me = await bot_client.get_me()
+    except Exception as e:
+        logger.warning(f"读取当前 bot 会话失败，将继续使用 token 重新登录: {e}")
+
+    if current_me and expected_bot_id and int(current_me.id) != int(expected_bot_id):
+        logger.warning(
+            "检测到 BOT_TOKEN 与已持久化 bot 会话不一致，正在重建会话: "
+            f"session_bot_id={current_me.id}, token_bot_id={expected_bot_id}"
+        )
+        try:
+            await bot_client.disconnect()
+        except Exception as e:
+            logger.warning(f"断开旧 bot 会话失败: {e}")
+        await _delete_system_session(_SYSTEM_BOT_SESSION_KEY)
+        bot_client.session = StringSession()
+        await bot_client.connect()
+
+    await bot_client.start(bot_token=bot_token)
+    me = await bot_client.get_me()
+    await _persist_client_session(
+        bot_client,
+        _SYSTEM_BOT_SESSION_KEY,
+        session_meta={
+            "bot_id": int(me.id),
+            "username": me.username or "",
+        },
+    )
+    return me
+
+
 async def init_userbot():
     """初始化 Userbot 客户端"""
+    _cleanup_legacy_session_files()
+
     # 先连接客户端
     if not userbot_client.is_connected():
+        await _restore_client_session(userbot_client, _SYSTEM_USERBOT_SESSION_KEY)
         await userbot_client.connect()
 
     # 检查是否已授权
     if await userbot_client.is_user_authorized():
         # 获取当前用户信息
         me = await userbot_client.get_me()
+        await _persist_client_session(
+            userbot_client,
+            _SYSTEM_USERBOT_SESSION_KEY,
+            session_meta={
+                "tg_user_id": int(me.id),
+                "username": me.username or "",
+                "phone": me.phone or "",
+            },
+        )
         logger.info(f"Userbot 已登录: {me.first_name} (@{me.username})")
         return True
 
@@ -83,6 +291,15 @@ async def start_qr_login(login_id: str) -> bool:
             me = await userbot_client.get_me()
             string_session = StringSession.save(userbot_client.session)
             string_session_encrypted = encrypt_string_session(string_session)
+            await _persist_client_session(
+                userbot_client,
+                _SYSTEM_USERBOT_SESSION_KEY,
+                session_meta={
+                    "tg_user_id": int(me.id),
+                    "username": me.username or "",
+                    "phone": me.phone or "",
+                },
+            )
             bind_code = await redis_manager.save_string_session(
                 login_id=login_id,
                 string_session=string_session_encrypted,
@@ -246,6 +463,18 @@ async def _wait_for_qr_login(
                     username=me.username or me.first_name or "",
                     phone=me.phone or ""
                 )
+
+                # 全局 userbot 会话（非临时客户端）写入数据库，禁用本地 .session 文件
+                if login_client is None:
+                    await _save_system_session_string(
+                        _SYSTEM_USERBOT_SESSION_KEY,
+                        string_session,
+                        session_meta={
+                            "tg_user_id": int(me.id),
+                            "username": me.username or "",
+                            "phone": me.phone or "",
+                        },
+                    )
 
                 logger.info(f"二维码登录成功: {me.first_name} (@{me.username}), bind_code: {bind_code}")
                 return

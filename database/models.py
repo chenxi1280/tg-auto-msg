@@ -74,7 +74,12 @@ class ScheduledMessageTask(Base):
 
     # 基础信息
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, comment="归属系统用户 ID")
-    account_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("accounts.account_id"), nullable=True, comment="执行账号 ID")
+    account_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey("accounts.account_id", ondelete="CASCADE"),
+        nullable=True,
+        comment="执行账号 ID",
+    )
     chat_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, comment="群组/频道 ID（兼容旧数据）")
     title: Mapped[str] = mapped_column(String(100), nullable=False, comment="显示名")
 
@@ -82,6 +87,7 @@ class ScheduledMessageTask(Base):
     target_peer_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, comment="目标 Peer ID")
     target_peer_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, comment="目标 Peer 类型")
     target_access_hash: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, comment="目标 Access Hash")
+    target_peers: Mapped[Optional[List[Any]]] = mapped_column(JSON, nullable=True, comment="多目标 Peer 列表")
 
     # 启用状态
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否启用")
@@ -105,8 +111,16 @@ class ScheduledMessageTask(Base):
 
     # 消息内容
     text: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="HTML 文本（≤4096）")
-    media_type: Mapped[str] = mapped_column(
-        SQLEnum(MediaType), default=MediaType.NONE, comment="媒体类型"
+    media_type: Mapped[MediaType] = mapped_column(
+        SQLEnum(
+            MediaType,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+            native_enum=False,
+            validate_strings=True,
+            name="media_type_enum",
+        ),
+        default=MediaType.NONE,
+        comment="媒体类型",
     )
     media_file_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="Telegram file_id")
     buttons: Mapped[Optional[List[Any]]] = mapped_column(JSON, nullable=True, comment="二维按钮数组")
@@ -182,7 +196,12 @@ class Proxy(Base):
 
     # 使用统计
     usage_count: Mapped[int] = mapped_column(Integer, default=0, comment="使用次数")
-    assigned_account_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("accounts.account_id"), nullable=True, comment="分配给的账号")
+    assigned_account_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey("accounts.account_id", ondelete="SET NULL"),
+        nullable=True,
+        comment="分配给的账号",
+    )
 
     # 时间戳
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), comment="创建时间")
@@ -326,7 +345,12 @@ class AccountBindLog(Base):
     __tablename__ = "account_bind_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    account_id: Mapped[str] = mapped_column(String(36), ForeignKey("accounts.account_id"), nullable=True, comment="账号 ID")
+    account_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey("accounts.account_id", ondelete="SET NULL"),
+        nullable=True,
+        comment="账号 ID",
+    )
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, comment="绑定用户 ID")
     bind_code: Mapped[Optional[str]] = mapped_column(String(6), nullable=True, comment="绑定码")
     bound_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), comment="绑定时间")
@@ -340,3 +364,21 @@ class AccountBindLog(Base):
 
     def __repr__(self) -> str:
         return f"<AccountBindLog(id={self.id}, user_id={self.user_id}, code={self.bind_code})>"
+
+
+class SystemSession(Base):
+    """系统级 Telegram 会话表（仅保存 bot/userbot 客户端会话）"""
+    __tablename__ = "system_sessions"
+
+    session_key: Mapped[str] = mapped_column(String(64), primary_key=True, comment="会话键: manager_bot/global_userbot")
+    session_encrypted: Mapped[str] = mapped_column(Text, nullable=False, comment="加密后的 Telethon StringSession")
+    session_meta: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True, comment="附加元数据")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), comment="创建时间")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间")
+
+    __table_args__ = (
+        Index("idx_system_sessions_updated_at", "updated_at"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<SystemSession(key={self.session_key})>"

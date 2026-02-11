@@ -17,12 +17,19 @@ from loguru import logger
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.errors import SessionPasswordNeededError, RPCError
-from sqlalchemy import select
+from sqlalchemy import select, delete, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.session import get_async_session
-from database.models import Account, HealthStatus
+from database.models import (
+    Account,
+    HealthStatus,
+    ScheduledMessageTask,
+    TaskLog,
+    Proxy,
+    AccountBindLog,
+)
 from bot.redis_login_manager import get_redis_login_manager, LoginStatus
 from utils.crypto import (
     encrypt_string_session,
@@ -451,22 +458,60 @@ class AccountManager:
             是否删除成功
         """
         async with get_async_session() as session:
-            result = await session.execute(
-                select(Account).where(Account.account_id == account_id)
-            )
-            account = result.scalar_one_or_none()
+            try:
+                result = await session.execute(
+                    select(Account).where(Account.account_id == account_id)
+                )
+                account = result.scalar_one_or_none()
 
-            if not account:
-                return False
+                if not account:
+                    return False
 
-            # 关闭并清理客户端
-            await self._close_client(account_id)
+                # 关闭并清理客户端
+                await self._close_client(account_id)
 
-            await session.delete(account)
-            await session.commit()
+                # 清理任务与任务日志（避免 account_id 外键阻塞删除）
+                task_id_rows = await session.execute(
+                    select(ScheduledMessageTask.task_id).where(
+                        ScheduledMessageTask.account_id == account_id
+                    )
+                )
+                task_ids = [row[0] for row in task_id_rows.all()]
+                if task_ids:
+                    await session.execute(
+                        delete(TaskLog).where(TaskLog.task_id.in_(task_ids))
+                    )
 
-            logger.info(f"删除账号: {account_id}")
-            return True
+                await session.execute(
+                    delete(ScheduledMessageTask).where(
+                        ScheduledMessageTask.account_id == account_id
+                    )
+                )
+
+                # 清理绑定日志（历史库外键可能不是 ON DELETE SET NULL/CASCADE）
+                await session.execute(
+                    delete(AccountBindLog).where(AccountBindLog.account_id == account_id)
+                )
+
+                # 解绑占用中的代理，避免留下脏的 assigned_account_id
+                await session.execute(
+                    update(Proxy)
+                    .where(Proxy.assigned_account_id == account_id)
+                    .values(assigned_account_id=None)
+                )
+
+                await session.delete(account)
+                await session.commit()
+
+                logger.info(
+                    f"删除账号: {account_id}, 清理任务 {len(task_ids)} 条, "
+                    f"绑定日志已清理, 代理占用已解绑"
+                )
+                return True
+            except IntegrityError as e:
+                await session.rollback()
+                logger.error(f"删除账号失败（外键约束）: {account_id}, error={e}")
+                raise RuntimeError("删除账号失败：仍存在关联数据，请联系管理员检查外键配置")
 
     # ==================== TelegramClient 管理 ====================
 
@@ -499,7 +544,14 @@ class AccountManager:
         try:
             string_session = decrypt_string_session(account.string_session_encrypted)
         except Exception as e:
-            logger.error(f"解密 StringSession 失败: {e}")
+            logger.error(
+                f"解密 StringSession 失败: {e} | account_id={account_id}。"
+                "可能是 ENCRYPTION_KEY 变更或历史会话使用了旧密钥，请重新扫码绑定。"
+            )
+            try:
+                await self.update_health_status(account_id, HealthStatus.OFFLINE)
+            except Exception as status_err:
+                logger.warning(f"更新账号健康状态失败: {status_err}")
             return None
 
         # 获取代理配置

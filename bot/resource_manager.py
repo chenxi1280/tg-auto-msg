@@ -13,16 +13,28 @@ from dataclasses import dataclass
 from loguru import logger
 
 from telethon import TelegramClient
+from telethon.tl import types as tl_types
 from telethon.tl.types import (
     User, Chat, Channel,
     InputPeerUser, InputPeerChat, InputPeerChannel,
 )
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, cast, String as SQLString, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.session import get_async_session
 from database.models import Resource, Account, PeerType
 from bot.account_manager import get_account_manager
+from utils.crypto import decrypt_string_session
+
+# Telethon 不同版本可用的空实体类型不同（如 1.42 无 ChannelEmpty）
+_EMPTY_PEER_TYPES = tuple(
+    t for t in (
+        getattr(tl_types, "UserEmpty", None),
+        getattr(tl_types, "ChatEmpty", None),
+        getattr(tl_types, "ChannelEmpty", None),
+    )
+    if t is not None
+)
 
 
 @dataclass
@@ -66,7 +78,8 @@ class ResourceManager:
         # 获取客户端
         client = await self._account_manager.get_client(account_id)
         if not client:
-            return SyncResult(0, 0, 0, 0, 0, "无法获取客户端")
+            error_message = await self._diagnose_client_unavailable(account_id)
+            return SyncResult(0, 0, 0, 0, 0, error_message)
 
         result = SyncResult(0, 0, 0, 0, 0)
 
@@ -74,6 +87,7 @@ class ResourceManager:
             # 获取所有 Dialogs
             dialogs = await client.get_dialogs()
             logger.info(f"获取到 {len(dialogs)} 个 Dialogs")
+            first_peer_error = ""
 
             # 在同一会话中完成 upsert 与失活标记，避免脱离会话对象导致更新丢失
             async with get_async_session() as session:
@@ -99,6 +113,8 @@ class ResourceManager:
                             result.updated += 1
                     except Exception as e:
                         logger.error(f"同步 Peer 失败: {e}")
+                        if not first_peer_error:
+                            first_peer_error = str(e)
                         result.failed += 1
 
                 # remaining existing 即“本次未扫描到”的资源，标记为 inactive
@@ -109,12 +125,33 @@ class ResourceManager:
 
                 await session.commit()
 
+            if result.synced == 0 and result.failed > 0 and first_peer_error:
+                result.error = first_peer_error
+
             logger.info(f"全量同步完成: {result}")
             return result
 
         except Exception as e:
             logger.error(f"全量同步失败: {e}")
             return SyncResult(0, 0, 0, 0, 0, str(e))
+
+    async def _diagnose_client_unavailable(self, account_id: str) -> str:
+        """
+        诊断无法创建客户端的常见原因，返回可执行的错误提示。
+        """
+        account = await self._account_manager.get_account(account_id)
+        if not account:
+            return "账号不存在"
+
+        if not account.is_active:
+            return "账号已禁用，请先启用账号"
+
+        try:
+            decrypt_string_session(account.string_session_encrypted)
+        except Exception:
+            return "StringSession 解密失败，请重新扫码绑定该账号"
+
+        return "无法获取客户端，请确认账号仍在线并检查代理配置"
 
     async def _sync_peer(
         self,
@@ -129,10 +166,8 @@ class ResourceManager:
         Returns:
             "new", "updated", 或 "unchanged"
         """
-        from telethon.tl.types import User, Chat, Channel, UserEmpty, ChatEmpty, ChannelEmpty
-
         # 跳过空的 Peer
-        if isinstance(peer, (UserEmpty, ChatEmpty, ChannelEmpty)):
+        if _EMPTY_PEER_TYPES and isinstance(peer, _EMPTY_PEER_TYPES):
             return "unchanged"
 
         # 提取 Peer 信息
@@ -214,16 +249,29 @@ class ResourceManager:
 
     def _get_title(self, peer: Any) -> str:
         """获取 Peer 标题"""
-        if hasattr(peer, 'title'):
-            return peer.title or ""
+        if hasattr(peer, 'title') and peer.title:
+            return str(peer.title).strip()
+
         if hasattr(peer, 'first_name'):
-            name = peer.first_name or ""
-            if hasattr(peer, 'last_name') and peer.last_name:
-                name += f" {peer.last_name}"
-            return name
-        if hasattr(peer, 'username'):
-            return f"@{peer.username}"
-        return ""
+            first_name = str(peer.first_name or "").strip()
+            last_name = str(getattr(peer, 'last_name', "") or "").strip()
+            full_name = f"{first_name} {last_name}".strip()
+            if full_name:
+                return full_name
+
+        username = str(getattr(peer, 'username', "") or "").strip()
+        if username:
+            return f"@{username}"
+
+        peer_id = getattr(peer, 'id', None)
+        peer_type = self._get_peer_type(peer)
+        if peer_type == PeerType.USER:
+            return f"用户 {peer_id}"
+        if peer_type in (PeerType.CHAT, PeerType.SUPERGROUP):
+            return f"群组 {peer_id}"
+        if peer_type == PeerType.CHANNEL:
+            return f"频道 {peer_id}"
+        return f"会话 {peer_id}"
 
     def _has_resource_changed(self, resource: Resource, data: Dict[str, Any]) -> bool:
         """检查资源是否有变化"""
@@ -278,7 +326,7 @@ class ResourceManager:
             if is_active:
                 query = query.where(Resource.is_active == True)
 
-            query = query.order_by(Resource.title).limit(limit)
+            query = query.order_by(func.coalesce(Resource.title, "")).limit(limit)
 
             result = await session.execute(query)
             return result.scalars().all()
@@ -312,14 +360,15 @@ class ResourceManager:
             q = q.where(
                 or_(
                     Resource.title.ilike(f"%{query}%"),
-                    Resource.username.ilike(f"%{query}%")
+                    Resource.username.ilike(f"%{query}%"),
+                    cast(Resource.peer_id, SQLString).ilike(f"%{query}%")
                 )
             )
 
             if peer_type:
                 q = q.where(Resource.peer_type == peer_type)
 
-            q = q.order_by(Resource.title).limit(limit)
+            q = q.order_by(func.coalesce(Resource.title, "")).limit(limit)
 
             result = await session.execute(q)
             return result.scalars().all()

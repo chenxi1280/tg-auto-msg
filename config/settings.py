@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     # 应用配置
     log_level: str = Field(default="INFO", alias="LOG_LEVEL", description="日志级别")
     timezone: str = Field(default="Asia/Shanghai", alias="TIMEZONE", description="时区")
+    h5_base_url: str = Field(
+        default="http://localhost:8000",
+        alias="H5_BASE_URL",
+        description="H5 控制台基础 URL"
+    )
 
     # 调度配置
     worker_interval: int = Field(default=60, alias="WORKER_INTERVAL", description="Worker 扫描间隔（秒）")

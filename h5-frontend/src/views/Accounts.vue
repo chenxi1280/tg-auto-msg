@@ -42,11 +42,14 @@
             v-for="account in accounts"
             :key="account.account_id"
             class="account-card"
+            v-loading="isAccountSyncing(account.account_id)"
+            element-loading-text="同步中..."
             :class="{
               'account-offline': account.health_status !== 'online',
               'account-flooding': account.is_flooding,
               'account-banned': account.is_banned,
-              'account-inactive': !account.is_active
+              'account-inactive': !account.is_active,
+              'account-syncing': isAccountSyncing(account.account_id)
             }"
           >
             <!-- 账号头部 -->
@@ -101,25 +104,37 @@
               <el-button size="small" type="primary" plain @click="viewAccountGroups(account.account_id)">
                 查看群组
               </el-button>
-              <el-button size="small" type="success" plain @click="createTaskFromAccount(account.account_id)">
-                创建任务
+              <el-button
+                size="small"
+                type="success"
+                plain
+                :disabled="isAccountSyncing(account.account_id)"
+                @click="createTaskFromAccount(account.account_id)"
+              >
+                任务管理
               </el-button>
               <el-button
                 size="small"
                 type="info"
                 :loading="bindCodeLoading[account.account_id] === true"
+                :disabled="isAccountSyncing(account.account_id)"
                 @click="refreshBindCode(account)"
               >
                 {{ account.bind_code ? '刷新绑定码' : '获取绑定码' }}
               </el-button>
               <el-button
                 size="small"
-                :disabled="!account.bind_code"
+                :disabled="!account.bind_code || isAccountSyncing(account.account_id)"
                 @click="copyBindCommand(account)"
               >
                 复制 /bind
               </el-button>
-              <el-button size="small" @click="syncAccount(account.account_id)">
+              <el-button
+                size="small"
+                :loading="isAccountSyncing(account.account_id)"
+                :disabled="isAccountSyncing(account.account_id)"
+                @click="syncAccount(account.account_id)"
+              >
                 <el-icon><Refresh /></el-icon>
                 同步资源
               </el-button>
@@ -127,6 +142,7 @@
                 v-if="account.is_active"
                 size="small"
                 type="warning"
+                :disabled="isAccountSyncing(account.account_id)"
                 @click="confirmDisable(account)"
               >
                 <el-icon><Close /></el-icon>
@@ -136,6 +152,7 @@
                 v-else
                 size="small"
                 type="success"
+                :disabled="isAccountSyncing(account.account_id)"
                 @click="enableAccount(account.account_id)"
               >
                 <el-icon><Check /></el-icon>
@@ -144,6 +161,7 @@
               <el-button
                 size="small"
                 type="danger"
+                :disabled="isAccountSyncing(account.account_id)"
                 @click="confirmDelete(account)"
               >
                 <el-icon><Delete /></el-icon>
@@ -178,6 +196,9 @@ const onlineAccounts = computed(() => accountStore.onlineAccounts)
 const floodingAccounts = computed(() => accountStore.floodingAccounts)
 const bannedAccounts = computed(() => accountStore.bannedAccounts)
 const bindCodeLoading = reactive<Record<string, boolean>>({})
+const syncLoading = reactive<Record<string, boolean>>({})
+
+const isAccountSyncing = (accountId: string) => syncLoading[accountId] === true
 
 // 跳转到 TG 账号绑定页
 const goToLogin = () => {
@@ -251,11 +272,15 @@ const copyBindCommand = async (account: Account) => {
 
 // 同步账号资源
 const syncAccount = async (accountId: string) => {
+  if (syncLoading[accountId]) return
+  syncLoading[accountId] = true
   try {
-    await accountStore.syncAccount(accountId)
-    ElMessage.success('资源同步已启动，请稍后查看')
+    await accountStore.syncAccount(accountId, true)
+    ElMessage.success('资源同步完成')
   } catch (err: any) {
     ElMessage.error(err.message || '同步失败')
+  } finally {
+    syncLoading[accountId] = false
   }
 }
 
@@ -426,6 +451,10 @@ onMounted(() => {
   transition: all 0.2s;
 }
 
+.account-syncing {
+  pointer-events: none;
+}
+
 .account-card:hover {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
 }
@@ -514,5 +543,81 @@ onMounted(() => {
 .account-actions .el-button {
   flex: 1;
   min-width: 80px;
+}
+
+@media (max-width: 900px) {
+  .container {
+    padding: 0 0.9rem;
+  }
+
+  .toolbar .container {
+    flex-wrap: wrap;
+    gap: 0.65rem;
+  }
+
+  .stats {
+    width: 100%;
+    margin-left: 0;
+    flex-wrap: wrap;
+  }
+
+  .main {
+    padding: 1rem 0;
+  }
+
+  .account-grid {
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 0.9rem;
+  }
+}
+
+@media (max-width: 640px) {
+  .header {
+    padding: 1rem 0;
+  }
+
+  .header h1 {
+    font-size: 1.25rem;
+  }
+
+  .toolbar .container :deep(.el-button) {
+    width: 100%;
+  }
+
+  .account-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .account-card {
+    padding: 1rem;
+    border-radius: 10px;
+  }
+
+  .account-header {
+    align-items: flex-start;
+  }
+
+  .account-avatar {
+    width: 42px;
+    height: 42px;
+    font-size: 1rem;
+  }
+
+  .detail-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.2rem;
+  }
+
+  .account-actions .el-button {
+    flex: 1 1 calc(50% - 0.25rem);
+    min-width: 0;
+  }
+}
+
+@media (max-width: 420px) {
+  .account-actions .el-button {
+    flex-basis: 100%;
+  }
 }
 </style>

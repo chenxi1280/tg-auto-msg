@@ -56,6 +56,21 @@ _schema_ready = False
 _schema_lock: Optional[asyncio.Lock] = None
 
 MIGRATION_SQL = [
+    # 系统级会话持久化（bot/userbot）
+    """
+    CREATE TABLE IF NOT EXISTS system_sessions (
+        session_key VARCHAR(64) PRIMARY KEY,
+        session_encrypted TEXT NOT NULL,
+        session_meta JSON,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_system_sessions_updated_at
+    ON system_sessions(updated_at)
+    """,
+
     # accounts 绑定码字段（兼容旧库）
     """
     ALTER TABLE IF EXISTS accounts
@@ -89,6 +104,10 @@ MIGRATION_SQL = [
     """,
     """
     ALTER TABLE IF EXISTS scheduled_message_tasks
+    ADD COLUMN IF NOT EXISTS target_peers JSON
+    """,
+    """
+    ALTER TABLE IF EXISTS scheduled_message_tasks
     ADD COLUMN IF NOT EXISTS priority INTEGER DEFAULT 0
     """,
     """
@@ -108,12 +127,145 @@ MIGRATION_SQL = [
     ADD COLUMN IF NOT EXISTS next_run_at BIGINT
     """,
     """
+    ALTER TABLE IF EXISTS scheduled_message_tasks
+    ADD COLUMN IF NOT EXISTS media_type VARCHAR(20) DEFAULT 'none'
+    """,
+    """
+    ALTER TABLE IF EXISTS scheduled_message_tasks
+    ADD COLUMN IF NOT EXISTS media_file_id VARCHAR(255)
+    """,
+    # 兼容旧库：media_type 可能是历史 ENUM(mediatype)，统一转换为小写字符串
+    """
+    DO $$
+    BEGIN
+        IF to_regclass('scheduled_message_tasks') IS NOT NULL THEN
+            ALTER TABLE scheduled_message_tasks
+            ALTER COLUMN media_type TYPE VARCHAR(20)
+            USING LOWER(media_type::text);
+
+            ALTER TABLE scheduled_message_tasks
+            ALTER COLUMN media_type SET DEFAULT 'none';
+        END IF;
+    END
+    $$;
+    """,
+    """
+    DO $$
+    BEGIN
+        IF to_regclass('scheduled_message_tasks') IS NOT NULL THEN
+            UPDATE scheduled_message_tasks
+            SET media_type = 'none'
+            WHERE media_type IS NULL OR TRIM(media_type) = '';
+
+            IF EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conname = 'scheduled_message_tasks_media_type_check'
+            ) THEN
+                ALTER TABLE scheduled_message_tasks
+                DROP CONSTRAINT scheduled_message_tasks_media_type_check;
+            END IF;
+
+            ALTER TABLE scheduled_message_tasks
+            ADD CONSTRAINT scheduled_message_tasks_media_type_check
+            CHECK (media_type IN ('none', 'photo', 'video', 'sticker', 'animation'));
+        END IF;
+    END
+    $$;
+    """,
+    """
     CREATE INDEX IF NOT EXISTS idx_account_id
     ON scheduled_message_tasks(account_id)
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_enabled_next_run
     ON scheduled_message_tasks(enabled, next_run_at)
+    """,
+
+    # 兼容旧库：修正关键外键的删除策略，避免删账号被历史约束阻塞
+    """
+    DO $$
+    BEGIN
+        IF to_regclass('account_bind_logs') IS NOT NULL THEN
+            IF EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conname = 'account_bind_logs_account_id_fkey'
+            ) THEN
+                ALTER TABLE account_bind_logs
+                DROP CONSTRAINT account_bind_logs_account_id_fkey;
+            END IF;
+
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conname = 'account_bind_logs_account_id_fkey'
+            ) THEN
+                ALTER TABLE account_bind_logs
+                ADD CONSTRAINT account_bind_logs_account_id_fkey
+                FOREIGN KEY (account_id)
+                REFERENCES accounts(account_id)
+                ON DELETE SET NULL;
+            END IF;
+        END IF;
+    END
+    $$;
+    """,
+    """
+    DO $$
+    BEGIN
+        IF to_regclass('scheduled_message_tasks') IS NOT NULL THEN
+            IF EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conname = 'scheduled_message_tasks_account_id_fkey'
+            ) THEN
+                ALTER TABLE scheduled_message_tasks
+                DROP CONSTRAINT scheduled_message_tasks_account_id_fkey;
+            END IF;
+
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conname = 'scheduled_message_tasks_account_id_fkey'
+            ) THEN
+                ALTER TABLE scheduled_message_tasks
+                ADD CONSTRAINT scheduled_message_tasks_account_id_fkey
+                FOREIGN KEY (account_id)
+                REFERENCES accounts(account_id)
+                ON DELETE CASCADE;
+            END IF;
+        END IF;
+    END
+    $$;
+    """,
+    """
+    DO $$
+    BEGIN
+        IF to_regclass('proxies') IS NOT NULL THEN
+            IF EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conname = 'proxies_assigned_account_id_fkey'
+            ) THEN
+                ALTER TABLE proxies
+                DROP CONSTRAINT proxies_assigned_account_id_fkey;
+            END IF;
+
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conname = 'proxies_assigned_account_id_fkey'
+            ) THEN
+                ALTER TABLE proxies
+                ADD CONSTRAINT proxies_assigned_account_id_fkey
+                FOREIGN KEY (assigned_account_id)
+                REFERENCES accounts(account_id)
+                ON DELETE SET NULL;
+            END IF;
+        END IF;
+    END
+    $$;
     """,
 ]
 
@@ -122,6 +274,7 @@ REQUIRED_TASK_COLUMNS = {
     "target_peer_id",
     "target_peer_type",
     "target_access_hash",
+    "target_peers",
     "priority",
     "delay_min_seconds",
     "delay_max_seconds",

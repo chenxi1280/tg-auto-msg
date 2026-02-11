@@ -6,6 +6,16 @@ import { ref, computed } from 'vue'
 import * as accountApi from '@/api/account'
 import type { Account } from '@/api/account'
 
+const extractErrorMessage = (err: any, fallback: string): string => {
+  return (
+    err?.response?.data?.detail ||
+    err?.response?.data?.message ||
+    err?.response?.data?.error ||
+    err?.message ||
+    fallback
+  )
+}
+
 export const useAccountStore = defineStore('account', () => {
   // 状态
   const accounts = ref<Account[]>([])
@@ -39,8 +49,9 @@ export const useAccountStore = defineStore('account', () => {
       const res = await accountApi.syncAccountResources(accountId, wait)
       return res.message
     } catch (err: any) {
+      const message = extractErrorMessage(err, '同步账号资源失败')
       console.error('同步账号资源失败:', err)
-      throw err
+      throw new Error(message)
     }
   }
 
@@ -96,8 +107,9 @@ export const useAccountStore = defineStore('account', () => {
       const res = await accountApi.getAccountResources(accountId, params)
       return res.data || []
     } catch (err: any) {
+      const message = extractErrorMessage(err, '获取账号资源失败')
       console.error('获取账号资源失败:', err)
-      throw err
+      throw new Error(message)
     }
   }
 

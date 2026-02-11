@@ -328,4 +328,40 @@ onUnmounted(() => {
   display: block;
   margin: 0.5rem 0;
 }
+
+@media (max-width: 640px) {
+  .login-container {
+    border-radius: 12px;
+  }
+
+  .login-header {
+    padding: 1rem;
+  }
+
+  .login-header h1 {
+    font-size: 1.25rem;
+  }
+
+  .back-link {
+    float: none;
+    display: inline-block;
+    margin-bottom: 0.5rem;
+  }
+
+  .login-content {
+    padding: 1rem;
+  }
+
+  .qr-placeholder {
+    width: 230px;
+    height: 230px;
+    margin-bottom: 1rem;
+  }
+
+  .bind-code {
+    font-size: 2rem;
+    letter-spacing: 0.15em;
+    word-break: break-all;
+  }
+}
 </style>

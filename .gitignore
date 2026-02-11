@@ -46,6 +46,9 @@ ENV/
 logs/
 *.log
 
+# 上传媒体文件
+uploads/
+
 # 数据库
 *.db
 *.sqlite

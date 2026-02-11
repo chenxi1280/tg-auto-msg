@@ -10,6 +10,7 @@ export interface TaskItem {
   chat_id: number | null
   target_peer_id: number | null
   target_peer_type: string | null
+  target_peers: Array<{ peer_id: number; peer_type: string; access_hash?: number | null }>
   title: string
   enabled: boolean
   priority: number
@@ -45,6 +46,7 @@ export interface CreateTaskPayload {
   target_peer_id?: number | null
   target_peer_type?: string | null
   target_access_hash?: number | null
+  target_peers?: Array<{ peer_id: number; peer_type: string; access_hash?: number | null }>
   title: string
   enabled: boolean
   priority?: number
@@ -64,6 +66,13 @@ export interface CreateTaskPayload {
   pin_message?: boolean
 }
 
+export interface UploadTaskMediaResult {
+  media_type: string
+  media_file_id: string
+  filename: string
+  size: number
+}
+
 export const getTasks = (): Promise<ApiResponse<TaskItem[]>> => {
   return request.get('/tasks')
 }
@@ -78,6 +87,16 @@ export const createTask = (payload: CreateTaskPayload): Promise<ApiResponse<{ ta
 
 export const updateTask = (taskId: string, payload: Partial<CreateTaskPayload>): Promise<ApiResponse<any>> => {
   return request.put(`/tasks/${taskId}`, payload)
+}
+
+export const uploadTaskMedia = (
+  accountId: string,
+  file: File
+): Promise<ApiResponse<UploadTaskMediaResult>> => {
+  const formData = new FormData()
+  formData.append('account_id', accountId)
+  formData.append('media', file)
+  return request.post('/tasks/upload-media', formData)
 }
 
 export const deleteTask = (taskId: string): Promise<ApiResponse<any>> => {

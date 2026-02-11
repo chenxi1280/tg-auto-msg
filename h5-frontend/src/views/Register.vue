@@ -209,4 +209,19 @@ const handleRegister = async () => {
 .form-footer a:hover {
   text-decoration: underline;
 }
+
+@media (max-width: 480px) {
+  .register-container {
+    padding: 1.2rem;
+    border-radius: 12px;
+  }
+
+  .register-header {
+    margin-bottom: 1rem;
+  }
+
+  .register-header h1 {
+    font-size: 1.4rem;
+  }
+}
 </style>

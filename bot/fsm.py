@@ -15,6 +15,7 @@ class FSMState(str, Enum):
     WAIT_START_AT = "wait_start_at"  # 等待输入开始时间
     WAIT_END_AT = "wait_end_at"  # 等待输入结束时间
     WAIT_INTERVAL = "wait_interval"  # 等待选择重复间隔
+    WAIT_TARGET_SEARCH = "wait_target_search"  # 等待输入目标聊天搜索词
 
 
 # FSM 存储器（内存存储，生产环境可使用 Redis）

@@ -8,10 +8,12 @@
 """
 import os
 import base64
-from typing import Tuple
+import hashlib
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.backends import default_backend
+from cryptography.exceptions import InvalidTag
 from loguru import logger
+
+from config.settings import settings
 
 
 class CryptoManager:
@@ -45,15 +47,19 @@ class CryptoManager:
                 raise ValueError(f"加密密钥必须是 {self.KEY_LENGTH} 字节")
         else:
             # 从环境变量读取或生成新密钥
-            key_str = os.getenv("ENCRYPTION_KEY")
+            key_str = os.getenv("ENCRYPTION_KEY") or settings.encryption_key
             if key_str:
                 self._key = base64.b64decode(key_str.encode())
                 if len(self._key) != self.KEY_LENGTH:
                     raise ValueError(f"ENCRYPTION_KEY 必须是 {self.KEY_LENGTH} 字节的 Base64 编码")
             else:
-                # 生成新密钥（仅用于开发环境）
-                logger.warning("未设置 ENCRYPTION_KEY 环境变量，使用临时密钥（仅限开发环境）")
-                self._key = os.urandom(self.KEY_LENGTH)
+                # 稳定回退：基于 JWT_SECRET_KEY 派生固定 32 字节密钥，避免重启后无法解密
+                seed = f"tg-auto-msg::{settings.secret_key}".encode("utf-8")
+                self._key = hashlib.sha256(seed).digest()
+                logger.warning(
+                    "未设置 ENCRYPTION_KEY，已使用基于 JWT_SECRET_KEY 的派生密钥。"
+                    "建议在生产环境显式配置 ENCRYPTION_KEY。"
+                )
 
         self._aesgcm = AESGCM(self._key)
 
@@ -102,6 +108,8 @@ class CryptoManager:
         try:
             # Base64 解码
             data = base64.b64decode(encrypted_text.encode())
+            if len(data) <= self.NONCE_LENGTH:
+                raise ValueError("密文格式错误")
 
             # 分离 nonce 和 ciphertext
             nonce = data[:self.NONCE_LENGTH]
@@ -111,6 +119,10 @@ class CryptoManager:
             plaintext = self._aesgcm.decrypt(nonce, ciphertext, None)
             return plaintext.decode('utf-8')
 
+        except InvalidTag:
+            msg = "解密失败: 密钥不匹配或密文损坏"
+            logger.error(msg)
+            raise ValueError(msg)
         except Exception as e:
             logger.error(f"解密失败: {e}")
             raise ValueError(f"解密失败: {e}")

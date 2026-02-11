@@ -18,9 +18,16 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
 }
 
 #app {
   min-height: 100vh;
+}
+
+@media (max-width: 640px) {
+  body {
+    font-size: 14px;
+  }
 }
 </style>

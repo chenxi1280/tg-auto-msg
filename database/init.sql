@@ -50,6 +50,24 @@ COMMENT ON COLUMN users.email IS '电子邮箱';
 COMMENT ON COLUMN users.is_active IS '是否激活';
 
 -- ============================================
+-- 表: 系统会话表 (system_sessions)
+-- ============================================
+CREATE TABLE IF NOT EXISTS system_sessions (
+    session_key VARCHAR(64) PRIMARY KEY,                -- manager_bot/global_userbot
+    session_encrypted TEXT NOT NULL,                    -- 加密的 Telethon StringSession
+    session_meta JSONB,                                 -- 附加元数据
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_system_sessions_updated_at ON system_sessions(updated_at);
+
+COMMENT ON TABLE system_sessions IS '系统级 Telegram 会话表（bot/userbot）';
+COMMENT ON COLUMN system_sessions.session_key IS '会话键: manager_bot/global_userbot';
+COMMENT ON COLUMN system_sessions.session_encrypted IS '加密后的 Telethon StringSession';
+COMMENT ON COLUMN system_sessions.session_meta IS '附加元数据';
+
+-- ============================================
 -- 表: 代理池表 (proxies)
 -- ============================================
 CREATE TABLE IF NOT EXISTS proxies (
@@ -225,7 +243,7 @@ COMMENT ON COLUMN resources.is_scam IS '是否诈骗';
 -- ============================================
 CREATE TABLE IF NOT EXISTS account_bind_logs (
     id SERIAL PRIMARY KEY,
-    account_id VARCHAR(36) REFERENCES accounts(account_id),
+    account_id VARCHAR(36) REFERENCES accounts(account_id) ON DELETE SET NULL,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     bind_code VARCHAR(6),
     bound_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -249,7 +267,7 @@ CREATE TABLE IF NOT EXISTS scheduled_message_tasks (
 
     -- 基础信息
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    account_id VARCHAR(36) REFERENCES accounts(account_id),  -- 执行账号 ID
+    account_id VARCHAR(36) REFERENCES accounts(account_id) ON DELETE CASCADE,  -- 执行账号 ID
     chat_id BIGINT,                                        -- 兼容旧数据
     title VARCHAR(100) NOT NULL,
 
@@ -257,6 +275,7 @@ CREATE TABLE IF NOT EXISTS scheduled_message_tasks (
     target_peer_id BIGINT,
     target_peer_type VARCHAR(20),
     target_access_hash BIGINT,
+    target_peers JSONB,
 
     -- 启用状态
     enabled BOOLEAN DEFAULT FALSE,
@@ -301,13 +320,15 @@ CREATE TABLE IF NOT EXISTS scheduled_message_tasks (
 
 -- 兼容旧库：为已存在的 scheduled_message_tasks 补齐新字段
 ALTER TABLE IF EXISTS scheduled_message_tasks
-    ADD COLUMN IF NOT EXISTS account_id VARCHAR(36) REFERENCES accounts(account_id);
+    ADD COLUMN IF NOT EXISTS account_id VARCHAR(36) REFERENCES accounts(account_id) ON DELETE CASCADE;
 ALTER TABLE IF EXISTS scheduled_message_tasks
     ADD COLUMN IF NOT EXISTS target_peer_id BIGINT;
 ALTER TABLE IF EXISTS scheduled_message_tasks
     ADD COLUMN IF NOT EXISTS target_peer_type VARCHAR(20);
 ALTER TABLE IF EXISTS scheduled_message_tasks
     ADD COLUMN IF NOT EXISTS target_access_hash BIGINT;
+ALTER TABLE IF EXISTS scheduled_message_tasks
+    ADD COLUMN IF NOT EXISTS target_peers JSONB;
 ALTER TABLE IF EXISTS scheduled_message_tasks
     ADD COLUMN IF NOT EXISTS priority INTEGER DEFAULT 0;
 ALTER TABLE IF EXISTS scheduled_message_tasks
@@ -318,6 +339,41 @@ ALTER TABLE IF EXISTS scheduled_message_tasks
     ADD COLUMN IF NOT EXISTS delay_max_seconds INTEGER DEFAULT 0;
 ALTER TABLE IF EXISTS scheduled_message_tasks
     ADD COLUMN IF NOT EXISTS next_run_at BIGINT;
+ALTER TABLE IF EXISTS scheduled_message_tasks
+    ADD COLUMN IF NOT EXISTS media_type VARCHAR(20) DEFAULT 'none';
+ALTER TABLE IF EXISTS scheduled_message_tasks
+    ADD COLUMN IF NOT EXISTS media_file_id VARCHAR(255);
+
+-- 兼容旧库：media_type 可能是历史 enum 类型，统一为小写字符串并重建检查约束
+DO $$
+BEGIN
+    IF to_regclass('scheduled_message_tasks') IS NOT NULL THEN
+        ALTER TABLE scheduled_message_tasks
+        ALTER COLUMN media_type TYPE VARCHAR(20)
+        USING LOWER(media_type::text);
+
+        ALTER TABLE scheduled_message_tasks
+        ALTER COLUMN media_type SET DEFAULT 'none';
+
+        UPDATE scheduled_message_tasks
+        SET media_type = 'none'
+        WHERE media_type IS NULL OR TRIM(media_type) = '';
+
+        IF EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'scheduled_message_tasks_media_type_check'
+        ) THEN
+            ALTER TABLE scheduled_message_tasks
+            DROP CONSTRAINT scheduled_message_tasks_media_type_check;
+        END IF;
+
+        ALTER TABLE scheduled_message_tasks
+        ADD CONSTRAINT scheduled_message_tasks_media_type_check
+        CHECK (media_type IN ('none', 'photo', 'video', 'sticker', 'animation'));
+    END IF;
+END
+$$;
 
 -- 索引
 CREATE INDEX idx_scheduled_user_chat ON scheduled_message_tasks(user_id, chat_id);
@@ -331,6 +387,7 @@ COMMENT ON COLUMN scheduled_message_tasks.chat_id IS '群组/频道 ID（兼容�
 COMMENT ON COLUMN scheduled_message_tasks.target_peer_id IS '目标 Peer ID（新架构）';
 COMMENT ON COLUMN scheduled_message_tasks.target_peer_type IS '目标 Peer 类型';
 COMMENT ON COLUMN scheduled_message_tasks.target_access_hash IS '目标 Access Hash';
+COMMENT ON COLUMN scheduled_message_tasks.target_peers IS '多目标 Peer 列表';
 COMMENT ON COLUMN scheduled_message_tasks.priority IS '任务优先级（越大越优先）';
 COMMENT ON COLUMN scheduled_message_tasks.jitter_seconds IS '随机抖动秒数（0-300）';
 COMMENT ON COLUMN scheduled_message_tasks.delay_min_seconds IS '随机延迟下限（秒）';
@@ -374,6 +431,11 @@ CREATE TRIGGER update_users_updated_at
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
+CREATE TRIGGER update_system_sessions_updated_at
+    BEFORE UPDATE ON system_sessions
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
 CREATE TRIGGER update_proxies_updated_at
     BEFORE UPDATE ON proxies
     FOR EACH ROW
@@ -404,6 +466,7 @@ FROM information_schema.tables
 WHERE table_schema = 'public'
   AND table_name IN (
     'users',
+    'system_sessions',
     'proxies',
     'accounts',
     'resources',

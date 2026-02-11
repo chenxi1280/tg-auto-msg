@@ -34,58 +34,60 @@
     <!-- 代理列表 -->
     <div class="main">
       <div class="container">
-        <el-table :data="proxies" stripe v-loading="loading">
-          <el-table-column prop="host" label="主机" min-width="150" />
-          <el-table-column prop="port" label="端口" width="80" />
-          <el-table-column prop="proxy_type" label="类型" width="100">
-            <template #default="{ row }">
-              <el-tag size="small">{{ row.proxy_type.toUpperCase() }}</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="状态" width="100">
-            <template #default="{ row }">
-              <el-tag :type="row.is_healthy ? 'success' : 'danger'" size="small">
-                {{ row.is_healthy ? '健康' : '异常' }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column prop="response_time_ms" label="响应时间" width="100" align="right">
-            <template #default="{ row }">
-              <span v-if="row.response_time_ms">{{ row.response_time_ms }}ms</span>
-              <span v-else class="text-muted">-</span>
-            </template>
-          </el-table-column>
-          <el-table-column prop="usage_count" label="使用次数" width="90" align="right" />
-          <el-table-column label="分配账号" width="150">
-            <template #default="{ row }">
-              <span v-if="row.assigned_account_id">
-                {{ row.assigned_account_id.slice(0, 8) }}...
-              </span>
-              <span v-else class="text-muted">未分配</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="240" fixed="right">
-            <template #default="{ row }">
-              <el-button size="small" @click="handleCheckHealth(row)">
-                检查
-              </el-button>
-              <el-button
-                size="small"
-                :disabled="!row.assigned_account_id"
-                @click="handleUnassign(row)"
-              >
-                解绑
-              </el-button>
-              <el-button
-                size="small"
-                type="danger"
-                @click="handleDelete(row)"
-              >
-                删除
-              </el-button>
-            </template>
-          </el-table-column>
-        </el-table>
+        <div class="table-wrap">
+          <el-table :data="proxies" stripe v-loading="loading">
+            <el-table-column prop="host" label="主机" min-width="150" />
+            <el-table-column prop="port" label="端口" width="80" />
+            <el-table-column prop="proxy_type" label="类型" width="100">
+              <template #default="{ row }">
+                <el-tag size="small">{{ row.proxy_type.toUpperCase() }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="row.is_healthy ? 'success' : 'danger'" size="small">
+                  {{ row.is_healthy ? '健康' : '异常' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="response_time_ms" label="响应时间" width="100" align="right">
+              <template #default="{ row }">
+                <span v-if="row.response_time_ms">{{ row.response_time_ms }}ms</span>
+                <span v-else class="text-muted">-</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="usage_count" label="使用次数" width="90" align="right" />
+            <el-table-column label="分配账号" width="150">
+              <template #default="{ row }">
+                <span v-if="row.assigned_account_id">
+                  {{ row.assigned_account_id.slice(0, 8) }}...
+                </span>
+                <span v-else class="text-muted">未分配</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="240" fixed="right">
+              <template #default="{ row }">
+                <el-button size="small" @click="handleCheckHealth(row)">
+                  检查
+                </el-button>
+                <el-button
+                  size="small"
+                  :disabled="!row.assigned_account_id"
+                  @click="handleUnassign(row)"
+                >
+                  解绑
+                </el-button>
+                <el-button
+                  size="small"
+                  type="danger"
+                  @click="handleDelete(row)"
+                >
+                  删除
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
       </div>
     </div>
 
@@ -319,5 +321,49 @@ onMounted(() => {
 
 .text-muted {
   color: #adb5bd;
+}
+
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+@media (max-width: 900px) {
+  .container {
+    padding: 0 0.9rem;
+  }
+
+  .main {
+    padding: 1rem 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .header {
+    padding: 1rem 0;
+  }
+
+  .header h1 {
+    font-size: 1.25rem;
+  }
+
+  .toolbar .container {
+    gap: 0.6rem;
+  }
+
+  .toolbar :deep(.el-button) {
+    width: 100%;
+  }
+
+  .stats {
+    width: 100%;
+    margin-left: 0;
+    flex-wrap: wrap;
+  }
+
+  .table-wrap {
+    margin: 0 -0.15rem;
+    padding: 0 0.15rem;
+  }
 }
 </style>
