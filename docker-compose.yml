@@ -11,7 +11,7 @@ services:
       POSTGRES_PASSWORD: your_password_here
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./database/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
       - "5432:5432"
     restart: unless-stopped
@@ -53,8 +53,7 @@ services:
       - MAX_FAILURE_COUNT=${MAX_FAILURE_COUNT:-5}
     volumes:
       - ./logs:/app/logs
-      - bot_session:/app/bot_session
-      - userbot_session:/app/userbot_session
+      - ./uploads:/app/uploads
     ports:
       - "8000:8000"  # H5 API
     depends_on:
@@ -68,8 +67,4 @@ volumes:
   postgres_data:
     driver: local
   redis_data:
-    driver: local
-  bot_session:
-    driver: local
-  userbot_session:
     driver: local

@@ -35,7 +35,7 @@
 pip install -r requirements.txt
 
 # 2. 初始化数据库
-python -m database.init_db
+python -m backend.database.init_db
 
 # 3. 启动应用
 python main.py

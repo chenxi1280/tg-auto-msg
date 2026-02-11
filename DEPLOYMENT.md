@@ -48,7 +48,7 @@ createdb tg_auto_msg
 
 ### 6. 初始化数据库
 ```bash
-python -m database.init_db
+python -m backend.database.init_db
 ```
 
 ### 7. 启动 Redis

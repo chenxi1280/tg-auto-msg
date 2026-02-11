@@ -84,42 +84,44 @@
 
 ### 配置模块
 ```
-✅ config/__init__.py
-✅ config/settings.py            # 应用配置
+✅ backend/config/__init__.py
+✅ backend/config/settings.py            # 应用配置
 ```
 
 ### 数据库模块
 ```
-✅ database/__init__.py
-✅ database/models.py            # ORM 模型
-✅ database/session.py           # 数据库会话
-✅ database/init_db.py           # 初始化脚本
-✅ database/schema.sql           # SQL 建表脚本
+✅ backend/database/__init__.py
+✅ backend/database/models.py            # ORM 模型
+✅ backend/database/session.py           # 数据库会话
+✅ backend/database/init_db.py           # 初始化脚本
+✅ sql/init.sql
+✅ sql/init_dev.sql
+✅ sql/migrations/001_runtime_schema_compat.sql
 ```
 
 ### Bot 模块
 ```
-✅ bot/__init__.py
-✅ bot/client.py                 # Telegram 客户端
-✅ bot/fsm.py                    # FSM 状态机
-✅ bot/keyboards.py              # 键盘定义
-✅ bot/messages.py               # 消息模板
-✅ bot/handlers/__init__.py
-✅ bot/handlers/main.py          # 主处理器
+✅ backend/bot/__init__.py
+✅ backend/bot/client.py                 # Telegram 客户端
+✅ backend/bot/fsm.py                    # FSM 状态机
+✅ backend/bot/keyboards.py              # 键盘定义
+✅ backend/bot/messages.py               # 消息模板
+✅ backend/bot/handlers/__init__.py
+✅ backend/bot/handlers/main.py          # 主处理器
 ```
 
 ### 调度器模块
 ```
-✅ scheduler/__init__.py
-✅ scheduler/worker.py           # 调度 Worker
+✅ backend/scheduler/__init__.py
+✅ backend/scheduler/worker.py           # 调度 Worker
 ```
 
 ### H5 控制台
 ```
-✅ h5_backend/__init__.py
-✅ h5_backend/api.py             # FastAPI 服务（H5 后端 API）
-✅ h5_backend/routers/auth.py    # 认证路由
-✅ h5-frontend/                  # 统一前端（Vue3 + TS + Vite）
+✅ backend/h5_backend/__init__.py
+✅ backend/h5_backend/api.py             # FastAPI 服务（H5 后端 API）
+✅ backend/h5_backend/routers/auth.py    # 认证路由
+✅ frontend/h5/                  # 统一前端（Vue3 + TS + Vite）
 ```
 
 ### 文档
@@ -215,7 +217,7 @@
 
 4. **初始化数据库**
    ```bash
-   python -m database.init_db
+   python -m backend.database.init_db
    ```
 
 5. **启动应用**

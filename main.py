@@ -4,7 +4,7 @@ Telegram 定时消息推送管理系统 - 主入口
 import uvicorn
 from loguru import logger
 
-from h5_backend.api import app
+from backend.h5_backend.api import app
 
 
 def setup_logger():

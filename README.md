@@ -38,7 +38,7 @@
 - **FastAPI** - H5 API 服务
 
 ### 前端
-- **Vue 3 + TypeScript + Vite** - 统一 H5 控制台（目录：`h5-frontend/`）
+- **Vue 3 + TypeScript + Vite** - 统一 H5 控制台（目录：`frontend/h5/`）
 - **Element Plus** - UI 组件库
 
 ## 📦 安装部署
@@ -82,9 +82,14 @@ MAX_FAILURE_COUNT=5
 # 确保已创建数据库
 createdb tg_auto_msg
 
-# 初始化表结构
-python -m database.init_db
+# 初始化表结构（会自动执行 runtime migrations）
+python -m backend.database.init_db
 ```
+
+SQL 文件结构：
+- `sql/init.sql`：幂等全量建表脚本
+- `sql/init_dev.sql`：本地开发初始化脚本
+- `sql/migrations/*.sql`：运行时兼容迁移脚本
 
 ### 5. 启动 Redis
 ```bash
@@ -103,17 +108,17 @@ docker run -d -p 6379:6379 redis:latest
 python main.py
 ```
 
-首次运行会要求输入验证码，按照提示完成 Userbot 登录。
+首次运行后，通过 H5 扫码完成 Userbot 绑定与登录。
 
 ### 7. 配置 H5 域名
-编辑 `bot/messages.py` 中的 `H5_BASE_URL`：
+编辑 `backend/bot/messages.py` 中的 `H5_BASE_URL`：
 ```python
 H5_BASE_URL = "https://your-domain.com"
 ```
 
 构建前端（生产环境）：
 ```bash
-cd h5-frontend
+cd frontend/h5
 npm install
 npm run build
 ```

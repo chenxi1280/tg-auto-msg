@@ -1,12 +1,7 @@
 import asyncio
 import sys
-import os
 
-# 添加项目根目录 to python path
-sys.path.append(os.getcwd())
-
-from database.session import drop_database, init_database
-from database.models import Base
+from backend.database.session import drop_database, init_database
 
 async def main():
     print("⚠️  警告: 即将删除所有数据表并重新初始化...")

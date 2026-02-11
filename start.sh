@@ -11,14 +11,14 @@ PYTHON_VERSION=$(python3 --version 2>&1 | awk '{print $2}')
 echo "✓ Python 版本: $PYTHON_VERSION"
 
 # 检查虚拟环境
-if [ ! -d "venv" ]; then
+if [ ! -d ".venv" ]; then
     echo ""
     echo "📦 创建虚拟环境..."
-    python3 -m venv venv
+    python3 -m venv .venv
 fi
 
 echo "✓ 激活虚拟环境"
-source venv/bin/activate
+source .venv/bin/activate
 
 # 安装依赖
 echo ""
@@ -42,7 +42,7 @@ fi
 # 初始化数据库
 echo ""
 echo "🗄️  初始化数据库..."
-python -m database.init_db
+python -m backend.database.init_db
 
 # 启动应用
 echo ""
