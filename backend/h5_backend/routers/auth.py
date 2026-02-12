@@ -6,8 +6,8 @@ from fastapi import APIRouter, Depends
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
 
-from backend.database.models import User
-from backend.h5_backend.services.auth_service import get_auth_service
+from backend.database.schema.models import User
+from backend.h5_backend.services.auth.service import get_auth_service
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 router = APIRouter(prefix="/api/auth", tags=["认证"])

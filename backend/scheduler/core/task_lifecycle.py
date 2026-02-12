@@ -6,7 +6,7 @@ from datetime import datetime
 from loguru import logger
 from sqlalchemy import select
 
-from backend.database.models import ScheduledMessageTask, TaskLog
+from backend.database.schema.models import ScheduledMessageTask, TaskLog
 
 
 def calculate_next_run(now: int, target_hour: int, interval_min: int) -> int:

@@ -8,9 +8,9 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.database.models import Resource
-from backend.database.session import get_async_session
-from backend.utils.crypto import decrypt_string_session
+from backend.database.schema.models import Resource
+from backend.database.runtime.session import get_async_session
+from backend.utils.security.crypto import decrypt_string_session
 from backend.bot.resources.peer_utils import (
     EMPTY_PEER_TYPES,
     get_peer_type,

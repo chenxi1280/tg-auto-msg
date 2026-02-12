@@ -6,8 +6,8 @@ from typing import Optional
 
 from sqlalchemy import select
 
-from backend.database.models import ScheduledMessageTask
-from backend.database.session import get_async_session
+from backend.database.schema.models import ScheduledMessageTask
+from backend.database.runtime.session import get_async_session
 
 
 async def enqueue_due_tasks(

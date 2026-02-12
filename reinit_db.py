@@ -1,7 +1,7 @@
 import asyncio
 import sys
 
-from backend.database.session import drop_database, init_database
+from backend.database.runtime.session import drop_database, init_database
 
 async def main():
     print("⚠️  警告: 即将删除所有数据表并重新初始化...")

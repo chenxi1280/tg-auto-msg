@@ -10,7 +10,7 @@ from telethon.errors import RPCError, SessionPasswordNeededError
 from backend.bot.circuit.notify import (
     notify_account_recovered,
 )
-from backend.database.models import HealthStatus
+from backend.database.schema.models import HealthStatus
 
 
 def start_recovery_task(breaker, account_id: str, delay_seconds: int) -> None:

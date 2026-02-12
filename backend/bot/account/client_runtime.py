@@ -7,14 +7,14 @@ from loguru import logger
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
-from backend.config.settings import settings
-from backend.database.models import HealthStatus
-from backend.utils.crypto import decrypt_proxy_password, decrypt_string_session
+from backend.config.core.settings import settings
+from backend.database.schema.models import HealthStatus
+from backend.utils.security.crypto import decrypt_proxy_password, decrypt_string_session
 
 
 async def get_proxy_config(proxy_id: int) -> Optional[Dict[str, Any]]:
     """Build Telethon proxy config from proxy pool record."""
-    from backend.bot.proxy_pool import get_proxy_pool
+    from backend.bot.proxy.pool import get_proxy_pool
 
     proxy_pool = get_proxy_pool()
     proxy = await proxy_pool.get_proxy(proxy_id)
@@ -116,7 +116,7 @@ async def get_client(manager, account_id: str) -> Optional[TelegramClient]:
 
 async def ensure_account_proxy(manager, account_id: str) -> Optional[int]:
     """Ensure one healthy proxy is bound to account; replace when unhealthy."""
-    from backend.bot.proxy_pool import get_proxy_pool
+    from backend.bot.proxy.pool import get_proxy_pool
 
     account = await manager.get_account(account_id)
     if not account:

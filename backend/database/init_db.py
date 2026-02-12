@@ -3,7 +3,7 @@
 """
 import asyncio
 
-from backend.database.session import init_database
+from backend.database.runtime.session import init_database
 
 
 async def main():

@@ -2,10 +2,10 @@
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from backend.bot.account_manager import get_account_manager
-from backend.bot.proxy_pool import get_proxy_pool
-from backend.database.models import Account, Proxy, ScheduledMessageTask
-from backend.database.session import get_async_session
+from backend.bot.account.manager import get_account_manager
+from backend.bot.proxy.pool import get_proxy_pool
+from backend.database.schema.models import Account, Proxy, ScheduledMessageTask
+from backend.database.runtime.session import get_async_session
 
 
 async def check_task_permission(task_id: str, user_id: int) -> ScheduledMessageTask:

@@ -6,8 +6,8 @@ import socket
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from backend.database.models import ProxyType
-from backend.utils.crypto import decrypt_proxy_password
+from backend.database.schema.models import ProxyType
+from backend.utils.security.crypto import decrypt_proxy_password
 
 
 async def check_health(manager, *, proxy_id: int, timeout: int, status_factory):

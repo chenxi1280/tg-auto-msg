@@ -3,9 +3,9 @@ from typing import List
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 
-from backend.database.models import User
+from backend.database.schema.models import User
 from backend.h5_backend.routers.auth import get_current_user
-from backend.h5_backend.services.task_service import get_task_service
+from backend.h5_backend.services.task.service import get_task_service
 
 router = APIRouter(tags=["任务"])
 

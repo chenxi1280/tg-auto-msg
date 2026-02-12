@@ -10,9 +10,9 @@ from sqlalchemy import select
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
-from backend.database.models import SystemSession
-from backend.database.session import get_async_session
-from backend.utils.crypto import decrypt_string_session, encrypt_string_session
+from backend.database.schema.models import SystemSession
+from backend.database.runtime.session import get_async_session
+from backend.utils.security.crypto import decrypt_string_session, encrypt_string_session
 
 
 def extract_expected_bot_id(bot_token: str) -> Optional[int]:

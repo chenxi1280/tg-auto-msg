@@ -8,9 +8,9 @@ import random
 from loguru import logger
 from sqlalchemy import select
 
-from backend.bot.redis_login_manager import get_redis_login_manager
-from backend.database.models import Account, HealthStatus
-from backend.database.session import get_async_session
+from backend.bot.session.redis_login_manager import get_redis_login_manager
+from backend.database.schema.models import Account, HealthStatus
+from backend.database.runtime.session import get_async_session
 
 
 async def select_account(

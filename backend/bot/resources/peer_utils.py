@@ -6,7 +6,7 @@ from typing import Any, Optional
 from telethon.tl import types as tl_types
 from telethon.tl.types import Channel, Chat, User
 
-from backend.database.models import PeerType, Resource
+from backend.database.schema.models import PeerType, Resource
 
 EMPTY_PEER_TYPES = tuple(
     t

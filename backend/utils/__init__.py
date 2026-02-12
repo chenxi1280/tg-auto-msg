@@ -1,7 +1,7 @@
 """
 工具模块
 """
-from .crypto import (
+from backend.utils.security.crypto import (
     CryptoManager,
     get_crypto_manager,
     encrypt_string_session,

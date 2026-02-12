@@ -2,9 +2,9 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, Request
 from fastapi.responses import JSONResponse
 
-from backend.database.models import User
+from backend.database.schema.models import User
 from backend.h5_backend.routers.auth import get_current_user
-from backend.h5_backend.services.login_service import get_login_service
+from backend.h5_backend.services.login.service import get_login_service
 
 router = APIRouter(tags=["登录"])
 

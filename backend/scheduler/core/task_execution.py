@@ -6,10 +6,10 @@ from typing import Optional
 
 from loguru import logger
 
-from backend.bot.circuit_breaker import get_circuit_breaker
-from backend.bot.keyboards import build_inline_buttons
-from backend.bot.rate_limiter import get_rate_limiter
-from backend.database.models import MediaType, ScheduledMessageTask
+from backend.bot.circuit.breaker import get_circuit_breaker
+from backend.bot.ui.keyboards import build_inline_buttons
+from backend.bot.safety.rate_limiter import get_rate_limiter
+from backend.database.schema.models import MediaType, ScheduledMessageTask
 
 
 def collect_task_targets(task: ScheduledMessageTask) -> list[dict]:

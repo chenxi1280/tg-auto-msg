@@ -9,16 +9,16 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from backend.bot.redis_login_manager import get_redis_login_manager
-from backend.database.models import Account, AccountBindLog, HealthStatus
-from backend.database.session import get_async_session
-from backend.utils.crypto import generate_bind_code
+from backend.bot.session.redis_login_manager import get_redis_login_manager
+from backend.database.schema.models import Account, AccountBindLog, HealthStatus
+from backend.database.runtime.session import get_async_session
+from backend.utils.security.crypto import generate_bind_code
 
 
 async def sync_resources_after_bind(account_id: str) -> None:
     """Async resource sync hook after successful binding."""
     try:
-        from backend.bot.resource_manager import get_resource_manager
+        from backend.bot.resources.manager import get_resource_manager
 
         resource_manager = get_resource_manager()
         await resource_manager.full_sync(account_id)

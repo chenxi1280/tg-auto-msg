@@ -6,9 +6,9 @@ from typing import Optional
 from loguru import logger
 from sqlalchemy import select
 
-from backend.database.models import Proxy
-from backend.database.session import get_async_session
-from backend.utils.crypto import encrypt_proxy_password
+from backend.database.schema.models import Proxy
+from backend.database.runtime.session import get_async_session
+from backend.utils.security.crypto import encrypt_proxy_password
 
 
 async def add_proxy(
@@ -135,7 +135,7 @@ async def get_available_proxy():
 async def assign_proxy(account_id: str, proxy_id: int) -> bool:
     """Assign one proxy to account."""
     async with get_async_session() as session:
-        from backend.database.models import Account
+        from backend.database.schema.models import Account
 
         result = await session.execute(select(Proxy).where(Proxy.proxy_id == proxy_id))
         proxy = result.scalar_one_or_none()
@@ -174,7 +174,7 @@ async def assign_proxy(account_id: str, proxy_id: int) -> bool:
 async def unassign_proxy(account_id: str) -> bool:
     """Unassign account's current proxy."""
     async with get_async_session() as session:
-        from backend.database.models import Account
+        from backend.database.schema.models import Account
 
         result = await session.execute(
             select(Account).where(Account.account_id == account_id)

@@ -9,8 +9,8 @@ from loguru import logger
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
-from backend.bot.redis_login_manager import LoginStatus, RedisLoginManager
-from backend.utils.crypto import encrypt_string_session
+from backend.bot.session.redis_login_manager import LoginStatus, RedisLoginManager
+from backend.utils.security.crypto import encrypt_string_session
 
 _current_qr_login_id: Optional[str] = None
 

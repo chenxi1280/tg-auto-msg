@@ -7,8 +7,8 @@ from loguru import logger
 from sqlalchemy import String as SQLString, cast, func, or_, select
 from telethon.tl.types import InputPeerChannel, InputPeerChat, InputPeerUser
 
-from backend.database.models import PeerType, Resource
-from backend.database.session import get_async_session
+from backend.database.schema.models import PeerType, Resource
+from backend.database.runtime.session import get_async_session
 
 
 async def get_resources(
