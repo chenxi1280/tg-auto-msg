@@ -127,10 +127,16 @@ const handleRegister = async () => {
     if (valid) {
       loading.value = true
       try {
+        const username = form.username.trim()
+        if (!username) {
+          ElMessage.warning('请输入用户名')
+          return
+        }
+
         const res = await authApi.register({
-          username: form.username,
+          username,
           password: form.password,
-          email: form.email || undefined
+          email: form.email.trim() || undefined
         })
 
         if (!('data' in (res as any)) || !(res as any).data?.access_token) {

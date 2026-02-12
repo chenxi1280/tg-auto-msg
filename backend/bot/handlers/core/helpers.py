@@ -237,7 +237,8 @@ def apply_task_targets(task: ScheduledMessageTask, targets: list[dict[str, Any]]
         task.target_peer_id = None
         task.target_peer_type = None
         task.target_access_hash = None
-        task.chat_id = None
+        # Legacy DB compatibility: keep placeholder when no target is selected yet.
+        task.chat_id = 0
 
 
 def format_timestamp(ts: Optional[int]) -> str:

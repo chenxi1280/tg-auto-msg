@@ -41,6 +41,9 @@ CREATE TABLE IF NOT EXISTS users (
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_users_email_ci_not_null
+ON users ((LOWER(email)))
+WHERE email IS NOT NULL;
 
 -- 注释
 COMMENT ON TABLE users IS '系统用户表';
@@ -50,21 +53,214 @@ COMMENT ON COLUMN users.email IS '电子邮箱';
 COMMENT ON COLUMN users.is_active IS '是否激活';
 
 -- ============================================
+-- 表: 套餐配置表 (pricing_plans)
+-- ============================================
+CREATE TABLE IF NOT EXISTS pricing_plans (
+    plan_code VARCHAR(32) PRIMARY KEY,
+    display_name VARCHAR(100) NOT NULL,
+    billing_cycle VARCHAR(20) NOT NULL,
+    price_cents INTEGER NOT NULL,
+    duration_days INTEGER NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE NOT NULL,
+    sort_order INTEGER DEFAULT 0 NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_pricing_plans_is_active ON pricing_plans(is_active, sort_order);
+
+INSERT INTO pricing_plans (plan_code, display_name, billing_cycle, price_cents, duration_days, is_active, sort_order)
+VALUES
+    ('monthly', '月付套餐', 'monthly', 5900, 30, TRUE, 10),
+    ('yearly', '年付套餐', 'yearly', 65000, 365, TRUE, 20)
+ON CONFLICT (plan_code) DO UPDATE
+SET
+    display_name = EXCLUDED.display_name,
+    billing_cycle = EXCLUDED.billing_cycle,
+    price_cents = EXCLUDED.price_cents,
+    duration_days = EXCLUDED.duration_days,
+    is_active = EXCLUDED.is_active,
+    sort_order = EXCLUDED.sort_order;
+
+COMMENT ON TABLE pricing_plans IS '收费套餐配置表';
+
+-- ============================================
+-- 表: 用户订阅表 (user_subscriptions)
+-- ============================================
+CREATE TABLE IF NOT EXISTS user_subscriptions (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    plan_code VARCHAR(32) REFERENCES pricing_plans(plan_code) ON DELETE SET NULL,
+    source VARCHAR(20) DEFAULT 'card' NOT NULL,
+    card_code VARCHAR(64),
+    start_at TIMESTAMP NOT NULL,
+    end_at TIMESTAMP NOT NULL,
+    status VARCHAR(20) DEFAULT 'active' NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_subscriptions_user_status ON user_subscriptions(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_user_subscriptions_end_at ON user_subscriptions(end_at);
+
+COMMENT ON TABLE user_subscriptions IS '用户订阅记录表';
+
+-- ============================================
+-- 表: 卡密表 (activation_cards)
+-- ============================================
+CREATE TABLE IF NOT EXISTS activation_cards (
+    id SERIAL PRIMARY KEY,
+    card_code VARCHAR(64) NOT NULL UNIQUE,
+    plan_code VARCHAR(32) REFERENCES pricing_plans(plan_code) ON DELETE SET NULL,
+    duration_days INTEGER,
+    is_active BOOLEAN DEFAULT TRUE NOT NULL,
+    is_used BOOLEAN DEFAULT FALSE NOT NULL,
+    expires_at TIMESTAMP,
+    used_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    used_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_activation_cards_is_used ON activation_cards(is_used, is_active);
+CREATE INDEX IF NOT EXISTS idx_activation_cards_plan_code ON activation_cards(plan_code);
+
+COMMENT ON TABLE activation_cards IS '卡密表';
+
+-- ============================================
+-- 表: 管理员审计日志表 (admin_audit_logs)
+-- ============================================
+CREATE TABLE IF NOT EXISTS admin_audit_logs (
+    id SERIAL PRIMARY KEY,
+    actor VARCHAR(64) NOT NULL DEFAULT 'admin',
+    action VARCHAR(100) NOT NULL,
+    target_type VARCHAR(50),
+    target_id VARCHAR(100),
+    developer_app_id INTEGER,
+    old_value JSONB,
+    new_value JSONB,
+    detail JSONB,
+    ip_address VARCHAR(45),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_created_at ON admin_audit_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_action ON admin_audit_logs(action);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_developer_app_id ON admin_audit_logs(developer_app_id);
+
+COMMENT ON TABLE admin_audit_logs IS '管理员操作审计日志表';
+
+-- ============================================
+-- 表: 系统配置表 (app_settings)
+-- ============================================
+CREATE TABLE IF NOT EXISTS app_settings (
+    key VARCHAR(64) PRIMARY KEY,
+    value TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_settings_updated_at ON app_settings(updated_at);
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version VARCHAR(64) PRIMARY KEY,
+    filename VARCHAR(255) NOT NULL,
+    checksum VARCHAR(64) NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    applied_at TIMESTAMP,
+    execution_ms INTEGER,
+    statements_count INTEGER DEFAULT 0 NOT NULL,
+    error_message TEXT,
+    rollback_file VARCHAR(255),
+    rollback_applied_at TIMESTAMP,
+    rollback_status VARCHAR(20),
+    rollback_error TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_schema_migrations_status ON schema_migrations(status, applied_at DESC);
+
+INSERT INTO app_settings (key, value)
+VALUES ('purchase_url', 'https://t.me/')
+ON CONFLICT (key) DO NOTHING;
+
+INSERT INTO app_settings (key, value)
+VALUES ('purchase_button_text', '联系 Telegram 购买')
+ON CONFLICT (key) DO NOTHING;
+
+INSERT INTO app_settings (key, value)
+VALUES ('default_developer_app_id', '')
+ON CONFLICT (key) DO NOTHING;
+
+COMMENT ON TABLE app_settings IS '系统配置键值表';
+COMMENT ON COLUMN app_settings.key IS '配置键';
+COMMENT ON COLUMN app_settings.value IS '配置值';
+
+-- ============================================
+-- 表: Telegram 开发者应用凭证池 (telegram_developer_apps)
+-- ============================================
+CREATE TABLE IF NOT EXISTS telegram_developer_apps (
+    id SERIAL PRIMARY KEY,
+    app_name VARCHAR(100) NOT NULL,
+    api_id INTEGER NOT NULL UNIQUE,
+    api_hash_encrypted TEXT NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE NOT NULL,
+    max_accounts INTEGER DEFAULT 0 NOT NULL,
+    credentials_version INTEGER DEFAULT 1 NOT NULL,
+    last_rotated_at TIMESTAMP,
+    notes VARCHAR(255),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_telegram_developer_apps_active ON telegram_developer_apps(is_active);
+
+COMMENT ON TABLE telegram_developer_apps IS 'Telegram 开发者应用凭证池';
+COMMENT ON COLUMN telegram_developer_apps.api_id IS 'Telegram API ID';
+COMMENT ON COLUMN telegram_developer_apps.api_hash_encrypted IS '加密后的 API Hash';
+COMMENT ON COLUMN telegram_developer_apps.max_accounts IS '可分配账号上限（0=不限）';
+
+DO $$
+BEGIN
+    IF to_regclass('admin_audit_logs') IS NOT NULL THEN
+        IF EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'admin_audit_logs_developer_app_id_fkey'
+        ) THEN
+            ALTER TABLE admin_audit_logs
+            DROP CONSTRAINT admin_audit_logs_developer_app_id_fkey;
+        END IF;
+
+        ALTER TABLE admin_audit_logs
+        ADD CONSTRAINT admin_audit_logs_developer_app_id_fkey
+        FOREIGN KEY (developer_app_id)
+        REFERENCES telegram_developer_apps(id)
+        ON DELETE SET NULL;
+    END IF;
+END
+$$;
+
+-- ============================================
 -- 表: 系统会话表 (system_sessions)
 -- ============================================
 CREATE TABLE IF NOT EXISTS system_sessions (
     session_key VARCHAR(64) PRIMARY KEY,                -- manager_bot/global_userbot
     session_encrypted TEXT NOT NULL,                    -- 加密的 Telethon StringSession
+    developer_app_id INTEGER REFERENCES telegram_developer_apps(id) ON DELETE SET NULL,
     session_meta JSONB,                                 -- 附加元数据
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_system_sessions_updated_at ON system_sessions(updated_at);
+CREATE INDEX IF NOT EXISTS idx_system_sessions_developer_app_id ON system_sessions(developer_app_id);
 
 COMMENT ON TABLE system_sessions IS '系统级 Telegram 会话表（bot/userbot）';
 COMMENT ON COLUMN system_sessions.session_key IS '会话键: manager_bot/global_userbot';
 COMMENT ON COLUMN system_sessions.session_encrypted IS '加密后的 Telethon StringSession';
+COMMENT ON COLUMN system_sessions.developer_app_id IS '关联开发者应用凭证';
 COMMENT ON COLUMN system_sessions.session_meta IS '附加元数据';
 
 -- ============================================
@@ -129,6 +325,8 @@ CREATE TABLE IF NOT EXISTS accounts (
 
     -- 登录凭证（加密存储）
     string_session_encrypted TEXT NOT NULL,             -- AES-256-GCM 加密的 StringSession
+    developer_app_id INTEGER REFERENCES telegram_developer_apps(id) ON DELETE SET NULL,
+    developer_app_version INTEGER DEFAULT 1 NOT NULL,
     bind_code VARCHAR(6),                               -- 6位绑定码
     bind_code_expires_at TIMESTAMP,                     -- 绑定码过期时间
 
@@ -143,6 +341,9 @@ CREATE TABLE IF NOT EXISTS accounts (
     -- 风控状态
     is_flooding BOOLEAN DEFAULT FALSE,
     flood_until TIMESTAMP,
+    reauth_required BOOLEAN DEFAULT FALSE NOT NULL,
+    reauth_reason VARCHAR(64),
+    reauth_required_at TIMESTAMP,
 
     -- 负载均衡
     weight INTEGER DEFAULT 100,
@@ -164,18 +365,31 @@ ALTER TABLE IF EXISTS accounts
     ADD COLUMN IF NOT EXISTS bind_code VARCHAR(6);
 ALTER TABLE IF EXISTS accounts
     ADD COLUMN IF NOT EXISTS bind_code_expires_at TIMESTAMP;
+ALTER TABLE IF EXISTS accounts
+    ADD COLUMN IF NOT EXISTS developer_app_id INTEGER REFERENCES telegram_developer_apps(id) ON DELETE SET NULL;
+ALTER TABLE IF EXISTS accounts
+    ADD COLUMN IF NOT EXISTS developer_app_version INTEGER DEFAULT 1 NOT NULL;
+ALTER TABLE IF EXISTS accounts
+    ADD COLUMN IF NOT EXISTS reauth_required BOOLEAN DEFAULT FALSE NOT NULL;
+ALTER TABLE IF EXISTS accounts
+    ADD COLUMN IF NOT EXISTS reauth_reason VARCHAR(64);
+ALTER TABLE IF EXISTS accounts
+    ADD COLUMN IF NOT EXISTS reauth_required_at TIMESTAMP;
 
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_accounts_user_id ON accounts(user_id);
 CREATE INDEX IF NOT EXISTS idx_accounts_tg_user_id ON accounts(tg_user_id);
 CREATE INDEX IF NOT EXISTS idx_accounts_bind_code ON accounts(bind_code);
 CREATE INDEX IF NOT EXISTS idx_accounts_health_status ON accounts(health_status);
+CREATE INDEX IF NOT EXISTS idx_accounts_developer_app_id ON accounts(developer_app_id);
+CREATE INDEX IF NOT EXISTS idx_accounts_reauth_required ON accounts(reauth_required);
 
 -- 注释
 COMMENT ON TABLE accounts IS 'Userbot 账号管理表';
 COMMENT ON COLUMN accounts.user_id IS '归属用户 UID';
 COMMENT ON COLUMN accounts.tg_user_id IS '登录后的 Telegram UID';
 COMMENT ON COLUMN accounts.string_session_encrypted IS 'AES-256-GCM 加密的 StringSession';
+COMMENT ON COLUMN accounts.developer_app_id IS '关联开发者应用凭证';
 COMMENT ON COLUMN accounts.bind_code IS '6位绑定码';
 COMMENT ON COLUMN accounts.proxy_id IS '关联代理 ID';
 COMMENT ON COLUMN accounts.health_status IS '健康状态: online/offline/banned';
@@ -459,6 +673,36 @@ CREATE TRIGGER update_system_sessions_updated_at
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_app_settings_updated_at ON app_settings;
+CREATE TRIGGER update_app_settings_updated_at
+    BEFORE UPDATE ON app_settings
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_pricing_plans_updated_at ON pricing_plans;
+CREATE TRIGGER update_pricing_plans_updated_at
+    BEFORE UPDATE ON pricing_plans
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_telegram_developer_apps_updated_at ON telegram_developer_apps;
+CREATE TRIGGER update_telegram_developer_apps_updated_at
+    BEFORE UPDATE ON telegram_developer_apps
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_user_subscriptions_updated_at ON user_subscriptions;
+CREATE TRIGGER update_user_subscriptions_updated_at
+    BEFORE UPDATE ON user_subscriptions
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_activation_cards_updated_at ON activation_cards;
+CREATE TRIGGER update_activation_cards_updated_at
+    BEFORE UPDATE ON activation_cards
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
 DROP TRIGGER IF EXISTS update_proxies_updated_at ON proxies;
 CREATE TRIGGER update_proxies_updated_at
     BEFORE UPDATE ON proxies
@@ -493,6 +737,13 @@ FROM information_schema.tables
 WHERE table_schema = 'public'
   AND table_name IN (
     'users',
+    'pricing_plans',
+    'user_subscriptions',
+    'activation_cards',
+    'admin_audit_logs',
+    'app_settings',
+    'schema_migrations',
+    'telegram_developer_apps',
     'system_sessions',
     'proxies',
     'accounts',

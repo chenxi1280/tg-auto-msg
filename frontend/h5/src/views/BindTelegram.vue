@@ -81,6 +81,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Loading } from '@element-plus/icons-vue'
 import { createLoginSession, getLoginStatus, LoginStatus, bindAccount } from '@/api/login'
+import { getSubscription } from '@/api/me'
 import QRCode from 'qrcode'
 
 const router = useRouter()
@@ -232,7 +233,18 @@ const copyCommand = () => {
 
 const handleRetry = () => createSession()
 
-onMounted(() => {
+onMounted(async () => {
+  try {
+    const res = await getSubscription()
+    if (!res.data.is_active) {
+      ElMessage.warning('未开通套餐，请先购买套餐')
+      router.replace('/purchase')
+      return
+    }
+  } catch (_err) {
+    router.replace('/accounts')
+    return
+  }
   createSession()
 })
 

@@ -6,6 +6,7 @@ from typing import Optional
 from sqlalchemy import select
 
 from backend.database.schema.models import Account, ScheduledMessageTask, User
+from backend.bot.handlers.core.user_link import get_linked_system_user_id as _get_linked_system_user_id
 
 
 async def resolve_db_user_id(session, actor_user_id: int) -> Optional[int]:
@@ -13,9 +14,14 @@ async def resolve_db_user_id(session, actor_user_id: int) -> Optional[int]:
     Map Telegram sender ID to system user ID.
 
     Priority:
-    1. Bound account owner via `accounts.tg_user_id`
-    2. Legacy compatibility where sender ID is system user ID
+    1. Explicit link via AppSetting (`tg_user_link:*`)
+    2. Bound account owner via `accounts.tg_user_id`
+    3. Legacy compatibility where sender ID is system user ID
     """
+    linked_user_id = await _get_linked_system_user_id(session, actor_user_id)
+    if linked_user_id is not None:
+        return int(linked_user_id)
+
     account_result = await session.execute(
         select(Account.user_id)
         .where(Account.tg_user_id == actor_user_id)

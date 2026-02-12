@@ -43,6 +43,7 @@ async def start_qr_login(
             await save_system_session_fn(
                 system_userbot_session_key,
                 string_session,
+                developer_app_id=session.developer_app_id if session else None,
                 session_meta={
                     "tg_user_id": int(me.id),
                     "username": me.username or "",
@@ -189,9 +190,11 @@ async def wait_for_qr_login(
                     and save_system_session_fn is not None
                     and system_userbot_session_key
                 ):
+                    session_obj = await redis_manager.get_session(login_id)
                     await save_system_session_fn(
                         system_userbot_session_key,
                         string_session,
+                        developer_app_id=session_obj.developer_app_id if session_obj else None,
                         session_meta={
                             "tg_user_id": int(me.id),
                             "username": me.username or "",

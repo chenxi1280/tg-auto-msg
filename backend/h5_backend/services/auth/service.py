@@ -7,7 +7,8 @@ from typing import Optional, Tuple
 from fastapi import HTTPException, status
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from backend.config.core.settings import settings
 from backend.database.schema.models import User
@@ -76,20 +77,33 @@ class AuthService:
 
     async def register_user(self, username: str, password: str, email: Optional[str]) -> Tuple[str, User]:
         """Register user and return token + user."""
+        normalized_email = (email or "").strip().lower() or None
+
         async with get_async_session() as session:
             result = await session.execute(select(User).where(User.username == username))
             existing_user = result.scalar_one_or_none()
             if existing_user:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="用户名已存在")
 
+            if normalized_email:
+                existing_email = await session.execute(
+                    select(User.id).where(func.lower(User.email) == normalized_email).limit(1)
+                )
+                if existing_email.scalar_one_or_none() is not None:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="邮箱已被占用")
+
             new_user = User(
                 username=username,
                 password_hash=self.get_password_hash(password),
-                email=email,
+                email=normalized_email,
                 is_active=True,
             )
             session.add(new_user)
-            await session.commit()
+            try:
+                await session.commit()
+            except IntegrityError as exc:
+                await session.rollback()
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="用户名或邮箱已存在") from exc
             await session.refresh(new_user)
 
         access_token = self.create_access_token(data={"sub": new_user.id, "username": new_user.username})

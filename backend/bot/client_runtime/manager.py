@@ -9,6 +9,7 @@ from backend.bot.client_runtime.qr_login import (
     start_qr_login as _start_qr_login_flow,
     wait_for_qr_login as _wait_for_qr_login_flow,
 )
+from backend.bot.developer_apps import get_developer_app_service
 from backend.bot.client_runtime.session_store import (
     cleanup_legacy_session_files,
     delete_system_session,
@@ -40,6 +41,16 @@ userbot_client = TelegramClient(
     api_id=settings.api_id,
     api_hash=settings.api_hash,
 )
+
+
+async def _resolve_system_developer_app_id() -> int | None:
+    """Resolve DB developer app id corresponding to current env credentials."""
+    try:
+        service = get_developer_app_service()
+        return await service.ensure_env_default_app()
+    except Exception as e:
+        logger.warning(f"初始化系统开发者凭证失败，回退环境配置: {e}")
+        return None
 
 
 async def start_manager_bot(bot_token: str):
@@ -75,9 +86,11 @@ async def start_manager_bot(bot_token: str):
 
     await bot_client.start(bot_token=bot_token)
     me = await bot_client.get_me()
+    developer_app_id = await _resolve_system_developer_app_id()
     await persist_client_session(
         bot_client,
         _SYSTEM_BOT_SESSION_KEY,
+        developer_app_id=developer_app_id,
         session_meta={"bot_id": int(me.id), "username": me.username or ""},
     )
     return me
@@ -93,9 +106,11 @@ async def init_userbot() -> bool:
 
     if await userbot_client.is_user_authorized():
         me = await userbot_client.get_me()
+        developer_app_id = await _resolve_system_developer_app_id()
         await persist_client_session(
             userbot_client,
             _SYSTEM_USERBOT_SESSION_KEY,
+            developer_app_id=developer_app_id,
             session_meta={
                 "tg_user_id": int(me.id),
                 "username": me.username or "",

@@ -32,6 +32,109 @@ class User(Base):
 
     # 关系
     accounts: Mapped[List["Account"]] = relationship("Account", back_populates="user", cascade="all, delete-orphan")
+    subscriptions: Mapped[List["UserSubscription"]] = relationship(
+        "UserSubscription",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    activated_cards: Mapped[List["ActivationCard"]] = relationship(
+        "ActivationCard",
+        back_populates="used_by_user",
+    )
+
+
+class PricingPlan(Base):
+    """收费套餐配置"""
+    __tablename__ = "pricing_plans"
+
+    plan_code: Mapped[str] = mapped_column(String(32), primary_key=True, comment="套餐编码：monthly/yearly")
+    display_name: Mapped[str] = mapped_column(String(100), nullable=False, comment="套餐展示名称")
+    billing_cycle: Mapped[str] = mapped_column(String(20), nullable=False, comment="计费周期：monthly/yearly")
+    price_cents: Mapped[int] = mapped_column(Integer, nullable=False, comment="价格（分）")
+    duration_days: Mapped[int] = mapped_column(Integer, nullable=False, comment="开通时长（天）")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, comment="是否启用")
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False, comment="排序")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    subscriptions: Mapped[List["UserSubscription"]] = relationship("UserSubscription", back_populates="plan")
+    activation_cards: Mapped[List["ActivationCard"]] = relationship("ActivationCard", back_populates="plan")
+
+    __table_args__ = (
+        Index("idx_pricing_plans_is_active", "is_active", "sort_order"),
+    )
+
+
+class UserSubscription(Base):
+    """用户订阅表"""
+    __tablename__ = "user_subscriptions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="系统用户 ID",
+    )
+    plan_code: Mapped[Optional[str]] = mapped_column(
+        String(32),
+        ForeignKey("pricing_plans.plan_code", ondelete="SET NULL"),
+        nullable=True,
+        comment="套餐编码",
+    )
+    source: Mapped[str] = mapped_column(String(20), default="card", nullable=False, comment="来源：card/admin")
+    card_code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, comment="激活时使用的卡密")
+    start_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, comment="开始时间")
+    end_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, comment="到期时间")
+    status: Mapped[str] = mapped_column(String(20), default="active", nullable=False, comment="状态：active/expired/cancelled")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    user: Mapped["User"] = relationship("User", back_populates="subscriptions")
+    plan: Mapped[Optional["PricingPlan"]] = relationship("PricingPlan", back_populates="subscriptions")
+
+    __table_args__ = (
+        Index("idx_user_subscriptions_user_status", "user_id", "status"),
+        Index("idx_user_subscriptions_end_at", "end_at"),
+    )
+
+
+class ActivationCard(Base):
+    """卡密表"""
+    __tablename__ = "activation_cards"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    card_code: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, comment="卡密")
+    plan_code: Mapped[Optional[str]] = mapped_column(
+        String(32),
+        ForeignKey("pricing_plans.plan_code", ondelete="SET NULL"),
+        nullable=True,
+        comment="关联套餐编码",
+    )
+    duration_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="覆盖套餐时长（天）")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, comment="卡密是否可用")
+    is_used: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, comment="是否已使用")
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="卡密过期时间")
+    used_by_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="使用者用户 ID",
+    )
+    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="使用时间")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    plan: Mapped[Optional["PricingPlan"]] = relationship("PricingPlan", back_populates="activation_cards")
+    used_by_user: Mapped[Optional["User"]] = relationship("User", back_populates="activated_cards")
+
+    __table_args__ = (
+        Index("idx_activation_cards_is_used", "is_used", "is_active"),
+        Index("idx_activation_cards_plan_code", "plan_code"),
+    )
 
 
 class MediaType(str, Enum):
@@ -63,6 +166,34 @@ class ProxyType(str, Enum):
     SOCKS5 = "socks5"
     HTTP = "http"
     MTPROTO = "mtproto"
+
+
+class TelegramDeveloperApp(Base):
+    """Telegram 开发者应用凭证池（多 API_ID/API_HASH）"""
+    __tablename__ = "telegram_developer_apps"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    app_name: Mapped[str] = mapped_column(String(100), nullable=False, comment="应用名称")
+    api_id: Mapped[int] = mapped_column(Integer, unique=True, nullable=False, comment="Telegram API_ID")
+    api_hash_encrypted: Mapped[str] = mapped_column(Text, nullable=False, comment="加密存储的 API_HASH")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, comment="是否可分配使用")
+    max_accounts: Mapped[int] = mapped_column(Integer, default=0, nullable=False, comment="最大账号数，0 表示不限制")
+    credentials_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False, comment="凭证版本号")
+    last_rotated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="最近凭证轮换时间")
+    notes: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="备注")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), comment="创建时间")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间")
+
+    accounts: Mapped[List["Account"]] = relationship("Account", back_populates="developer_app")
+    system_sessions: Mapped[List["SystemSession"]] = relationship("SystemSession", back_populates="developer_app")
+
+    __table_args__ = (
+        Index("idx_telegram_developer_apps_active", "is_active"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<TelegramDeveloperApp(id={self.id}, name={self.app_name}, api_id={self.api_id})>"
 
 
 class ScheduledMessageTask(Base):
@@ -241,6 +372,13 @@ class Account(Base):
 
     # 登录凭证（加密存储）
     string_session_encrypted: Mapped[str] = mapped_column(Text, nullable=False, comment="AES-256-GCM 加密的 StringSession")
+    developer_app_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("telegram_developer_apps.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="关联开发者应用凭证 ID",
+    )
+    developer_app_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False, comment="账号绑定时的凭证版本号")
     bind_code: Mapped[Optional[str]] = mapped_column(String(6), unique=True, nullable=True, comment="6位绑定码")
     bind_code_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="绑定码过期时间")
 
@@ -255,6 +393,9 @@ class Account(Base):
     # 风控状态
     is_flooding: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否触发 FloodWait")
     flood_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="FloodWait 解除时间")
+    reauth_required: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, comment="是否需要重新登录")
+    reauth_reason: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, comment="需要重登的原因")
+    reauth_required_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="重登要求生效时间")
 
     # 负载均衡
     weight: Mapped[int] = mapped_column(Integer, default=100, comment="权重（用于账号选择）")
@@ -269,6 +410,10 @@ class Account(Base):
 
     # 关系
     user: Mapped["User"] = relationship("User", back_populates="accounts")
+    developer_app: Mapped[Optional["TelegramDeveloperApp"]] = relationship(
+        "TelegramDeveloperApp",
+        back_populates="accounts",
+    )
     proxy: Mapped[Optional["Proxy"]] = relationship(
         "Proxy",
         foreign_keys=[proxy_id]
@@ -281,6 +426,8 @@ class Account(Base):
         Index("idx_accounts_user_id", "user_id"),
         Index("idx_accounts_health_status", "health_status"),
         Index("idx_accounts_bind_code", "bind_code"),
+        Index("idx_accounts_developer_app_id", "developer_app_id"),
+        Index("idx_accounts_reauth_required", "reauth_required"),
     )
 
     def __repr__(self) -> str:
@@ -372,13 +519,75 @@ class SystemSession(Base):
 
     session_key: Mapped[str] = mapped_column(String(64), primary_key=True, comment="会话键: manager_bot/global_userbot")
     session_encrypted: Mapped[str] = mapped_column(Text, nullable=False, comment="加密后的 Telethon StringSession")
+    developer_app_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("telegram_developer_apps.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="关联开发者应用凭证 ID",
+    )
     session_meta: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True, comment="附加元数据")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), comment="创建时间")
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间")
 
+    developer_app: Mapped[Optional["TelegramDeveloperApp"]] = relationship(
+        "TelegramDeveloperApp",
+        back_populates="system_sessions",
+    )
+
     __table_args__ = (
         Index("idx_system_sessions_updated_at", "updated_at"),
+        Index("idx_system_sessions_developer_app_id", "developer_app_id"),
     )
 
     def __repr__(self) -> str:
         return f"<SystemSession(key={self.session_key})>"
+
+
+class AdminAuditLog(Base):
+    """管理员操作审计日志"""
+    __tablename__ = "admin_audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    actor: Mapped[str] = mapped_column(String(64), nullable=False, default="admin", comment="操作者标识")
+    action: Mapped[str] = mapped_column(String(100), nullable=False, comment="操作动作")
+    target_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, comment="目标类型")
+    target_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, comment="目标标识")
+    developer_app_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("telegram_developer_apps.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="关联开发者应用凭证 ID",
+    )
+    old_value: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True, comment="变更前值（结构化）")
+    new_value: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True, comment="变更后值（结构化）")
+    detail: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True, comment="操作详情 JSON")
+    ip_address: Mapped[Optional[str]] = mapped_column(String(45), nullable=True, comment="来源 IP")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), comment="操作时间")
+
+    developer_app: Mapped[Optional["TelegramDeveloperApp"]] = relationship("TelegramDeveloperApp")
+
+    __table_args__ = (
+        Index("idx_admin_audit_logs_created_at", "created_at"),
+        Index("idx_admin_audit_logs_action", "action"),
+        Index("idx_admin_audit_logs_developer_app_id", "developer_app_id"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<AdminAuditLog(id={self.id}, action={self.action}, target={self.target_type}:{self.target_id})>"
+
+
+class AppSetting(Base):
+    """系统配置键值表"""
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True, comment="配置键")
+    value: Mapped[str] = mapped_column(Text, nullable=False, comment="配置值")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), comment="创建时间")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间")
+
+    __table_args__ = (
+        Index("idx_app_settings_updated_at", "updated_at"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<AppSetting(key={self.key})>"

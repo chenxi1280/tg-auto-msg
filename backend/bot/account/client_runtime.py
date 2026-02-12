@@ -1,6 +1,7 @@
 """Telegram client/proxy runtime helpers for AccountManager."""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 from loguru import logger
@@ -8,6 +9,7 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 
 from backend.config.core.settings import settings
+from backend.bot.developer_apps import get_developer_app_service
 from backend.database.schema.models import HealthStatus
 from backend.utils.security.crypto import decrypt_proxy_password, decrypt_string_session
 
@@ -74,6 +76,15 @@ async def get_client(manager, account_id: str) -> Optional[TelegramClient]:
         logger.error(f"账号不存在: {account_id}")
         return None
 
+    if bool(getattr(account, "reauth_required", False)):
+        reason = getattr(account, "reauth_reason", "") or "unknown"
+        logger.warning(f"账号 {account_id} 需要重新登录后才能继续使用: reason={reason}")
+        try:
+            await manager.update_health_status(account_id, HealthStatus.OFFLINE)
+        except Exception as status_err:
+            logger.warning(f"更新账号健康状态失败: {status_err}")
+        return None
+
     try:
         string_session = decrypt_string_session(account.string_session_encrypted)
     except Exception as e:
@@ -95,10 +106,55 @@ async def get_client(manager, account_id: str) -> Optional[TelegramClient]:
         if account_id in manager._clients:
             return manager._clients[account_id]
 
+        api_id = int(settings.api_id) if settings.api_id else 0
+        api_hash = str(settings.api_hash or "")
+        try:
+            developer_service = get_developer_app_service()
+            credentials = await developer_service.resolve_credentials_for_account(account_id)
+            api_id = int(credentials.api_id)
+            api_hash = str(credentials.api_hash)
+        except Exception as e:
+            if account.developer_app_id is not None:
+                logger.error(
+                    f"按账号开发者凭证创建客户端失败: account_id={account_id}, "
+                    f"developer_app_id={account.developer_app_id}, error={e}"
+                )
+                try:
+                    await manager.update_health_status(account_id, HealthStatus.OFFLINE)
+                except Exception as status_err:
+                    logger.warning(f"更新账号健康状态失败: {status_err}")
+                return None
+            logger.warning(f"账号未绑定开发者凭证，回退环境凭证: account_id={account_id}, error={e}")
+
+        if (
+            account.developer_app_id is not None
+            and int(credentials.credentials_version or 1) > int(getattr(account, "developer_app_version", 1) or 1)
+        ):
+            logger.warning(
+                f"账号 {account_id} 绑定的开发者凭证已轮换，要求重新登录: "
+                f"account_version={getattr(account, 'developer_app_version', 1)}, "
+                f"app_version={credentials.credentials_version}"
+            )
+            await manager.update_account(
+                account_id,
+                reauth_required=True,
+                reauth_reason="api_hash_rotated",
+                reauth_required_at=datetime.now(),
+                health_status=HealthStatus.OFFLINE,
+            )
+            return None
+
+        if api_id <= 0 or not api_hash:
+            logger.error(f"账号 {account_id} 缺少可用 API_ID/API_HASH，无法创建客户端")
+            try:
+                await manager.update_health_status(account_id, HealthStatus.OFFLINE)
+            except Exception as status_err:
+                logger.warning(f"更新账号健康状态失败: {status_err}")
+            return None
         client = TelegramClient(
             StringSession(string_session),
-            api_id=settings.api_id,
-            api_hash=settings.api_hash,
+            api_id=api_id,
+            api_hash=api_hash,
             proxy=proxy,
         )
         await client.connect()
@@ -106,9 +162,23 @@ async def get_client(manager, account_id: str) -> Optional[TelegramClient]:
         if not await client.is_user_authorized():
             logger.error(f"账号 {account_id} 未授权，可能已登出")
             await client.disconnect()
-            await manager.update_health_status(account_id, HealthStatus.OFFLINE)
+            await manager.update_account(
+                account_id,
+                health_status=HealthStatus.OFFLINE,
+                reauth_required=True,
+                reauth_reason="session_unauthorized",
+                reauth_required_at=datetime.now(),
+            )
             return None
 
+        await manager.update_account(
+            account_id,
+            developer_app_version=int(credentials.credentials_version or 1),
+            reauth_required=False,
+            reauth_reason=None,
+            reauth_required_at=None,
+            health_status=HealthStatus.ONLINE,
+        )
         manager._clients[account_id] = client
         logger.info(f"创建 TelegramClient: {account_id}")
         return client

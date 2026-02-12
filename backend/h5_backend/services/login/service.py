@@ -5,14 +5,16 @@ import random
 import string
 from typing import Any, Dict, Optional
 
-from fastapi import BackgroundTasks, HTTPException, Request
+from fastapi import BackgroundTasks, HTTPException, Request, status
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
 from backend.bot.account.manager import get_account_manager
+from backend.bot.account.binding_service import BindRateLimitError
+from backend.bot.developer_apps import get_developer_app_service
 from backend.bot.client_runtime.manager import _wait_for_qr_login, is_userbot_ready
 from backend.bot.session.redis_login_manager import LoginStatus, get_redis_login_manager
-from backend.config.core.settings import settings
+from backend.h5_backend.services.me.service import get_me_service
 
 
 class LoginService:
@@ -23,15 +25,25 @@ class LoginService:
         return "login_" + "".join(random.choices(chars, k=16))
 
     async def create_login_session(self, user_id: int, background_tasks: BackgroundTasks) -> Dict[str, Any]:
+        me_service = get_me_service()
+        await me_service.require_active_subscription(user_id)
+        developer_app_service = get_developer_app_service()
+        credentials = await developer_app_service.choose_login_credentials_for_user(user_id)
+
         login_manager = get_redis_login_manager()
         login_id = self.generate_login_id()
         session = await login_manager.create_session(login_id)
-        await login_manager.update_status(login_id, LoginStatus.PENDING, system_user_id=user_id)
+        await login_manager.update_status(
+            login_id,
+            LoginStatus.PENDING,
+            system_user_id=user_id,
+            developer_app_id=credentials.app_id or "",
+        )
 
         login_client = TelegramClient(
             StringSession(),
-            api_id=settings.api_id,
-            api_hash=settings.api_hash,
+            api_id=credentials.api_id,
+            api_hash=credentials.api_hash,
         )
         await login_client.connect()
         qr_login = await login_client.qr_login()
@@ -98,11 +110,19 @@ class LoginService:
             raise HTTPException(status_code=403, detail="该绑定码不属于当前系统用户")
 
         account_manager = get_account_manager()
-        account = await account_manager.bind_account(
-            user_id=user_id,
-            bind_code=bind_code,
-            ip_address=request.client.host if request.client else "",
-        )
+        try:
+            account = await account_manager.bind_account(
+                user_id=user_id,
+                bind_code=bind_code,
+                ip_address=request.client.host if request.client else "",
+            )
+        except BindRateLimitError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"绑定失败次数过多，请 {exc.retry_after_seconds} 秒后再试",
+            ) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not account:
             raise HTTPException(status_code=400, detail="绑定失败：绑定码无效或账号已绑定")
 

@@ -68,6 +68,10 @@ USERBOT_PHONE=+8613800000000       # 你的手机号
 DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/tg_auto_msg
 REDIS_URL=redis://localhost:6379/0
 
+# 安全配置
+JWT_SECRET_KEY=change_me
+ADMIN_API_TOKEN=change_me_admin_token
+
 # 应用配置
 LOG_LEVEL=INFO
 TIMEZONE=Asia/Shanghai
@@ -221,6 +225,30 @@ docker run -d \
 3. **按钮编排**：点击「+ 添加按钮行」添加按钮
 4. **批量操作**：在任务列表页选择多个任务进行批量操作
 5. **查看日志**：滚动到底部查看发送历史
+
+### 管理员卡密后台（非用户 H5）
+
+说明：
+- 用户端 H5 只负责“卡密激活”，不提供卡密生成和管理。
+- 卡密与套餐管理通过管理员 API 完成，需在请求头传 `X-Admin-Token`。
+
+示例：
+```bash
+# 查询套餐
+curl -H "X-Admin-Token: $ADMIN_API_TOKEN" http://localhost:8000/api/admin/plans
+
+# 修改套餐价格（示例：月付 69 元）
+curl -X PUT -H "Content-Type: application/json" \
+  -H "X-Admin-Token: $ADMIN_API_TOKEN" \
+  -d '{"price_cents":6900}' \
+  http://localhost:8000/api/admin/plans/monthly
+
+# 生成卡密（20 个）
+curl -X POST -H "Content-Type: application/json" \
+  -H "X-Admin-Token: $ADMIN_API_TOKEN" \
+  -d '{"plan_code":"monthly","quantity":20,"prefix":"MTH-"}' \
+  http://localhost:8000/api/admin/cards/generate
+```
 
 ### 时间设置示例
 

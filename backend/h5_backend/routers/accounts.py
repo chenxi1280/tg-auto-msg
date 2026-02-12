@@ -11,10 +11,13 @@ router = APIRouter(tags=["账号"])
 
 
 @router.get("/api/accounts/")
-async def get_accounts(current_user: User = Depends(get_current_user)):
+async def get_accounts(
+    probe: bool = False,
+    current_user: User = Depends(get_current_user),
+):
     """获取当前用户的所有账号"""
     service = get_account_service()
-    data = await service.list_accounts(current_user.id)
+    data = await service.list_accounts(current_user.id, probe=probe)
     return {"success": True, "data": data}
 
 

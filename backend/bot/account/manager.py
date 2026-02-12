@@ -25,10 +25,12 @@ from backend.database.schema.models import (
     TaskLog,
     Proxy,
     AccountBindLog,
+    TelegramDeveloperApp,
 )
 from backend.utils.security.crypto import (
     encrypt_string_session,
 )
+from backend.bot.developer_apps import get_developer_app_service
 
 
 class AccountSelectionStrategy(str, Enum):
@@ -74,7 +76,8 @@ class AccountManager:
         first_name: str = "",
         phone: str = "",
         proxy_id: Optional[int] = None,
-        weight: int = 100
+        weight: int = 100,
+        developer_app_id: Optional[int] = None,
     ) -> Account:
         """
         创建新账号
@@ -95,6 +98,21 @@ class AccountManager:
         async with get_async_session() as session:
             # 加密 StringSession
             string_session_encrypted = encrypt_string_session(string_session)
+            resolved_developer_app_id = developer_app_id
+            if resolved_developer_app_id is None:
+                try:
+                    resolved_developer_app_id = await get_developer_app_service().resolve_assignable_app_id(
+                        user_id=int(user_id),
+                        preferred_app_id=None,
+                        exclude_account_id=None,
+                    )
+                except Exception as e:
+                    raise RuntimeError(f"开发者凭证分配失败: {e}") from e
+            resolved_app_version = 1
+            if resolved_developer_app_id is not None:
+                app_row = await session.get(TelegramDeveloperApp, int(resolved_developer_app_id))
+                if app_row is not None:
+                    resolved_app_version = int(app_row.credentials_version or 1)
 
             account = Account(
                 user_id=user_id,
@@ -103,6 +121,11 @@ class AccountManager:
                 first_name=first_name,
                 phone=phone,
                 string_session_encrypted=string_session_encrypted,
+                developer_app_id=resolved_developer_app_id,
+                developer_app_version=resolved_app_version,
+                reauth_required=False,
+                reauth_reason=None,
+                reauth_required_at=None,
                 proxy_id=proxy_id,
                 weight=weight,
                 health_status=HealthStatus.ONLINE,
@@ -119,7 +142,8 @@ class AccountManager:
         self,
         user_id: int,
         bind_code: str,
-        ip_address: str = ""
+        ip_address: str = "",
+        actor_tg_user_id: Optional[int] = None,
     ) -> Optional[Account]:
         """
         通过绑定码绑定账号到用户
@@ -139,6 +163,7 @@ class AccountManager:
             user_id=user_id,
             bind_code=bind_code,
             ip_address=ip_address,
+            actor_tg_user_id=actor_tg_user_id,
         )
 
     async def issue_bind_code(
@@ -231,8 +256,23 @@ class AccountManager:
             if not account:
                 return None
 
+            nullable_fields = {
+                "username",
+                "first_name",
+                "phone",
+                "developer_app_id",
+                "bind_code",
+                "bind_code_expires_at",
+                "proxy_id",
+                "flood_until",
+                "last_used_at",
+                "reauth_reason",
+                "reauth_required_at",
+            }
             for key, value in kwargs.items():
-                if hasattr(account, key) and value is not None:
+                if not hasattr(account, key):
+                    continue
+                if value is not None or key in nullable_fields:
                     setattr(account, key, value)
 
             await session.commit()
@@ -286,6 +326,9 @@ class AccountManager:
                 await session.execute(
                     delete(AccountBindLog).where(AccountBindLog.account_id == account_id)
                 )
+
+                from backend.bot.handlers.core.user_link import cleanup_active_account_refs
+                await cleanup_active_account_refs(session, account_id)
 
                 # 解绑占用中的代理，避免留下脏的 assigned_account_id
                 await session.execute(

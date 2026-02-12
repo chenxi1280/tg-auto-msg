@@ -92,8 +92,14 @@ const handleLogin = async () => {
     if (valid) {
       loading.value = true
       try {
+        const username = form.username.trim()
+        if (!username) {
+          ElMessage.warning('请输入用户名')
+          return
+        }
+
         const res = await authApi.login({
-          username: form.username,
+          username,
           password: form.password
         })
 

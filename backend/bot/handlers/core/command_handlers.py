@@ -6,12 +6,14 @@ import re
 
 from loguru import logger
 from telethon import Button
+from sqlalchemy import select
 
 from backend.bot.state.fsm import fsm_storage
 from backend.bot.handlers.core.auth_gate import require_db_user_id
 from backend.bot.handlers.core.helpers import build_login_buttons as _build_login_buttons
 from backend.bot.handlers.task.management import show_task_list
 from backend.bot.handlers.task.queries import resolve_db_user_id as _resolve_db_user_id
+from backend.bot.handlers.core.user_link import get_active_account_id as _get_active_account_id
 from backend.bot.handlers.account.management import (
     bind_account,
     show_accounts_list,
@@ -19,6 +21,7 @@ from backend.bot.handlers.account.management import (
     sync_account_resources,
 )
 from backend.database.runtime.session import get_async_session
+from backend.database.schema.models import Account
 
 
 async def handle_start_command(event):
@@ -133,9 +136,22 @@ async def _run_accounts_command(event, user_id: int, args: str):
 
 
 async def _run_sync_command(event, user_id: int, args: str):
-    account_id = args.split()[0] if args else None
-    if await require_db_user_id(event, user_id) is None:
+    db_user_id = await require_db_user_id(event, user_id)
+    if db_user_id is None:
         return
+    account_id = args.split()[0] if args else None
+    if not account_id:
+        async with get_async_session() as session:
+            active_account_id = await _get_active_account_id(session, user_id, db_user_id)
+            if active_account_id:
+                exists = await session.execute(
+                    select(Account.account_id).where(
+                        Account.account_id == active_account_id,
+                        Account.user_id == db_user_id,
+                    )
+                )
+                if exists.scalar_one_or_none():
+                    account_id = active_account_id
     await sync_account_resources(event, user_id, account_id)
 
 

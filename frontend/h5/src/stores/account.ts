@@ -29,11 +29,11 @@ export const useAccountStore = defineStore('account', () => {
   const bannedAccounts = computed(() => accounts.value.filter(a => a.is_banned))
 
   // 获取账号列表
-  const fetchAccounts = async (userId: number) => {
+  const fetchAccounts = async (userId: number, probe = false) => {
     loading.value = true
     error.value = null
     try {
-      const res = await accountApi.getAccounts(userId)
+      const res = await accountApi.getAccounts(userId, probe)
       accounts.value = res.data || []
     } catch (err: any) {
       error.value = err.message || '获取账号列表失败'

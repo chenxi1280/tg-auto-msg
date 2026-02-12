@@ -12,9 +12,14 @@ export interface Account {
   username: string | null
   first_name: string | null
   phone: string | null
+  developer_app_id?: number | null
   is_active: boolean
   is_banned: boolean
   health_status: 'online' | 'offline' | 'banned'
+  developer_app_version?: number
+  reauth_required?: boolean
+  reauth_reason?: string | null
+  reauth_required_at?: string | null
   is_flooding: boolean
   flood_until: string | null
   messages_sent: number
@@ -27,8 +32,13 @@ export interface Account {
 /**
  * 获取账号列表
  */
-export const getAccounts = (userId?: number): Promise<ApiResponse<Account[]>> => {
-  return request.get('/accounts/')
+export const getAccounts = (
+  userId?: number,
+  probe = false
+): Promise<ApiResponse<Account[]>> => {
+  return request.get('/accounts/', {
+    params: { probe }
+  })
 }
 
 /**

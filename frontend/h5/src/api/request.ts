@@ -59,18 +59,24 @@ api.interceptors.response.use(
 
     if (response) {
       const { status, data } = response
+      const reqUrl = String((error.config as any)?.url || '')
+      const isAuthLogin = reqUrl.includes('/auth/login')
 
       switch (status) {
         case 400:
           ElMessage.error(data?.detail || data?.message || data?.error || '请求参数错误')
           break
         case 401:
-          ElMessage.error('未授权，请重新登录')
-          clearAuthStorage()
+          if (isAuthLogin) {
+            ElMessage.error(data?.detail || data?.message || data?.error || '用户名或密码错误')
+          } else {
+            ElMessage.error(data?.detail || data?.message || data?.error || '未授权，请重新登录')
+            clearAuthStorage()
 
-          if (!window.location.pathname.startsWith('/login')) {
-            const redirect = encodeURIComponent(window.location.pathname + window.location.search)
-            window.location.href = `/login?redirect=${redirect}`
+            if (!window.location.pathname.startsWith('/login')) {
+              const redirect = encodeURIComponent(window.location.pathname + window.location.search)
+              window.location.href = `/login?redirect=${redirect}`
+            }
           }
           break
         case 403:

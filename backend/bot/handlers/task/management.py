@@ -20,6 +20,7 @@ from backend.bot.handlers.task.queries import (
     get_user_task as _get_user_task,
     resolve_db_user_id as _resolve_db_user_id,
 )
+from backend.bot.handlers.core.user_link import get_active_account_id as _get_active_account_id
 from backend.bot.ui.keyboards import (
     get_confirm_delete_keyboard,
     get_task_list_keyboard,
@@ -210,6 +211,7 @@ async def show_task_settings(event, user_id: int, task_id: str):
 async def create_new_task(event, user_id: int):
     """创建新任务并进入账号选择。"""
     task_id = str(uuid.uuid4())
+    selected_account_id: str | None = None
 
     async with get_async_session() as session:
         db_user_id = await _resolve_db_user_id(session, user_id)
@@ -217,10 +219,26 @@ async def create_new_task(event, user_id: int):
             await event.answer("未找到对应系统用户，请先完成绑定", alert=True)
             return
 
+        preferred_account_id = await _get_active_account_id(session, user_id, db_user_id)
+        if preferred_account_id:
+            account_result = await session.execute(
+                select(Account).where(
+                    Account.account_id == preferred_account_id,
+                    Account.user_id == db_user_id,
+                    Account.is_active == True,
+                )
+            )
+            preferred_account = account_result.scalar_one_or_none()
+            if preferred_account:
+                selected_account_id = preferred_account.account_id
+
         task = ScheduledMessageTask(
             task_id=task_id,
             user_id=db_user_id,
-            chat_id=None,
+            account_id=selected_account_id,
+            # Legacy DB compatibility: some historical schemas still keep chat_id NOT NULL.
+            # Use 0 as placeholder before account/target is selected.
+            chat_id=0,
             title="新任务",
             repeat_interval_min=60,
             enabled=False,
@@ -229,7 +247,48 @@ async def create_new_task(event, user_id: int):
         session.add(task)
         await session.commit()
 
-    await start_select_task_account(event, user_id, task_id)
+    if selected_account_id:
+        await start_select_task_targets(event, user_id, task_id, page=0)
+    else:
+        await start_select_task_account(event, user_id, task_id)
+
+
+async def create_new_task_for_account(event, user_id: int, account_id: str):
+    """创建新任务并指定执行账号。"""
+    task_id = str(uuid.uuid4())
+
+    async with get_async_session() as session:
+        db_user_id = await _resolve_db_user_id(session, user_id)
+        if db_user_id is None:
+            await event.answer("未找到对应系统用户，请先完成绑定", alert=True)
+            return
+
+        account_result = await session.execute(
+            select(Account).where(
+                Account.account_id == account_id,
+                Account.user_id == db_user_id,
+                Account.is_active == True,
+            )
+        )
+        account = account_result.scalar_one_or_none()
+        if not account:
+            await event.answer("账号不存在或不可用", alert=True)
+            return
+
+        task = ScheduledMessageTask(
+            task_id=task_id,
+            user_id=db_user_id,
+            account_id=account.account_id,
+            chat_id=0,
+            title="新任务",
+            repeat_interval_min=60,
+            enabled=False,
+            next_run_at=int(datetime.now().timestamp()) + 3600,
+        )
+        session.add(task)
+        await session.commit()
+
+    await start_select_task_targets(event, user_id, task_id, page=0)
 
 
 async def toggle_task(event, user_id: int, task_id: str):

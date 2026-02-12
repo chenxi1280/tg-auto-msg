@@ -1,7 +1,11 @@
 """H5 API shared dependencies and permission checks."""
+import hmac
+
+from fastapi import Header
 from fastapi import HTTPException
 from sqlalchemy import select
 
+from backend.config.core.settings import settings
 from backend.bot.account.manager import get_account_manager
 from backend.bot.proxy.pool import get_proxy_pool
 from backend.database.schema.models import Account, Proxy, ScheduledMessageTask
@@ -42,3 +46,17 @@ async def check_proxy_permission(proxy_id: int, user_id: int) -> Proxy:
         await check_account_permission(proxy.assigned_account_id, user_id)
 
     return proxy
+
+
+def require_admin_token(x_admin_token: str = Header(default="", alias="X-Admin-Token")) -> bool:
+    """Simple admin API token guard for out-of-band admin backend."""
+    expected = (settings.admin_api_token or "").strip()
+    provided = (x_admin_token or "").strip()
+
+    if not expected:
+        raise HTTPException(status_code=503, detail="管理员接口未配置 ADMIN_API_TOKEN")
+
+    if not provided or not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="管理员鉴权失败")
+
+    return True

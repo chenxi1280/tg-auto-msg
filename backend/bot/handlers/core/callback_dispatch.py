@@ -9,8 +9,15 @@ from telethon import Button
 from backend.bot.state.fsm import FSMState, fsm_storage
 from backend.bot.handlers.core.auth_gate import require_db_user_id
 from backend.bot.handlers.account.management import (
+    confirm_unbind_account,
+    refresh_bind_code,
+    relogin_account,
+    set_current_account,
+    show_account_menu,
     show_accounts_list,
+    sync_single_account,
     sync_account_resources,
+    unbind_account,
 )
 from backend.bot.handlers.task.target_selection import (
     _handle_pick_account,
@@ -44,6 +51,7 @@ from backend.bot.handlers.task.selector_context import (
 from backend.bot.handlers.task.management import (
     confirm_delete_task,
     create_new_task,
+    create_new_task_for_account,
     delete_task,
     open_h5_webapp,
     show_task_list,
@@ -218,6 +226,62 @@ async def _handle_edit_targets(event, user_id: int, task_id: str):
     await start_select_task_targets(event, user_id, task_id, page=0)
 
 
+async def _handle_acc_menu_callback(event, user_id: int, parts: list[str]):
+    if len(parts) < 2:
+        await event.answer("参数错误", alert=True)
+        return
+    await show_account_menu(event, user_id, parts[1])
+
+
+async def _handle_acc_set_active_callback(event, user_id: int, parts: list[str]):
+    if len(parts) < 2:
+        await event.answer("参数错误", alert=True)
+        return
+    await set_current_account(event, user_id, parts[1])
+
+
+async def _handle_acc_sync_callback(event, user_id: int, parts: list[str]):
+    if len(parts) < 2:
+        await event.answer("参数错误", alert=True)
+        return
+    await sync_single_account(event, user_id, parts[1])
+
+
+async def _handle_acc_relogin_callback(event, user_id: int, parts: list[str]):
+    if len(parts) < 2:
+        await event.answer("参数错误", alert=True)
+        return
+    await relogin_account(event, user_id, parts[1])
+
+
+async def _handle_acc_bindcode_callback(event, user_id: int, parts: list[str]):
+    if len(parts) < 2:
+        await event.answer("参数错误", alert=True)
+        return
+    await refresh_bind_code(event, user_id, parts[1])
+
+
+async def _handle_acc_unbind_callback(event, user_id: int, parts: list[str]):
+    if len(parts) < 2:
+        await event.answer("参数错误", alert=True)
+        return
+    await confirm_unbind_account(event, user_id, parts[1])
+
+
+async def _handle_acc_unbind_confirm_callback(event, user_id: int, parts: list[str]):
+    if len(parts) < 2:
+        await event.answer("参数错误", alert=True)
+        return
+    await unbind_account(event, user_id, parts[1])
+
+
+async def _handle_acc_add_task_callback(event, user_id: int, parts: list[str]):
+    if len(parts) < 2:
+        await event.answer("参数错误", alert=True)
+        return
+    await create_new_task_for_account(event, user_id, parts[1])
+
+
 _SIMPLE_ACTION_HANDLERS = {
     "accounts_list": show_accounts_list,
     "show_login_help": _handle_show_login_help,
@@ -266,6 +330,14 @@ _CUSTOM_ACTION_HANDLERS = {
     "pick_search": _handle_pick_search_callback,
     "pick_search_clear": _handle_pick_search_clear_callback,
     "pick_search_cancel": _handle_pick_search_cancel_callback,
+    "acc_menu": _handle_acc_menu_callback,
+    "acc_set_active": _handle_acc_set_active_callback,
+    "acc_sync": _handle_acc_sync_callback,
+    "acc_relogin": _handle_acc_relogin_callback,
+    "acc_bindcode": _handle_acc_bindcode_callback,
+    "acc_unbind": _handle_acc_unbind_callback,
+    "acc_unbind_confirm": _handle_acc_unbind_confirm_callback,
+    "acc_add_task": _handle_acc_add_task_callback,
 }
 
 
@@ -273,6 +345,10 @@ async def dispatch_callback(event, user_id: int, data: str):
     """Dispatch callback action by route maps."""
     parts = data.split(":")
     action = parts[0]
+
+    if action == "show_login_help":
+        await _handle_show_login_help(event, user_id)
+        return
 
     if await require_db_user_id(event, user_id, alert=True) is None:
         return

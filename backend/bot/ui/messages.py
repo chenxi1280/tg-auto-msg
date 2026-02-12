@@ -145,3 +145,20 @@ STATUS_NOT_SET = "❌ 未设置"
 OPEN_H5_BUTTON = "🌐 H5 高级编辑"
 # H5 基础 URL（从配置读取，默认本地开发地址）
 H5_BASE_URL = (settings.h5_base_url or "http://localhost:8000").rstrip("/")
+
+# ============ 账号管理页 ============
+
+BIND_SUCCESS = """✅ 账号绑定成功！
+
+👤 用户名: @{username}
+🆔 账号ID: `{account_id}`
+
+你现在可以在 Bot 里直接管理该账号。"""
+
+ERROR_INVALID_BIND_CODE = "❌ 绑定失败：绑定码无效、已过期，或账号归属校验未通过。"
+
+ACCOUNTS_LIST = """👥 **已绑定账号**（{count}）
+
+{accounts_text}
+
+请选择要操作的账号，或使用下方快捷功能。"""

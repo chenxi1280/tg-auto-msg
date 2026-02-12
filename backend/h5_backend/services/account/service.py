@@ -14,9 +14,24 @@ from backend.h5_backend.dependencies import check_account_permission
 class AccountService:
     """Account and resource business service."""
 
-    async def list_accounts(self, user_id: int) -> List[Dict[str, Any]]:
+    async def list_accounts(self, user_id: int, probe: bool = False) -> List[Dict[str, Any]]:
         account_manager = get_account_manager()
         accounts = await account_manager.get_accounts(user_id, is_active=False)
+
+        if probe:
+            # 刷新状态时尝试自动重连探测：会话仍有效可自动恢复在线
+            for account in accounts:
+                if not account.is_active or account.is_banned:
+                    continue
+                if account.health_status == "online":
+                    continue
+                try:
+                    await account_manager.health_check(account.account_id)
+                except Exception:
+                    # 探测失败保持原状态，不影响整体列表返回
+                    pass
+            accounts = await account_manager.get_accounts(user_id, is_active=False)
+
         now = datetime.now()
         return [self._serialize_account(acc, now) for acc in accounts]
 
@@ -143,9 +158,14 @@ class AccountService:
             "username": account.username,
             "first_name": account.first_name,
             "phone": account.phone,
+            "developer_app_id": account.developer_app_id,
             "is_active": account.is_active,
             "is_banned": account.is_banned,
             "health_status": account.health_status,
+            "developer_app_version": account.developer_app_version,
+            "reauth_required": account.reauth_required,
+            "reauth_reason": account.reauth_reason,
+            "reauth_required_at": account.reauth_required_at.isoformat() if account.reauth_required_at else None,
             "is_flooding": account.is_flooding,
             "flood_until": account.flood_until.isoformat() if account.flood_until else None,
             "messages_sent": account.messages_sent,

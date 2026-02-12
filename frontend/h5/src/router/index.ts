@@ -2,6 +2,7 @@
  * 路由配置
  */
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
+import { hasAdminToken } from '@/api/admin'
 
 // 布局组件（暂不使用）
 // import Layout from '@/components/Layout.vue'
@@ -54,6 +55,30 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '任务管理', requiresAuth: true }
   },
   {
+    path: '/me',
+    name: 'Me',
+    component: () => import('@/views/My.vue'),
+    meta: { title: '我的', requiresAuth: true }
+  },
+  {
+    path: '/purchase',
+    name: 'Purchase',
+    component: () => import('@/views/Purchase.vue'),
+    meta: { title: '购买套餐', requiresAuth: true }
+  },
+  {
+    path: '/admin',
+    name: 'AdminAuth',
+    component: () => import('@/views/AdminAuth.vue'),
+    meta: { title: '管理员密钥' }
+  },
+  {
+    path: '/admin/dashboard',
+    name: 'Admin',
+    component: () => import('@/views/Admin.vue'),
+    meta: { title: '管理员后台', requiresAdminToken: true }
+  },
+  {
     path: '/task/:taskId',
     name: 'TaskLegacyRedirect',
     redirect: (to) => ({
@@ -101,6 +126,8 @@ router.beforeEach((to, _from, next) => {
       path: '/login',
       query: { redirect: to.fullPath }
     })
+  } else if (to.meta?.requiresAdminToken && !hasAdminToken()) {
+    next({ path: '/admin' })
   } else {
     next()
   }

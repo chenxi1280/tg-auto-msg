@@ -18,6 +18,9 @@
           <el-icon><Refresh /></el-icon>
           刷新状态
         </el-button>
+        <el-button @click="goToMy">
+          我的
+        </el-button>
         <el-button type="danger" plain @click="handleLogout">
           注销
         </el-button>
@@ -101,42 +104,52 @@
 
             <!-- 操作按钮 -->
             <div class="account-actions">
-              <el-button size="small" type="primary" plain @click="viewAccountGroups(account.account_id)">
-                查看群组
-              </el-button>
+              <template v-if="canOperateAccount(account)">
+                <el-button size="small" type="primary" plain @click="viewAccountGroups(account)">
+                  查看群组
+                </el-button>
+                <el-button
+                  size="small"
+                  type="success"
+                  plain
+                  :disabled="isAccountSyncing(account.account_id)"
+                  @click="createTaskFromAccount(account)"
+                >
+                  任务管理
+                </el-button>
+                <el-button
+                  size="small"
+                  type="info"
+                  :loading="bindCodeLoading[account.account_id] === true"
+                  :disabled="isAccountSyncing(account.account_id)"
+                  @click="refreshBindCode(account)"
+                >
+                  {{ account.bind_code ? '刷新绑定码' : '获取绑定码' }}
+                </el-button>
+                <el-button
+                  size="small"
+                  :disabled="!account.bind_code || isAccountSyncing(account.account_id)"
+                  @click="copyBindCommand(account)"
+                >
+                  复制 /bind
+                </el-button>
+                <el-button
+                  size="small"
+                  :loading="isAccountSyncing(account.account_id)"
+                  :disabled="isAccountSyncing(account.account_id)"
+                  @click="syncAccount(account.account_id)"
+                >
+                  <el-icon><Refresh /></el-icon>
+                  同步资源
+                </el-button>
+              </template>
               <el-button
+                v-else-if="needRelogin(account)"
                 size="small"
-                type="success"
-                plain
-                :disabled="isAccountSyncing(account.account_id)"
-                @click="createTaskFromAccount(account.account_id)"
+                type="primary"
+                @click="reloginAccount(account)"
               >
-                任务管理
-              </el-button>
-              <el-button
-                size="small"
-                type="info"
-                :loading="bindCodeLoading[account.account_id] === true"
-                :disabled="isAccountSyncing(account.account_id)"
-                @click="refreshBindCode(account)"
-              >
-                {{ account.bind_code ? '刷新绑定码' : '获取绑定码' }}
-              </el-button>
-              <el-button
-                size="small"
-                :disabled="!account.bind_code || isAccountSyncing(account.account_id)"
-                @click="copyBindCommand(account)"
-              >
-                复制 /bind
-              </el-button>
-              <el-button
-                size="small"
-                :loading="isAccountSyncing(account.account_id)"
-                :disabled="isAccountSyncing(account.account_id)"
-                @click="syncAccount(account.account_id)"
-              >
-                <el-icon><Refresh /></el-icon>
-                同步资源
+                重新登录
               </el-button>
               <el-button
                 v-if="account.is_active"
@@ -184,6 +197,7 @@ import { useAccountStore } from '@/stores/account'
 import { useUserStore } from '@/stores/user'
 import * as authApi from '@/api/auth'
 import { refreshAccountBindCode, type Account } from '@/api/account'
+import { getSubscription } from '@/api/me'
 
 const router = useRouter()
 const accountStore = useAccountStore()
@@ -199,10 +213,27 @@ const bindCodeLoading = reactive<Record<string, boolean>>({})
 const syncLoading = reactive<Record<string, boolean>>({})
 
 const isAccountSyncing = (accountId: string) => syncLoading[accountId] === true
+const canOperateAccount = (account: Account) => account.is_active && account.health_status === 'online'
+const needRelogin = (account: Account) =>
+  account.health_status !== 'online' || account.reauth_required === true
 
 // 跳转到 TG 账号绑定页
-const goToLogin = () => {
-  router.push('/bind-tg')
+const goToLogin = async () => {
+  try {
+    const res = await getSubscription()
+    if (!res.data.is_active) {
+      ElMessage.warning('未开通套餐，请先购买或激活卡密')
+      router.push('/purchase')
+      return
+    }
+    router.push('/bind-tg')
+  } catch (_err) {
+    // 失败时由全局拦截器提示，这里不重复弹窗
+  }
+}
+
+const goToMy = () => {
+  router.push('/me')
 }
 
 const handleLogout = async () => {
@@ -219,24 +250,42 @@ const handleLogout = async () => {
 // 刷新账号列表
 const refreshAccounts = async () => {
   if (userStore.userId) {
-    await accountStore.fetchAccounts(userStore.userId)
+    await accountStore.fetchAccounts(userStore.userId, true)
   }
 }
 
-const viewAccountGroups = (accountId: string) => {
+const reloginAccount = (account: Account) => {
+  ElMessage.warning(`账号 ${account.username || account.phone || account.account_id} 当前离线，请重新扫码登录`)
   router.push({
-    path: '/resources',
+    path: '/bind-tg',
     query: {
-      account_id: accountId
+      relogin_account_id: account.account_id
     }
   })
 }
 
-const createTaskFromAccount = (accountId: string) => {
+const viewAccountGroups = (account: Account) => {
+  if (!canOperateAccount(account)) {
+    reloginAccount(account)
+    return
+  }
+  router.push({
+    path: '/resources',
+    query: {
+      account_id: account.account_id
+    }
+  })
+}
+
+const createTaskFromAccount = (account: Account) => {
+  if (!canOperateAccount(account)) {
+    reloginAccount(account)
+    return
+  }
   router.push({
     path: '/tasks',
     query: {
-      account_id: accountId
+      account_id: account.account_id
     }
   })
 }
@@ -371,7 +420,7 @@ onMounted(() => {
   // 恢复用户状态
   userStore.restoreUser()
   if (userStore.userId) {
-    accountStore.fetchAccounts(userStore.userId)
+    accountStore.fetchAccounts(userStore.userId, false)
   } else {
     ElMessage.warning('请先登录')
     router.push('/login')

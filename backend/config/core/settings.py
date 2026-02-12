@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     # 安全配置
     encryption_key: Optional[str] = Field(None, alias="ENCRYPTION_KEY", description="数据加密密钥（Base64 编码）")
     jwt_secret_key: str = Field(default="your-secret-key-change-in-production", alias="JWT_SECRET_KEY", description="JWT 签名密钥")
+    admin_api_token: str = Field(default="", alias="ADMIN_API_TOKEN", description="管理员后台 API 令牌")
 
     @property
     def secret_key(self) -> str:
@@ -44,6 +45,23 @@ class Settings(BaseSettings):
         default="all",
         alias="SCHEDULER_MODE",
         description="调度模式: all/producer/consumer"
+    )
+
+    # 绑定安全配置
+    bind_max_failures: int = Field(
+        default=8,
+        alias="BIND_MAX_FAILURES",
+        description="/bind 最大连续失败次数"
+    )
+    bind_failure_window_seconds: int = Field(
+        default=600,
+        alias="BIND_FAILURE_WINDOW_SECONDS",
+        description="/bind 失败计数窗口（秒）"
+    )
+    bind_lock_seconds: int = Field(
+        default=900,
+        alias="BIND_LOCK_SECONDS",
+        description="/bind 触发限流后的锁定时长（秒）"
     )
 
     model_config = SettingsConfigDict(

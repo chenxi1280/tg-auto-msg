@@ -38,6 +38,7 @@ class LoginSession:
     error: str = ""
     bind_code: str = ""
     system_user_id: Optional[int] = None
+    developer_app_id: Optional[int] = None
 
 
 class RedisLoginManager:
@@ -118,6 +119,7 @@ class RedisLoginManager:
             "error": "",
             "bind_code": "",
             "system_user_id": "",
+            "developer_app_id": "",
         }
 
         key = self.SESSION_KEY_PREFIX + login_id
@@ -162,6 +164,14 @@ class RedisLoginManager:
                         expired_data["system_user_id"] = int(raw_owner)
                     except (TypeError, ValueError):
                         expired_data["system_user_id"] = None
+                raw_app_id = expired_data.get("developer_app_id")
+                if raw_app_id in ("", None):
+                    expired_data["developer_app_id"] = None
+                else:
+                    try:
+                        expired_data["developer_app_id"] = int(raw_app_id)
+                    except (TypeError, ValueError):
+                        expired_data["developer_app_id"] = None
                 return LoginSession(**expired_data)
         except ValueError:
             # 日期格式错误，视为过期
@@ -178,6 +188,14 @@ class RedisLoginManager:
                 data["system_user_id"] = int(raw_owner)
             except (TypeError, ValueError):
                 data["system_user_id"] = None
+        raw_app_id = data.get("developer_app_id")
+        if raw_app_id in ("", None):
+            data["developer_app_id"] = None
+        else:
+            try:
+                data["developer_app_id"] = int(raw_app_id)
+            except (TypeError, ValueError):
+                data["developer_app_id"] = None
 
         return LoginSession(**data)
 
@@ -264,6 +282,7 @@ class RedisLoginManager:
         # 读取会话中的系统用户归属（由 H5 登录态写入）
         session = await self.get_session(login_id)
         system_user_id = session.system_user_id if session else ""
+        developer_app_id = session.developer_app_id if session else ""
 
         # 更新登录会话
         await self.update_status(
@@ -284,6 +303,7 @@ class RedisLoginManager:
             "username": username,
             "phone": phone,
             "system_user_id": str(system_user_id or ""),
+            "developer_app_id": str(developer_app_id or ""),
         }
 
         await r.hset(bind_key, mapping=bind_data)
@@ -385,6 +405,9 @@ class RedisLoginManager:
         system_user_id = data.get("system_user_id")
         if system_user_id not in (None, ""):
             data["system_user_id"] = int(system_user_id)
+        developer_app_id = data.get("developer_app_id")
+        if developer_app_id not in (None, ""):
+            data["developer_app_id"] = int(developer_app_id)
         return data
 
     async def consume_bind_code(self, bind_code: str) -> bool:
