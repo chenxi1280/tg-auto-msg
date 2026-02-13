@@ -11,7 +11,7 @@
 - (可选) Docker & Docker Compose
 
 ### Telegram 配置
-1. 访问 https://my.telegram.org 获取 `API_ID` 和 `API_HASH`
+1. 访问 https://my.telegram.org 获取 `TG_API_ID` 和 `TG_API_HASH`
 2. 与 @BotFather 对话创建 Bot，获取 `BOT_TOKEN`
 
 ## 🔧 开发环境部署
@@ -100,8 +100,8 @@ startretries=3
 stderr_logfile=/var/log/tg-auto-msg/err.log
 stdout_logfile=/var/log/tg-auto-msg/out.log
 environment=
-    API_ID="your_api_id",
-    API_HASH="your_api_hash",
+    TG_API_ID="your_api_id",
+    TG_API_HASH="your_api_hash",
     BOT_TOKEN="your_bot_token",
     DATABASE_URL="postgresql+asyncpg://user:password@localhost:5432/tg_auto_msg",
     REDIS_URL="redis://localhost:6379/0"
@@ -139,8 +139,8 @@ Type=simple
 User=your_user
 WorkingDirectory=/path/to/tg-auto-msg
 Environment="PATH=/path/to/venv/bin"
-Environment="API_ID=your_api_id"
-Environment="API_HASH=your_api_hash"
+Environment="TG_API_ID=your_api_id"
+Environment="TG_API_HASH=your_api_hash"
 Environment="BOT_TOKEN=your_bot_token"
 Environment="DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/tg_auto_msg"
 Environment="REDIS_URL=redis://localhost:6379/0"
@@ -169,29 +169,35 @@ sudo journalctl -u tg-auto-msg -f
 
 ### 1. 配置环境变量
 ```bash
-cp .env.example .env
+cp .env.docker.example .env
 nano .env
 ```
 
 ### 2. 启动服务
 ```bash
-docker-compose up -d
+docker compose up -d --build
 ```
 
 ### 3. 查看日志
 ```bash
-docker-compose logs -f app
+docker compose logs -f app
 ```
 
 ### 4. 停止服务
 ```bash
-docker-compose down
+docker compose down
 ```
 
 ### 5. 进入容器
 ```bash
-docker-compose exec app bash
+docker compose exec app bash
 ```
+
+### 6. 持久化说明
+- `postgres_data`：PostgreSQL 数据目录
+- `redis_data`：Redis 持久化目录
+- `app_logs`：应用日志目录
+- `app_uploads`：上传目录
 
 ## 🌐 Nginx 反向代理（H5）
 
@@ -318,7 +324,7 @@ pip install -r requirements.txt --upgrade
 
 ### 3. 数据库迁移（如有）
 ```bash
-python -m database.migrate
+python -m backend.database.runtime.migration_cli apply
 ```
 
 ### 4. 重启服务
@@ -330,7 +336,7 @@ sudo supervisorctl restart tg-auto-msg
 sudo systemctl restart tg-auto-msg
 
 # Docker
-docker-compose restart app
+docker compose restart app
 ```
 
 ## 📞 技术支持

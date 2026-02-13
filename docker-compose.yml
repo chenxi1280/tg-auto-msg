@@ -1,70 +1,89 @@
-version: '3.8'
+name: tgmsg
 
 services:
-  # PostgreSQL 数据库
   postgres:
-    image: postgres:15-alpine
-    container_name: tg-auto-msg-db
+    image: postgres:16-alpine
+    container_name: tgmsg-postgres
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: tg_auto_msg
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: your_password_here
+      POSTGRES_DB: ${POSTGRES_DB:-tgmsg}
+      POSTGRES_USER: ${POSTGRES_USER:-tgmsg}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
-    ports:
-      - "5432:5432"
-    restart: unless-stopped
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
 
-  # Redis 缓存
   redis:
     image: redis:7-alpine
-    container_name: tg-auto-msg-redis
-    ports:
-      - "6379:6379"
+    container_name: tgmsg-redis
+    restart: unless-stopped
+    command: [
+      "redis-server",
+      "--appendonly", "yes",
+      "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD is required}"
+    ]
     volumes:
       - redis_data:/data
-    restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping | grep PONG"]
       interval: 10s
       timeout: 5s
-      retries: 5
-
-  # 应用服务
-  app:
-    build: .
-    container_name: tg-auto-msg-app
+      retries: 10
     environment:
-      - API_ID=${API_ID}
-      - API_HASH=${API_HASH}
-      - BOT_TOKEN=${BOT_TOKEN}
-      - USERBOT_PHONE=${USERBOT_PHONE}
-      - DATABASE_URL=postgresql+asyncpg://postgres:your_password_here@postgres:5432/tg_auto_msg
-      - REDIS_URL=redis://redis:6379/0
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - TIMEZONE=${TIMEZONE:-Asia/Shanghai}
-      - WORKER_INTERVAL=${WORKER_INTERVAL:-60}
-      - MAX_FAILURE_COUNT=${MAX_FAILURE_COUNT:-5}
-    volumes:
-      - ./logs:/app/logs
-      - ./uploads:/app/uploads
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
     ports:
-      - "8000:8000"  # H5 API
+      - "${REDIS_PORT:-6379}:6379"
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tgmsg-app:latest
+    container_name: tgmsg-app
+    restart: unless-stopped
+    environment:
+      TG_API_ID: ${TG_API_ID:?TG_API_ID is required}
+      TG_API_HASH: ${TG_API_HASH:?TG_API_HASH is required}
+      BOT_TOKEN: ${BOT_TOKEN:?BOT_TOKEN is required}
+      USERBOT_PHONE: ${USERBOT_PHONE:-}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-tgmsg}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-tgmsg}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY is required}
+      ADMIN_API_TOKEN: ${ADMIN_API_TOKEN:?ADMIN_API_TOKEN is required}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      TIMEZONE: ${TIMEZONE:-Asia/Shanghai}
+      H5_BASE_URL: ${H5_BASE_URL:-http://localhost:8000}
+      WORKER_INTERVAL: ${WORKER_INTERVAL:-60}
+      MAX_FAILURE_COUNT: ${MAX_FAILURE_COUNT:-5}
+      BIND_MAX_FAILURES: ${BIND_MAX_FAILURES:-8}
+      BIND_FAILURE_WINDOW_SECONDS: ${BIND_FAILURE_WINDOW_SECONDS:-600}
+      BIND_LOCK_SECONDS: ${BIND_LOCK_SECONDS:-900}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    restart: unless-stopped
+    volumes:
+      - app_logs:/app/logs
+      - app_uploads:/app/uploads
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json', timeout=5)\""]
+      interval: 20s
+      timeout: 10s
+      retries: 6
+    ports:
+      - "${APP_PORT:-8000}:8000"
 
 volumes:
   postgres_data:
-    driver: local
   redis_data:
-    driver: local
+  app_logs:
+  app_uploads:

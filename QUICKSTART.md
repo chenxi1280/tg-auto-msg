@@ -7,7 +7,7 @@
 ### 步骤 1：准备配置
 
 1. **获取 Telegram 凭证**
-   - 访问 https://my.telegram.org 获取 `API_ID` 和 `API_HASH`
+   - 访问 https://my.telegram.org 获取 `TG_API_ID` 和 `TG_API_HASH`
    - 与 @BotFather 对话创建 Bot，获取 `BOT_TOKEN`
 
 2. **准备数据库和 Redis**

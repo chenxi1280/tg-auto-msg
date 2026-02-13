@@ -59,8 +59,8 @@ pip install -r requirements.txt
 
 ```env
 # Telegram 配置
-API_ID=12345678                    # 从 https://my.telegram.org 获取
-API_HASH=your_api_hash_here        # 从 https://my.telegram.org 获取
+TG_API_ID=12345678                 # 从 https://my.telegram.org 获取
+TG_API_HASH=your_api_hash_here     # 从 https://my.telegram.org 获取
 BOT_TOKEN=your_bot_token_here      # 从 @BotFather 获取
 USERBOT_PHONE=+8613800000000       # 你的手机号
 
@@ -115,9 +115,9 @@ python main.py
 首次运行后，通过 H5 扫码完成 Userbot 绑定与登录。
 
 ### 7. 配置 H5 域名
-编辑 `backend/bot/messages.py` 中的 `H5_BASE_URL`：
-```python
-H5_BASE_URL = "https://your-domain.com"
+在 `.env` 中设置：
+```env
+H5_BASE_URL=https://your-domain.com
 ```
 
 构建前端（生产环境）：
@@ -153,22 +153,27 @@ sudo supervisorctl update
 sudo supervisorctl start tg-auto-msg
 ```
 
-### 方式三：使用 Docker
+### 方式三：使用 Docker Compose（推荐上线）
 ```bash
-# 构建镜像
-docker build -t tg-auto-msg .
+# 1) 准备环境变量
+cp .env.docker.example .env
+# 编辑 .env，至少填写以下必填项：
+# TG_API_ID TG_API_HASH BOT_TOKEN JWT_SECRET_KEY ADMIN_API_TOKEN
+# POSTGRES_PASSWORD REDIS_PASSWORD
 
-# 运行容器
-docker run -d \
-  --name tg-auto-msg \
-  -v $(pwd):/app \
-  -e API_ID=12345678 \
-  -e API_HASH=your_api_hash \
-  -e BOT_TOKEN=your_bot_token \
-  -e DATABASE_URL=postgresql+asyncpg://postgres:password@db:5432/tg_auto_msg \
-  -e REDIS_URL=redis://redis:6379/0 \
-  tg-auto-msg
+# 2) 启动（包含 app + postgres + redis，全部持久化卷）
+docker compose up -d --build
+
+# 3) 查看服务状态
+docker compose ps
+docker compose logs -f app
 ```
+
+持久化卷说明：
+- `postgres_data`：PostgreSQL 数据文件
+- `redis_data`：Redis AOF/RDB 数据
+- `app_logs`：应用日志
+- `app_uploads`：上传目录（当前主要用于业务附件缓存）
 
 ## 📊 数据库结构
 
