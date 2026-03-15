@@ -92,6 +92,7 @@ async def bind_account(
     actor_tg_user_id: Optional[int] = None,
 ) -> Optional[Account]:
     """Bind account by one-time bind code."""
+    normalized_ip_address = (ip_address or "").strip() or None
     login_manager = get_redis_login_manager()
     redis_client = await login_manager._get_redis()
     actor_key = _build_bind_actor_key(user_id, actor_tg_user_id)
@@ -200,7 +201,7 @@ async def bind_account(
                 account_id=existing_account.account_id,
                 user_id=owner_user_id,
                 bind_code=bind_code,
-                ip_address=ip_address,
+                ip_address=normalized_ip_address,
             )
             session.add(log)
             if actor_tg_user_id > 0:
@@ -259,7 +260,7 @@ async def bind_account(
             account_id=account.account_id,
             user_id=owner_user_id,
             bind_code=bind_code,
-            ip_address=ip_address,
+            ip_address=normalized_ip_address,
         )
         session.add(log)
         if actor_tg_user_id > 0:

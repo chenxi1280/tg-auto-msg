@@ -71,8 +71,8 @@ CREATE INDEX IF NOT EXISTS idx_pricing_plans_is_active ON pricing_plans(is_activ
 
 INSERT INTO pricing_plans (plan_code, display_name, billing_cycle, price_cents, duration_days, is_active, sort_order)
 VALUES
-    ('monthly', '月付套餐', 'monthly', 5900, 30, TRUE, 10),
-    ('yearly', '年付套餐', 'yearly', 65000, 365, TRUE, 20)
+    ('monthly', '月付套餐', 'monthly', 20000, 30, TRUE, 10),
+    ('yearly', '年付套餐', 'yearly', 110000, 365, TRUE, 20)
 ON CONFLICT (plan_code) DO UPDATE
 SET
     display_name = EXCLUDED.display_name,

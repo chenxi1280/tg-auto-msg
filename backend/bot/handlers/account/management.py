@@ -33,7 +33,7 @@ async def bind_account(event, user_id: int, bind_code: str, actor_tg_user_id: Op
         account = await account_manager.bind_account(
             user_id=user_id,
             bind_code=bind_code,
-            ip_address="telegram_bot",
+            ip_address="",
             actor_tg_user_id=actor_id,
         )
     except BindRateLimitError as exc:

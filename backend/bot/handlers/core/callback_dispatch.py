@@ -28,8 +28,11 @@ from backend.bot.handlers.task.target_selection import (
     start_select_task_targets,
 )
 from backend.bot.handlers.task.editing import (
+    set_hours_allday,
+    set_end_at_timestamp,
     set_hour,
     set_interval,
+    set_start_at_timestamp,
     show_interval_selection,
     start_edit_buttons,
     start_edit_end_at,
@@ -94,6 +97,32 @@ async def _handle_set_hour_callback(event, user_id: int, parts: list[str]):
     is_start = parts[2] == "True"
     hour = int(parts[3])
     await set_hour(event, user_id, task_id, is_start, hour)
+
+
+async def _handle_set_hours_allday_callback(event, user_id: int, parts: list[str]):
+    if len(parts) < 2:
+        await event.answer("参数错误", alert=True)
+        return
+    task_id = parts[1]
+    await set_hours_allday(event, user_id, task_id)
+
+
+async def _handle_set_start_ts_callback(event, user_id: int, parts: list[str]):
+    if len(parts) < 3:
+        await event.answer("参数错误", alert=True)
+        return
+    task_id = parts[1]
+    timestamp = int(parts[2])
+    await set_start_at_timestamp(event, user_id, task_id, timestamp)
+
+
+async def _handle_set_end_ts_callback(event, user_id: int, parts: list[str]):
+    if len(parts) < 3:
+        await event.answer("参数错误", alert=True)
+        return
+    task_id = parts[1]
+    timestamp = int(parts[2])
+    await set_end_at_timestamp(event, user_id, task_id, timestamp)
 
 
 async def _handle_pick_acc_callback(event, user_id: int, parts: list[str]):
@@ -323,6 +352,9 @@ _SET_ENABLE_ACTIONS = {
 _CUSTOM_ACTION_HANDLERS = {
     "set_interval": _handle_set_interval_callback,
     "set_hour": _handle_set_hour_callback,
+    "set_hours_allday": _handle_set_hours_allday_callback,
+    "set_start_ts": _handle_set_start_ts_callback,
+    "set_end_ts": _handle_set_end_ts_callback,
     "pick_acc": _handle_pick_acc_callback,
     "pick_res": _handle_pick_res_callback,
     "pick_page": _handle_pick_page_callback,

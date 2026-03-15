@@ -153,7 +153,7 @@ sudo supervisorctl update
 sudo supervisorctl start tg-auto-msg
 ```
 
-### 方式三：使用 Docker Compose（推荐上线）
+### 方式三：使用 Docker Compose（推荐上线，前后端分离）
 ```bash
 # 1) 准备环境变量
 cp .env.docker.example .env
@@ -161,19 +161,35 @@ cp .env.docker.example .env
 # TG_API_ID TG_API_HASH BOT_TOKEN JWT_SECRET_KEY ADMIN_API_TOKEN
 # POSTGRES_PASSWORD REDIS_PASSWORD
 
-# 2) 启动（包含 app + postgres + redis，全部持久化卷）
+# 2) 启动（包含 frontend + app + postgres + redis）
 docker compose up -d --build
 
 # 3) 查看服务状态
 docker compose ps
+docker compose logs -f frontend
 docker compose logs -f app
 ```
 
-持久化卷说明：
-- `postgres_data`：PostgreSQL 数据文件
-- `redis_data`：Redis AOF/RDB 数据
-- `app_logs`：应用日志
-- `app_uploads`：上传目录（当前主要用于业务附件缓存）
+生产结构说明：
+- `frontend`：独立 Nginx 容器，负责静态资源与 SPA 路由，并反向代理 `/api` 到 `app`
+- `app`：FastAPI API 容器，只在 Docker 内网暴露 `8000`
+- `postgres`：PostgreSQL 容器
+- `redis`：Redis 容器
+
+宿主机持久化目录：
+- `/data/tgmsg/postgres`：PostgreSQL 数据文件
+- `/data/tgmsg/redis`：Redis AOF/RDB 数据
+- `/data/tgmsg/logs`：后端应用日志
+- `/data/tgmsg/uploads`：业务上传目录
+- `/data/tgmsg/nginx-logs`：Nginx 访问日志与错误日志
+
+访问入口：
+- `http://your-host/`：前端首页
+- `http://your-host/api/...`：通过 Nginx 反代到后端 API
+
+说明：
+- 生产环境建议设置 `SERVE_FRONTEND=false`，由 Nginx 提供前端。
+- 本地开发仍可设置 `SERVE_FRONTEND=true`，继续由 FastAPI 挂载前端构建产物。
 
 ## 📊 数据库结构
 

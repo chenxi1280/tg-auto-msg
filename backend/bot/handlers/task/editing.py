@@ -1,15 +1,17 @@
 """Task editing flows for Telegram bot handlers."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from telethon.tl.types import MessageMediaDocument, MessageMediaPhoto
 
 from backend.bot.state.fsm import FSMState, fsm_storage
 from backend.bot.ui.keyboards import (
     get_cancel_keyboard,
+    get_end_time_keyboard,
     get_hour_select_keyboard,
     get_interval_keyboard,
+    get_start_time_keyboard,
 )
 from backend.bot.handlers.core.helpers import (
     format_buttons as _format_buttons,
@@ -24,6 +26,44 @@ from backend.database.runtime.session import get_async_session
 async def _show_task_settings(event, user_id: int, task_id: str):
     from backend.bot.handlers.task.management import show_task_settings
     await show_task_settings(event, user_id, task_id)
+
+
+def _next_midnight(base_dt: datetime) -> datetime:
+    """Return next midnight based on local datetime."""
+    next_day = base_dt.date() + timedelta(days=1)
+    return datetime.combine(next_day, datetime.min.time())
+
+
+async def _set_start_at_value(event, user_id: int, task_id: str, timestamp: int):
+    """Persist selected start time."""
+    async with get_async_session() as session:
+        task = await _get_user_task(session, task_id, user_id)
+        if task:
+            if task.end_at and timestamp >= task.end_at:
+                await event.answer(ERROR_END_BEFORE_START, alert=True)
+                return
+            task.start_at = timestamp
+            await session.commit()
+
+    fsm_storage.reset_state(user_id)
+    await event.answer(SUCCESS_START_AT_UPDATED)
+    await _show_task_settings(event, user_id, task_id)
+
+
+async def _set_end_at_value(event, user_id: int, task_id: str, timestamp: int):
+    """Persist selected end time."""
+    async with get_async_session() as session:
+        task = await _get_user_task(session, task_id, user_id)
+        if task:
+            if task.start_at and timestamp <= task.start_at:
+                await event.answer(ERROR_END_BEFORE_START, alert=True)
+                return
+            task.end_at = timestamp
+            await session.commit()
+
+    fsm_storage.reset_state(user_id)
+    await event.answer(SUCCESS_END_AT_UPDATED)
+    await _show_task_settings(event, user_id, task_id)
 
 
 async def toggle_delete_previous(event, user_id: int, task_id: str):
@@ -216,12 +256,38 @@ async def set_hour(event, user_id: int, task_id: str, is_start: bool, hour: int)
     await _show_task_settings(event, user_id, task_id)
 
 
+async def set_hours_allday(event, user_id: int, task_id: str):
+    """设置发送时段为全天。"""
+    async with get_async_session() as session:
+        task = await _get_user_task(session, task_id, user_id)
+        if task:
+            task.day_start_hour = 0
+            # 调度判断是 start <= hour < end，全天应设置为 [0, 24)。
+            task.day_end_hour = 24
+            await session.commit()
+
+    fsm_storage.reset_state(user_id)
+    await event.answer(SUCCESS_TIME_RANGE_UPDATED.format(start=0, end=24))
+    await _show_task_settings(event, user_id, task_id)
+
+
 async def start_edit_start_at(event, user_id: int, task_id: str):
     """开始编辑开始时间。"""
     fsm_storage.set_state(user_id, FSMState.WAIT_START_AT)
     fsm_storage.update_data(user_id, task_id=task_id)
-    keyboard = get_cancel_keyboard(task_id)
-    await event.edit(EDIT_START_AT_PROMPT, buttons=keyboard, parse_mode="markdown")
+    now_dt = datetime.now().replace(second=0, microsecond=0)
+    keyboard = get_start_time_keyboard(
+        task_id,
+        int(now_dt.timestamp()),
+        int((now_dt + timedelta(minutes=10)).timestamp()),
+        now_dt.strftime("%Y-%m-%d %H:%M"),
+        (now_dt + timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M"),
+    )
+    await event.edit(
+        EDIT_START_AT_PROMPT.format(now=now_dt.strftime("%Y-%m-%d %H:%M")),
+        buttons=keyboard,
+        parse_mode="markdown",
+    )
 
 
 async def handle_start_at_input(event, user_id: int, task_id: str, text: str):
@@ -229,19 +295,7 @@ async def handle_start_at_input(event, user_id: int, task_id: str, text: str):
     try:
         dt = datetime.strptime(text, "%Y-%m-%d %H:%M")
         timestamp = int(dt.timestamp())
-
-        async with get_async_session() as session:
-            task = await _get_user_task(session, task_id, user_id)
-            if task:
-                if task.end_at and timestamp >= task.end_at:
-                    await event.respond(ERROR_END_BEFORE_START)
-                    return
-                task.start_at = timestamp
-                await session.commit()
-
-        fsm_storage.reset_state(user_id)
-        await event.respond(SUCCESS_START_AT_UPDATED)
-        await _show_task_settings(event, user_id, task_id)
+        await _set_start_at_value(event, user_id, task_id, timestamp)
     except ValueError:
         await event.respond(ERROR_INVALID_TIME_FORMAT)
 
@@ -250,8 +304,25 @@ async def start_edit_end_at(event, user_id: int, task_id: str):
     """开始编辑结束时间。"""
     fsm_storage.set_state(user_id, FSMState.WAIT_END_AT)
     fsm_storage.update_data(user_id, task_id=task_id)
-    keyboard = get_cancel_keyboard(task_id)
-    await event.edit(EDIT_END_AT_PROMPT, buttons=keyboard, parse_mode="markdown")
+    async with get_async_session() as session:
+        task = await _get_user_task(session, task_id, user_id)
+
+    base_dt = datetime.now().replace(second=0, microsecond=0)
+    if task and task.start_at:
+        base_dt = datetime.fromtimestamp(task.start_at).replace(second=0, microsecond=0)
+    next_midnight = _next_midnight(base_dt)
+    keyboard = get_end_time_keyboard(
+        task_id,
+        int(next_midnight.timestamp()),
+        int((next_midnight + timedelta(days=1)).timestamp()),
+        next_midnight.strftime("%Y-%m-%d %H:%M"),
+        (next_midnight + timedelta(days=1)).strftime("%Y-%m-%d %H:%M"),
+    )
+    await event.edit(
+        EDIT_END_AT_PROMPT.format(suggested_end=next_midnight.strftime("%Y-%m-%d %H:%M")),
+        buttons=keyboard,
+        parse_mode="markdown",
+    )
 
 
 async def handle_end_at_input(event, user_id: int, task_id: str, text: str):
@@ -259,18 +330,16 @@ async def handle_end_at_input(event, user_id: int, task_id: str, text: str):
     try:
         dt = datetime.strptime(text, "%Y-%m-%d %H:%M")
         timestamp = int(dt.timestamp())
-
-        async with get_async_session() as session:
-            task = await _get_user_task(session, task_id, user_id)
-            if task:
-                if task.start_at and timestamp <= task.start_at:
-                    await event.respond(ERROR_END_BEFORE_START)
-                    return
-                task.end_at = timestamp
-                await session.commit()
-
-        fsm_storage.reset_state(user_id)
-        await event.respond(SUCCESS_END_AT_UPDATED)
-        await _show_task_settings(event, user_id, task_id)
+        await _set_end_at_value(event, user_id, task_id, timestamp)
     except ValueError:
         await event.respond(ERROR_INVALID_TIME_FORMAT)
+
+
+async def set_start_at_timestamp(event, user_id: int, task_id: str, timestamp: int):
+    """通过快捷按钮设置开始时间。"""
+    await _set_start_at_value(event, user_id, task_id, timestamp)
+
+
+async def set_end_at_timestamp(event, user_id: int, task_id: str, timestamp: int):
+    """通过快捷按钮设置结束时间。"""
+    await _set_end_at_value(event, user_id, task_id, timestamp)

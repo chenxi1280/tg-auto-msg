@@ -10,6 +10,7 @@ import type { ApiResponse } from './request'
 export enum LoginStatus {
   PENDING = 'pending',
   SCANNING = 'scanning',
+  PASSWORD_REQUIRED = 'password_required',
   CONFIRMED = 'confirmed',
   EXPIRED = 'expired',
   ERROR = 'error'
@@ -33,6 +34,7 @@ export interface LoginStatusResponse {
   bind_code?: string
   tg_user_id?: number
   username?: string
+  password_hint?: string
   error?: string
 }
 
@@ -66,11 +68,27 @@ export interface BindAccountResponse {
   username: string
 }
 
+export interface SubmitPasswordResponse {
+  bind_code: string
+  tg_user_id: number
+  username: string
+}
+
 /**
  * 验证绑定码并获取 token
  */
 export const bindAccount = (bindCode: string): Promise<ApiResponse<BindAccountResponse>> => {
   return request.post('/login/bind', { bind_code: bindCode })
+}
+
+export const submitLoginPassword = (
+  loginId: string,
+  password: string
+): Promise<ApiResponse<SubmitPasswordResponse>> => {
+  return request.post('/login/password', {
+    login_id: loginId,
+    password
+  })
 }
 
 /**

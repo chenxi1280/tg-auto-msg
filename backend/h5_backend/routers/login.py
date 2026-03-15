@@ -43,6 +43,14 @@ async def bind_account(request: Request, current_user: User = Depends(get_curren
     return {"success": True, "message": "绑定成功", "data": data}
 
 
+@router.post("/api/login/password")
+async def submit_login_password(request: Request, current_user: User = Depends(get_current_user)):
+    """提交 Telegram 二步密码并完成登录"""
+    service = get_login_service()
+    data = await service.submit_password(request, current_user.id)
+    return {"success": True, "message": "登录成功", "data": data}
+
+
 @router.get("/api/login/get-token")
 async def get_existing_token():
     """[已弃用] 获取已登录 userbot 的 token。"""

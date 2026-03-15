@@ -715,7 +715,7 @@ const planDialog = reactive({
   planCode: '',
   form: {
     display_name: '',
-    price_cents: 5900,
+    price_cents: 20000,
     duration_days: 30,
     is_active: true,
   },

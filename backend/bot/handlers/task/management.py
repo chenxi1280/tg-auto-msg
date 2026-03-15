@@ -66,6 +66,23 @@ def _should_edit_event(event) -> bool:
     return isinstance(event, events.CallbackQuery.Event)
 
 
+def _display_hour(hour: int | None) -> str:
+    """Render hour for settings text, preserving 0."""
+    return "-" if hour is None else f"{hour:02d}"
+
+
+def _format_time_range(start_hour: int | None, end_hour: int | None) -> str:
+    """Render task time range with all-day semantics."""
+    if (start_hour is None and end_hour is None) or (start_hour == 0 and end_hour == 24):
+        return "全天（24小时）"
+    return f"{_display_hour(start_hour)}:00 - {_display_hour(end_hour)}:00"
+
+
+def _format_run_bound(ts: int | None) -> str:
+    """Render start/end bound with continuous-run hint."""
+    return "未设置（一直执行）" if ts is None else _format_timestamp(ts)
+
+
 async def show_task_list(event, user_id: int):
     """显示任务列表。"""
     from backend.bot.handlers.task.selector_context import clear_selector_context
@@ -189,9 +206,9 @@ async def show_task_settings(event, user_id: int, task_id: str):
         interval=task.repeat_interval_min,
         account_display=_escape_markdown(account_display),
         target_display=_escape_markdown(target_display),
-        time_range=f"{task.day_start_hour or '-'}:00 - {task.day_end_hour or '-'}:00",
-        start_date=_format_timestamp(task.start_at),
-        end_date=_format_timestamp(task.end_at),
+        time_range=_format_time_range(task.day_start_hour, task.day_end_hour),
+        start_date=_format_run_bound(task.start_at),
+        end_date=_format_run_bound(task.end_at),
         text_status=STATUS_HAS if task.text else STATUS_NOT_SET,
         media_status=task.media_type.value if task.media_type != MediaType.NONE else "无",
         buttons_status=STATUS_HAS if task.buttons else STATUS_NOT_SET,
@@ -200,7 +217,6 @@ async def show_task_settings(event, user_id: int, task_id: str):
     )
 
     keyboard = get_task_settings_keyboard(task)
-    keyboard.append([Button.inline(OPEN_H5_BUTTON, data=f"open_h5:{task_id}")])
 
     if _should_edit_event(event):
         await event.edit(text, buttons=keyboard, parse_mode="markdown")
@@ -241,6 +257,8 @@ async def create_new_task(event, user_id: int):
             chat_id=0,
             title="新任务",
             repeat_interval_min=60,
+            day_start_hour=0,
+            day_end_hour=24,
             enabled=False,
             next_run_at=int(datetime.now().timestamp()) + 3600,
         )
@@ -282,6 +300,8 @@ async def create_new_task_for_account(event, user_id: int, account_id: str):
             chat_id=0,
             title="新任务",
             repeat_interval_min=60,
+            day_start_hour=0,
+            day_end_hour=24,
             enabled=False,
             next_run_at=int(datetime.now().timestamp()) + 3600,
         )

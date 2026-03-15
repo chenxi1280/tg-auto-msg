@@ -10,6 +10,7 @@ from sqlalchemy import (
     Column, String, Integer, BigInteger, Boolean, DateTime, Text, Index,
     Enum as SQLEnum, JSON, func, ForeignKey, UniqueConstraint
 )
+from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -501,7 +502,7 @@ class AccountBindLog(Base):
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, comment="绑定用户 ID")
     bind_code: Mapped[Optional[str]] = mapped_column(String(6), nullable=True, comment="绑定码")
     bound_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), comment="绑定时间")
-    ip_address: Mapped[Optional[str]] = mapped_column(String(45), nullable=True, comment="IP 地址")
+    ip_address: Mapped[Optional[str]] = mapped_column(INET, nullable=True, comment="IP 地址")
 
     # 索引
     __table_args__ = (

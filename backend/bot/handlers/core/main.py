@@ -67,11 +67,19 @@ async def callback_handler(event):
         if current_state == FSMState.NONE:
             await handle_callback(event, user_id, data)
         else:
-            # 在等待输入状态，只允许取消
+            # 在等待输入状态，允许取消和时间快捷按钮
             if data.startswith("settings:"):
                 fsm_storage.reset_state(user_id)
                 task_id = data.split(":")[1]
                 await show_task_settings(event, user_id, task_id)
+            elif current_state in {FSMState.WAIT_START_AT, FSMState.WAIT_END_AT} and data.startswith(
+                ("set_start_ts:", "set_end_ts:")
+            ):
+                await handle_callback(event, user_id, data)
+            elif current_state in {FSMState.WAIT_DAY_START, FSMState.WAIT_DAY_END} and data.startswith(
+                ("set_hour:", "set_hours_allday:")
+            ):
+                await handle_callback(event, user_id, data)
             elif current_state == FSMState.WAIT_TARGET_SEARCH and data.startswith("pick_"):
                 fsm_storage.set_state(user_id, FSMState.NONE)
                 await handle_callback(event, user_id, data)

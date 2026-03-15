@@ -3,26 +3,128 @@ from __future__ import annotations
 
 import random
 import string
+import ipaddress
 from typing import Any, Dict, Optional
 
 from fastapi import BackgroundTasks, HTTPException, Request, status
+from loguru import logger
+from telethon import password as telethon_password
 from telethon import TelegramClient
+from telethon.errors import PasswordHashInvalidError
 from telethon.sessions import StringSession
+from telethon.tl.functions.account import GetPasswordRequest
+from telethon.tl.functions.auth import CheckPasswordRequest
 
 from backend.bot.account.manager import get_account_manager
 from backend.bot.account.binding_service import BindRateLimitError
 from backend.bot.developer_apps import get_developer_app_service
 from backend.bot.client_runtime.manager import _wait_for_qr_login, is_userbot_ready
 from backend.bot.session.redis_login_manager import LoginStatus, get_redis_login_manager
+from backend.database.runtime.session import get_async_session
 from backend.h5_backend.services.me.service import get_me_service
+from backend.utils.security.crypto import decrypt_string_session, encrypt_string_session
 
 
 class LoginService:
     """Login lifecycle and bind business service."""
 
+    @staticmethod
+    def _normalize_ip_address(raw_ip: Optional[str]) -> Optional[str]:
+        """Normalize client IP for PostgreSQL inet column."""
+        value = (raw_ip or "").strip()
+        if not value:
+            return None
+        try:
+            return str(ipaddress.ip_address(value))
+        except ValueError:
+            return None
+
     def generate_login_id(self) -> str:
         chars = string.ascii_letters + string.digits
         return "login_" + "".join(random.choices(chars, k=16))
+
+    async def _finalize_login_account(
+        self,
+        *,
+        login_id: str,
+        user_id: int,
+        ip_address: Optional[str],
+    ) -> Dict[str, Any]:
+        login_manager = get_redis_login_manager()
+        session = await login_manager.get_session(login_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        if session.system_user_id is not None and int(session.system_user_id) != int(user_id):
+            raise HTTPException(status_code=404, detail="会话不存在")
+        if session.status != LoginStatus.CONFIRMED:
+            raise HTTPException(status_code=400, detail="当前会话尚未完成登录")
+
+        account_manager = get_account_manager()
+
+        if session.account_id:
+            account = await account_manager.get_account(session.account_id)
+            if account:
+                issued = await account_manager.issue_bind_code(account.account_id, refresh=False)
+                if not issued:
+                    issued = await account_manager.issue_bind_code(account.account_id, refresh=True)
+                if issued:
+                    await login_manager.update_status(
+                        login_id,
+                        LoginStatus.CONFIRMED,
+                        bind_code=issued["bind_code"],
+                        account_id=account.account_id,
+                    )
+                return {
+                    "account_id": account.account_id,
+                    "bind_code": issued["bind_code"] if issued else session.bind_code,
+                    "tg_user_id": int(account.tg_user_id),
+                    "username": account.username or account.first_name or "",
+                }
+
+        if not session.bind_code:
+            raise HTTPException(status_code=400, detail="登录会话缺少绑定码，请重新扫码")
+
+        try:
+            account = await account_manager.bind_account(
+                user_id=user_id,
+                bind_code=session.bind_code,
+                ip_address=ip_address or "",
+            )
+        except BindRateLimitError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"登录收尾失败，请 {exc.retry_after_seconds} 秒后重试",
+            ) from exc
+        except RuntimeError as exc:
+            logger.error(f"登录成功后自动建号失败: login_id={login_id}, error={exc}")
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        if not account:
+            raise HTTPException(status_code=400, detail="登录成功，但账号落库失败")
+
+        issued = await account_manager.issue_bind_code(account.account_id, refresh=True)
+        await login_manager.update_status(
+            login_id,
+            LoginStatus.CONFIRMED,
+            bind_code=issued["bind_code"],
+            account_id=account.account_id,
+            tg_user_id=account.tg_user_id,
+            username=account.username or account.first_name or "",
+            phone=account.phone or "",
+            error="",
+        )
+        logger.info(
+            "二维码登录已自动建号: login_id={}, account_id={}, tg_user_id={}",
+            login_id,
+            account.account_id,
+            account.tg_user_id,
+        )
+        return {
+            "account_id": account.account_id,
+            "bind_code": issued["bind_code"],
+            "tg_user_id": int(account.tg_user_id),
+            "username": account.username or account.first_name or "",
+        }
 
     async def create_login_session(self, user_id: int, background_tasks: BackgroundTasks) -> Dict[str, Any]:
         me_service = get_me_service()
@@ -81,11 +183,23 @@ class LoginService:
             "qr_url": session.qr_url,
         }
         if session.status == LoginStatus.CONFIRMED:
+            finalized = await self._finalize_login_account(
+                login_id=login_id,
+                user_id=user_id,
+                ip_address=None,
+            )
             response_data.update(
                 {
-                    "bind_code": session.bind_code,
-                    "tg_user_id": session.tg_user_id,
-                    "username": session.username,
+                    "account_id": finalized["account_id"],
+                    "bind_code": finalized["bind_code"],
+                    "tg_user_id": finalized["tg_user_id"],
+                    "username": finalized["username"],
+                }
+            )
+        elif session.status == LoginStatus.PASSWORD_REQUIRED:
+            response_data.update(
+                {
+                    "password_hint": session.password_hint,
                 }
             )
         return {"success": True, "data": response_data}
@@ -114,7 +228,7 @@ class LoginService:
             account = await account_manager.bind_account(
                 user_id=user_id,
                 bind_code=bind_code,
-                ip_address=request.client.host if request.client else "",
+                ip_address=self._normalize_ip_address(request.client.host if request.client else None) or "",
             )
         except BindRateLimitError as exc:
             raise HTTPException(
@@ -127,6 +241,89 @@ class LoginService:
             raise HTTPException(status_code=400, detail="绑定失败：绑定码无效或账号已绑定")
 
         return {"account_id": account.account_id, "username": account.username}
+
+    async def submit_password(self, request: Request, user_id: int) -> Dict[str, Any]:
+        payload = await request.json()
+        login_id = (payload.get("login_id") or "").strip()
+        password = payload.get("password") or ""
+
+        if not login_id:
+            raise HTTPException(status_code=400, detail="缺少登录会话 ID")
+        if not password:
+            raise HTTPException(status_code=400, detail="请输入 Telegram 二步密码")
+
+        login_manager = get_redis_login_manager()
+        session = await login_manager.get_session(login_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        if session.system_user_id is not None and int(session.system_user_id) != int(user_id):
+            raise HTTPException(status_code=404, detail="会话不存在")
+        if session.status != LoginStatus.PASSWORD_REQUIRED:
+            raise HTTPException(status_code=400, detail="当前会话无需输入二步密码")
+        if not session.pending_session_encrypted:
+            raise HTTPException(status_code=400, detail="会话缺少待验证状态，请重新扫码")
+
+        developer_app_service = get_developer_app_service()
+        async with get_async_session() as db_session:
+            credentials = await developer_app_service.resolve_credentials(
+                session=db_session,
+                developer_app_id=session.developer_app_id,
+                user_id=user_id,
+            )
+
+        temp_session = decrypt_string_session(session.pending_session_encrypted)
+        client = TelegramClient(
+            StringSession(temp_session),
+            api_id=credentials.api_id,
+            api_hash=credentials.api_hash,
+        )
+
+        try:
+            await client.connect()
+            password_info = await client(GetPasswordRequest())
+            await client(CheckPasswordRequest(telethon_password.compute_check(password_info, password)))
+
+            me = await client.get_me()
+            string_session = StringSession.save(client.session)
+            string_session_encrypted = encrypt_string_session(string_session)
+            bind_code = await login_manager.save_string_session(
+                login_id=login_id,
+                string_session=string_session_encrypted,
+                tg_user_id=me.id,
+                username=me.username or me.first_name or "",
+                phone=me.phone or "",
+            )
+            finalized = await self._finalize_login_account(
+                login_id=login_id,
+                user_id=user_id,
+                ip_address=self._normalize_ip_address(request.client.host if request.client else None),
+            )
+
+            return {
+                "account_id": finalized["account_id"],
+                "bind_code": finalized["bind_code"],
+                "tg_user_id": finalized["tg_user_id"],
+                "username": finalized["username"],
+            }
+        except PasswordHashInvalidError as exc:
+            await login_manager.update_status(
+                login_id,
+                LoginStatus.PASSWORD_REQUIRED,
+                error="二步密码错误，请重试",
+            )
+            raise HTTPException(status_code=400, detail="二步密码错误，请重试") from exc
+        except Exception as exc:
+            await login_manager.update_status(
+                login_id,
+                LoginStatus.ERROR,
+                error=f"二步密码验证失败: {exc}",
+            )
+            raise HTTPException(status_code=400, detail=f"二步密码验证失败: {exc}") from exc
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
 
 
 _login_service: Optional[LoginService] = None

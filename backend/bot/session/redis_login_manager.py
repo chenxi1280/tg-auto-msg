@@ -19,6 +19,7 @@ class LoginStatus(str, Enum):
     """登录状态枚举"""
     PENDING = "pending"       # 等待扫码
     SCANNING = "scanning"     # 已扫描，等待确认
+    PASSWORD_REQUIRED = "password_required"  # 需要二步密码
     CONFIRMED = "confirmed"   # 已确认，登录成功
     EXPIRED = "expired"       # 已过期
     ERROR = "error"           # 登录失败
@@ -37,6 +38,9 @@ class LoginSession:
     phone: str = ""
     error: str = ""
     bind_code: str = ""
+    password_hint: str = ""
+    pending_session_encrypted: str = ""
+    account_id: str = ""
     system_user_id: Optional[int] = None
     developer_app_id: Optional[int] = None
 
@@ -118,6 +122,9 @@ class RedisLoginManager:
             "phone": "",
             "error": "",
             "bind_code": "",
+            "password_hint": "",
+            "pending_session_encrypted": "",
+            "account_id": "",
             "system_user_id": "",
             "developer_app_id": "",
         }
@@ -291,7 +298,10 @@ class RedisLoginManager:
             tg_user_id=tg_user_id,
             username=username,
             phone=phone,
-            bind_code=bind_code
+            bind_code=bind_code,
+            error="",
+            password_hint="",
+            pending_session_encrypted="",
         )
 
         # 存储绑定码映射

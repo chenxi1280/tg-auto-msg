@@ -7,6 +7,18 @@ from telethon.tl.types import KeyboardButton, KeyboardButtonUrl
 
 from backend.database.schema.models import ScheduledMessageTask, MediaType
 
+def _display_hour(hour: Optional[int]) -> str:
+    """Render hour value for UI, preserving 0."""
+    return "-" if hour is None else f"{hour:02d}"
+
+
+def _format_time_range(start_hour: Optional[int], end_hour: Optional[int]) -> str:
+    """Render time range, converting default all-day to readable label."""
+    if (start_hour is None and end_hour is None) or (start_hour == 0 and end_hour == 24):
+        return "全天(24h)"
+    return f"{_display_hour(start_hour)}:00 - {_display_hour(end_hour)}:00"
+
+
 # ============ 任务列表页 ============
 
 def get_task_list_keyboard(
@@ -113,7 +125,7 @@ def get_task_settings_keyboard(task: ScheduledMessageTask) -> list:
 
     buttons.append([
         Button.inline(
-            f"🌅 时段: {task.day_start_hour or '-'}:00 - {task.day_end_hour or '-'}:00",
+            f"🌅 时段: {_format_time_range(task.day_start_hour, task.day_end_hour)}",
             data=f"edit_hours:{task.task_id}"
         ),
     ])
@@ -200,6 +212,8 @@ def get_hour_select_keyboard(task_id: str, for_start: bool = True) -> list:
     if row:
         buttons.append(row)
 
+    buttons.append([Button.inline("🌐 全天 00:00-24:00", data=f"set_hours_allday:{task_id}")])
+
     # 返回按钮
     buttons.append([
         Button.inline("⬅️ 返回", data=f"settings:{task_id}"),
@@ -244,6 +258,50 @@ def get_cancel_keyboard(task_id: str) -> list:
         [
             Button.inline("❌ 取消", data=f"settings:{task_id}"),
         ]
+    ]
+
+
+def get_start_time_keyboard(
+    task_id: str,
+    now_ts: int,
+    plus_10_ts: int,
+    now_label: str,
+    plus_10_label: str,
+) -> list:
+    """开始时间快捷键盘。"""
+    return [
+        [
+            Button.inline(f"⚡ {now_label}", data=f"set_start_ts:{task_id}:{now_ts}"),
+            Button.inline(f"⏱ {plus_10_label}", data=f"set_start_ts:{task_id}:{plus_10_ts}"),
+        ],
+        [
+            Button.inline("❌ 取消", data=f"settings:{task_id}"),
+        ],
+    ]
+
+
+def get_end_time_keyboard(
+    task_id: str,
+    next_midnight_ts: int,
+    plus_1_day_ts: int,
+    next_midnight_label: str,
+    plus_1_day_label: str,
+) -> list:
+    """结束时间快捷键盘。"""
+    return [
+        [
+            Button.inline(
+                f"🌙 {next_midnight_label}",
+                data=f"set_end_ts:{task_id}:{next_midnight_ts}",
+            ),
+            Button.inline(
+                f"📆 {plus_1_day_label}",
+                data=f"set_end_ts:{task_id}:{plus_1_day_ts}",
+            ),
+        ],
+        [
+            Button.inline("❌ 取消", data=f"settings:{task_id}"),
+        ],
     ]
 
 

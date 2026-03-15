@@ -22,7 +22,11 @@ class AuthService:
     """Auth business service."""
 
     def __init__(self) -> None:
-        self._pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+        # Use PBKDF2 for new hashes and keep bcrypt verification for legacy users.
+        self._pwd_context = CryptContext(
+            schemes=["pbkdf2_sha256", "bcrypt"],
+            deprecated="auto",
+        )
         self._secret_key = settings.secret_key
 
     def verify_password(self, plain_password: str, hashed_password: str) -> bool:

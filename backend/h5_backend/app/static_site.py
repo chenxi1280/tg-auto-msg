@@ -36,7 +36,14 @@ def mount_spa(app: FastAPI, project_root: Path) -> None:
         app.mount("/assets", StaticFiles(directory=static_dist), name="frontend-assets")
 
     def serve_frontend_index() -> FileResponse:
-        return FileResponse(frontend_index_file)
+        return FileResponse(
+            frontend_index_file,
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
 
     for route in SPA_ROUTES:
         app.add_api_route(

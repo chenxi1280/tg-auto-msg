@@ -1,5 +1,6 @@
 """FastAPI app factory for H5 backend."""
 
+import os
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -29,7 +30,8 @@ def create_app() -> FastAPI:
     app.include_router(proxies_router)
     app.include_router(me_router)
 
-    mount_spa(app, PROJECT_ROOT)
+    if os.getenv("SERVE_FRONTEND", "true").lower() in {"1", "true", "yes", "on"}:
+        mount_spa(app, PROJECT_ROOT)
     return app
 
 

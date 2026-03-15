@@ -189,8 +189,8 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { reactive, computed, onMounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Check, Close, Delete } from '@element-plus/icons-vue'
 import { useAccountStore } from '@/stores/account'
@@ -200,6 +200,7 @@ import { refreshAccountBindCode, type Account } from '@/api/account'
 import { getSubscription } from '@/api/me'
 
 const router = useRouter()
+const route = useRoute()
 const accountStore = useAccountStore()
 const userStore = useUserStore()
 
@@ -420,12 +421,21 @@ onMounted(() => {
   // 恢复用户状态
   userStore.restoreUser()
   if (userStore.userId) {
-    accountStore.fetchAccounts(userStore.userId, false)
+    accountStore.fetchAccounts(userStore.userId, route.query.refresh === '1')
   } else {
     ElMessage.warning('请先登录')
     router.push('/login')
   }
 })
+
+watch(
+  () => route.query.refresh,
+  async (refreshFlag) => {
+    if (refreshFlag !== '1' || !userStore.userId) return
+    await accountStore.fetchAccounts(userStore.userId, true)
+    router.replace('/accounts')
+  }
+)
 </script>
 
 <style scoped>

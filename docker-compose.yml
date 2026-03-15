@@ -10,16 +10,13 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-tgmsg}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - /data/tgmsg/postgres:/var/lib/postgresql/data
       - ./sql/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
       timeout: 5s
       retries: 10
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
-
   redis:
     image: redis:7-alpine
     container_name: tgmsg-redis
@@ -30,7 +27,7 @@ services:
       "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD is required}"
     ]
     volumes:
-      - redis_data:/data
+      - /data/tgmsg/redis:/data
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping | grep PONG"]
       interval: 10s
@@ -38,13 +35,11 @@ services:
       retries: 10
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
 
   app:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.backend
     image: tgmsg-app:latest
     container_name: tgmsg-app
     restart: unless-stopped
@@ -60,30 +55,43 @@ services:
       ADMIN_API_TOKEN: ${ADMIN_API_TOKEN:?ADMIN_API_TOKEN is required}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       TIMEZONE: ${TIMEZONE:-Asia/Shanghai}
-      H5_BASE_URL: ${H5_BASE_URL:-http://localhost:8000}
+      H5_BASE_URL: ${H5_BASE_URL:-http://47.250.167.174}
       WORKER_INTERVAL: ${WORKER_INTERVAL:-60}
       MAX_FAILURE_COUNT: ${MAX_FAILURE_COUNT:-5}
       BIND_MAX_FAILURES: ${BIND_MAX_FAILURES:-8}
       BIND_FAILURE_WINDOW_SECONDS: ${BIND_FAILURE_WINDOW_SECONDS:-600}
       BIND_LOCK_SECONDS: ${BIND_LOCK_SECONDS:-900}
+      SERVE_FRONTEND: ${SERVE_FRONTEND:-false}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     volumes:
-      - app_logs:/app/logs
-      - app_uploads:/app/uploads
+      - /data/tgmsg/logs:/app/logs
+      - /data/tgmsg/uploads:/app/uploads
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json', timeout=5)\""]
       interval: 20s
       timeout: 10s
       retries: 6
-    ports:
-      - "${APP_PORT:-8000}:8000"
 
-volumes:
-  postgres_data:
-  redis_data:
-  app_logs:
-  app_uploads:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    image: tgmsg-frontend:latest
+    container_name: tgmsg-frontend
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    volumes:
+      - /data/tgmsg/nginx-logs:/var/log/nginx
+    ports:
+      - "80:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null 2>&1 || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 6

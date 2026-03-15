@@ -8,12 +8,27 @@
       </div>
 
       <!-- 扫码阶段 -->
-      <div v-if="status === LoginStatus.SCANNING" class="login-content">
+      <div
+        v-if="status === LoginStatus.PENDING || status === LoginStatus.SCANNING || status === LoginStatus.PASSWORD_REQUIRED"
+        class="login-content"
+      >
         <div class="qr-section">
           <div class="qr-placeholder">
             <div v-if="loading" class="loading-spinner">
               <el-icon class="is-loading"><Loading /></el-icon>
               <span>生成二维码中...</span>
+            </div>
+            <div v-else-if="awaitingConfirm || status === LoginStatus.PASSWORD_REQUIRED" class="awaiting-card">
+              <el-icon class="is-loading awaiting-card-icon"><Loading /></el-icon>
+              <strong v-if="status === LoginStatus.PASSWORD_REQUIRED">已扫码，等待输入二步密码</strong>
+              <strong v-else>已扫码，正在等待 Telegram 确认</strong>
+              <p v-if="status === LoginStatus.PASSWORD_REQUIRED">
+                账号已开启二步验证，请在弹框中输入密码完成登录。
+              </p>
+              <p v-else>请在手机上完成确认。若长时间无变化，可重新显示二维码后再次扫码。</p>
+              <el-button v-if="status !== LoginStatus.PASSWORD_REQUIRED" text type="primary" @click="awaitingConfirm = false">
+                重新显示二维码
+              </el-button>
             </div>
             <div v-else-if="qrUrl" class="qr-code">
               <!-- 这里使用 QR Code 库显示二维码 -->
@@ -25,8 +40,20 @@
             <ol class="steps">
               <li>打开 Telegram 手机应用</li>
               <li>点击 Settings → Devices → Link Desktop Device</li>
-              <li>扫描上方二维码</li>
+              <li>扫描上方二维码并在手机上确认登录</li>
             </ol>
+            <p v-if="status === LoginStatus.PENDING && !awaitingConfirm" class="scan-tip">
+              请扫描二维码登录。扫码完成后系统会自动回调，并切换为等待状态。
+            </p>
+            <div v-if="awaitingConfirm || status === LoginStatus.PASSWORD_REQUIRED" class="scan-progress">
+              <el-icon class="is-loading scan-progress-icon"><Loading /></el-icon>
+              <div class="scan-progress-text">
+                <strong v-if="status === LoginStatus.PASSWORD_REQUIRED">已识别扫码，等待输入二步密码</strong>
+                <strong v-else>已识别扫码，正在等待手机确认登录</strong>
+                <p v-if="status === LoginStatus.PASSWORD_REQUIRED">请在弹框中输入 Telegram 二步密码完成登录。</p>
+                <p v-else>系统正在处理登录回调，通常需要 5 秒左右。</p>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -42,8 +69,8 @@
             <p>请发送以下命令到 Telegram Bot：</p>
             <code class="command">/bind {{ bindCode }}</code>
           </div>
-          <el-button type="primary" @click="copyCommand">
-            复制命令
+          <el-button type="primary" @click="copyCommandAndGoHome">
+            复制并返回首页
           </el-button>
         </div>
       </div>
@@ -71,6 +98,30 @@
           </el-button>
         </div>
       </div>
+
+      <el-dialog
+        v-model="passwordDialogVisible"
+        title="输入 Telegram 二步密码"
+        width="420px"
+        :close-on-click-modal="false"
+        :close-on-press-escape="false"
+      >
+        <p class="dialog-tip">该账号已启用两步验证，请输入密码完成登录。</p>
+        <p v-if="passwordHint" class="password-hint">密码提示：{{ passwordHint }}</p>
+        <el-input
+          v-model="password"
+          type="password"
+          show-password
+          placeholder="请输入 Telegram 二步密码"
+          @keyup.enter="handleSubmitPassword"
+        />
+        <template #footer>
+          <el-button @click="handleRetry">重新扫码</el-button>
+          <el-button :loading="submittingPassword" type="primary" @click="handleSubmitPassword">
+            提交密码
+          </el-button>
+        </template>
+      </el-dialog>
     </div>
   </div>
 </template>
@@ -80,7 +131,7 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Loading } from '@element-plus/icons-vue'
-import { createLoginSession, getLoginStatus, LoginStatus, bindAccount } from '@/api/login'
+import { createLoginSession, getLoginStatus, LoginStatus, submitLoginPassword } from '@/api/login'
 import { getSubscription } from '@/api/me'
 import QRCode from 'qrcode'
 
@@ -94,6 +145,11 @@ const qrUrl = ref('')
 const qrUrlData = ref('')
 const loading = ref(false)
 const error = ref('')
+const password = ref('')
+const passwordHint = ref('')
+const submittingPassword = ref(false)
+const awaitingConfirm = ref(false)
+const passwordDialogVisible = ref(false)
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -104,12 +160,16 @@ const createSession = async () => {
   error.value = ''
   qrUrl.value = ''
   qrUrlData.value = ''
+  password.value = ''
+  passwordHint.value = ''
+  awaitingConfirm.value = false
+  passwordDialogVisible.value = false
 
   try {
     const res = await createLoginSession()
     loginId.value = res.data.login_id
     qrUrlData.value = res.data.qr_url
-    status.value = LoginStatus.SCANNING
+    status.value = LoginStatus.PENDING
 
     await generateQRWithLogo()
     startPolling()
@@ -134,27 +194,22 @@ const pollStatus = async () => {
     // 若后端刷新了二维码，更新前端展示
     if (data.qr_url && data.qr_url !== qrUrlData.value) {
       qrUrlData.value = data.qr_url
+      awaitingConfirm.value = false
       await generateQRWithLogo()
     }
 
+    awaitingConfirm.value = data.status === LoginStatus.SCANNING || data.status === LoginStatus.PASSWORD_REQUIRED
+
     if (data.status === LoginStatus.CONFIRMED && data.bind_code) {
       bindCode.value = data.bind_code
-
-      // 自动尝试绑定
-      try {
-        await bindAccount(data.bind_code)
-
-        ElMessage.success('绑定成功！')
-        stopPolling()
-
-        // 延迟跳转
-        setTimeout(() => {
-          router.push('/accounts')
-        }, 1500)
-      } catch (err: any) {
-        // 如果后端还在处理，可能需要用户手动发 /bind，这里保持显示绑定码界面
-        console.error('自动绑定请求失败(可能需手动发送命令):', err)
-      }
+      stopPolling()
+      return
+    } else if (data.status === LoginStatus.PASSWORD_REQUIRED) {
+      passwordHint.value = data.password_hint || ''
+      error.value = data.error || ''
+      awaitingConfirm.value = true
+      passwordDialogVisible.value = true
+      stopPolling()
       return
     } else if (data.status === LoginStatus.ERROR) {
       error.value = data.error || '绑定失败'
@@ -224,11 +279,45 @@ const generateQRWithLogo = async () => {
   }
 }
 
-const copyCommand = () => {
+const copyCommandAndGoHome = async () => {
   const command = `/bind ${bindCode.value}`
-  navigator.clipboard.writeText(command)
-    .then(() => ElMessage.success('命令已复制'))
-    .catch(() => ElMessage.error('复制失败'))
+  try {
+    await navigator.clipboard.writeText(command)
+    ElMessage.success('绑定命令已复制，正在返回首页')
+  } catch (_err) {
+    ElMessage.warning('复制失败，正在返回首页')
+  } finally {
+    await router.replace({
+      path: '/accounts',
+      query: {
+        refresh: '1',
+        t: String(Date.now())
+      }
+    })
+  }
+}
+
+const handleSubmitPassword = async () => {
+  if (!loginId.value) return
+  if (!password.value) {
+    ElMessage.warning('请输入 Telegram 二步密码')
+    return
+  }
+
+  submittingPassword.value = true
+  try {
+    const res = await submitLoginPassword(loginId.value, password.value)
+    bindCode.value = res.data.bind_code
+    status.value = LoginStatus.CONFIRMED
+    error.value = ''
+    passwordDialogVisible.value = false
+    ElMessage.success('登录成功，请发送绑定命令到 Bot')
+  } catch (err: any) {
+    error.value = err.message || '二步密码验证失败'
+    ElMessage.error(error.value)
+  } finally {
+    submittingPassword.value = false
+  }
 }
 
 const handleRetry = () => createSession()
@@ -316,6 +405,75 @@ onUnmounted(() => {
   text-align: left;
   color: #606266;
   line-height: 1.8;
+}
+
+.scan-tip {
+  margin: 1rem 0 0;
+  color: #606266;
+  line-height: 1.6;
+}
+
+.scan-progress {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+  padding: 0.9rem 1rem;
+  border-radius: 12px;
+  background: #f5f8ff;
+  border: 1px solid #dbe5ff;
+  text-align: left;
+}
+
+.scan-progress-icon {
+  color: #667eea;
+  margin-top: 0.15rem;
+}
+
+.scan-progress-text strong {
+  display: block;
+  color: #2c3e50;
+  margin-bottom: 0.25rem;
+}
+
+.scan-progress-text p {
+  margin: 0;
+  color: #606266;
+  line-height: 1.5;
+}
+
+.scan-actions {
+  margin-top: 1rem;
+}
+
+.awaiting-card {
+  width: 100%;
+  max-width: 260px;
+  text-align: center;
+  color: #2c3e50;
+}
+
+.awaiting-card strong {
+  display: block;
+  margin: 0.75rem 0 0.4rem;
+}
+
+.awaiting-card p {
+  margin: 0 0 0.75rem;
+  color: #606266;
+  line-height: 1.5;
+}
+
+.awaiting-card-icon {
+  font-size: 28px;
+  color: #667eea;
+}
+
+.dialog-tip,
+.password-hint {
+  margin: 0 0 0.75rem;
+  color: #606266;
+  line-height: 1.5;
 }
 
 .bind-code {
