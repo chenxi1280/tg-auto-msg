@@ -3,7 +3,12 @@
     <!-- 头部 -->
     <header class="header">
       <div class="container">
-        <h1>账号管理</h1>
+        <div class="brand-header">
+          <img class="brand-logo" src="/quanqiu.png" alt="全球通" />
+          <div>
+            <h1>全球通账号管理</h1>
+          </div>
+        </div>
       </div>
     </header>
 
@@ -26,6 +31,10 @@
         </el-button>
         <div class="stats">
           <el-tag>总计: {{ accounts.length }}</el-tag>
+          <el-tag>
+            TG账号上限:
+            {{ accountLimit.effective_limit === 0 ? '∞' : `${accountLimit.account_count}/${accountLimit.effective_limit}` }}
+          </el-tag>
           <el-tag type="success">在线: {{ onlineAccounts.length }}</el-tag>
           <el-tag type="warning">限制中: {{ floodingAccounts.length }}</el-tag>
           <el-tag type="danger">封禁: {{ bannedAccounts.length }}</el-tag>
@@ -212,6 +221,12 @@ const floodingAccounts = computed(() => accountStore.floodingAccounts)
 const bannedAccounts = computed(() => accountStore.bannedAccounts)
 const bindCodeLoading = reactive<Record<string, boolean>>({})
 const syncLoading = reactive<Record<string, boolean>>({})
+const accountLimit = reactive({
+  account_count: 0,
+  effective_limit: 0,
+  remaining_slots: null as number | null,
+  is_over_limit: false,
+})
 
 const isAccountSyncing = (accountId: string) => syncLoading[accountId] === true
 const canOperateAccount = (account: Account) => account.is_active && account.health_status === 'online'
@@ -225,6 +240,17 @@ const goToLogin = async () => {
     if (!res.data.is_active) {
       ElMessage.warning('未开通套餐，请先购买或激活卡密')
       router.push('/purchase')
+      return
+    }
+    accountLimit.account_count = res.data.tg_account_limit?.account_count ?? 0
+    accountLimit.effective_limit = res.data.tg_account_limit?.effective_limit ?? 0
+    accountLimit.remaining_slots = res.data.tg_account_limit?.remaining_slots ?? null
+    accountLimit.is_over_limit = res.data.tg_account_limit?.is_over_limit ?? false
+    if (res.data.tg_account_limit?.is_at_limit || res.data.tg_account_limit?.is_over_limit) {
+      const limitText = accountLimit.effective_limit === 0 ? '∞' : String(accountLimit.effective_limit)
+      ElMessage.warning(
+        `当前账号最多可登录 ${limitText} 个 Telegram 账号，已达上限。现有账号可继续使用，但暂时不能新增账号。请删除闲置账号、升级套餐或联系管理员调整。`,
+      )
       return
     }
     router.push('/bind-tg')
@@ -252,6 +278,15 @@ const handleLogout = async () => {
 const refreshAccounts = async () => {
   if (userStore.userId) {
     await accountStore.fetchAccounts(userStore.userId, true)
+    try {
+      const res = await getSubscription()
+      accountLimit.account_count = res.data.tg_account_limit?.account_count ?? 0
+      accountLimit.effective_limit = res.data.tg_account_limit?.effective_limit ?? 0
+      accountLimit.remaining_slots = res.data.tg_account_limit?.remaining_slots ?? null
+      accountLimit.is_over_limit = res.data.tg_account_limit?.is_over_limit ?? false
+    } catch (_err) {
+      // ignore
+    }
   }
 }
 
@@ -454,6 +489,18 @@ watch(
   max-width: 1200px;
   margin: 0 auto;
   padding: 0 1.5rem;
+}
+
+.brand-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand-logo {
+  width: 72px;
+  height: auto;
+  display: block;
 }
 
 .back-link {

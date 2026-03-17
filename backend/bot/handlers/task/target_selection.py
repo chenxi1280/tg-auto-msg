@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Optional
+import uuid
 
 from loguru import logger
 from telethon import events
@@ -30,7 +31,7 @@ from backend.bot.handlers.task.selector_ui import (
     build_account_picker_keyboard as _build_account_picker_keyboard,
     build_target_picker_keyboard as _build_target_picker_keyboard,
 )
-from backend.database.schema.models import Account, Resource
+from backend.database.schema.models import Account, Resource, ScheduledMessageTask
 from backend.database.runtime.session import get_async_session
 
 
@@ -38,12 +39,28 @@ def _should_edit_event(event) -> bool:
     return isinstance(event, events.CallbackQuery.Event)
 
 
+def _selector_expired_message(draft_mode: Optional[bool]) -> str:
+    if draft_mode is True:
+        return "当前创建流程已失效，请重新点击“新建任务”开始。"
+    if draft_mode is False:
+        return "当前选择流程已失效，请重新进入任务设置后再选择目标聊天。"
+    return "当前选择流程已失效，请重新进入后再试。"
+
+
+def _staged_targets(ctx: Optional[dict], task: Optional[ScheduledMessageTask]) -> list[dict]:
+    if ctx is not None and "draft_targets" in ctx:
+        return list(ctx.get("draft_targets") or [])
+    return _normalize_task_targets(task)
+
+
 async def start_select_task_account(event, user_id: int, task_id: str):
+    ctx = _get_selector_context(user_id) or {}
+    draft_mode = bool(ctx.get("draft_mode"))
+
     async with get_async_session() as session:
-        task = await _get_user_task(session, task_id, user_id)
         db_user_id = await _resolve_db_user_id(session, user_id)
         if db_user_id is None:
-            await event.answer("未找到系统用户，请先绑定", alert=True)
+            await event.answer("未找到系统用户，请先发送 /start 完成注册", alert=True)
             return
 
         result = await session.execute(
@@ -56,30 +73,44 @@ async def start_select_task_account(event, user_id: int, task_id: str):
         )
         accounts = result.scalars().all()
 
-    if not task:
-        await event.answer("任务不存在", alert=True)
+        task = None if draft_mode else await _get_user_task(session, task_id, user_id)
+
+    if not draft_mode and not task:
+        logger.warning("edit selector context missing: user_id={}, task_id={}", user_id, task_id)
+        await event.answer(_selector_expired_message(False), alert=True)
         return
 
     if not accounts:
-        await event.answer("暂无可用账号，请先在 H5 绑定并启用账号", alert=True)
+        await event.answer("暂无可用账号，请先在 Bot 中登录 Telegram 账号", alert=True)
         return
+
+    current_account_id = ctx.get("account_id") if ctx else None
+    current_targets = _staged_targets(ctx, task)
+    if not draft_mode:
+        current_account_id = current_account_id or task.account_id
 
     _set_selector_context(
         user_id,
         task_id=task_id,
-        account_id=task.account_id,
+        account_id=current_account_id,
         page=0,
         peer_filter="all",
         search="",
+        draft_mode=draft_mode,
+        draft_targets=current_targets,
     )
+    draft_tip = "任务会在选择目标聊天并点击完成后才真正创建。\n\n" if draft_mode else "\n"
     text = (
-        "👤 **请选择执行账号**\n\n"
-        "选择后将进入目标聊天多选。若切换账号，原目标聊天将被清空。"
+        "👥 **选择执行账号**\n\n"
+        "选择后将进入目标聊天多选。若切换账号，原目标聊天将被清空。\n"
+        f"{draft_tip}"
+        "下一步：请选择一个用于执行任务的 Telegram 账号。"
     )
     keyboard = _build_account_picker_keyboard(
         task_id=task_id,
         accounts=accounts,
-        current_account_id=task.account_id,
+        current_account_id=current_account_id,
+        back_callback="back_to_list" if draft_mode else None,
     )
     if _should_edit_event(event):
         await event.edit(text, buttons=keyboard, parse_mode="markdown")
@@ -89,16 +120,19 @@ async def start_select_task_account(event, user_id: int, task_id: str):
 
 async def start_select_task_targets(event, user_id: int, task_id: str, page: int = 0):
     ctx = _get_selector_context(user_id) or {}
+    draft_mode = bool(ctx.get("draft_mode"))
     peer_filter = _normalize_target_filter(ctx.get("peer_filter"))
     search_query = str(ctx.get("search") or "").strip()
 
     async with get_async_session() as session:
-        task = await _get_user_task(session, task_id, user_id)
-        if not task:
-            await event.answer("任务不存在", alert=True)
+        task = None if draft_mode else await _get_user_task(session, task_id, user_id)
+        if not draft_mode and not task:
+            logger.warning("edit selector context missing: user_id={}, task_id={}", user_id, task_id)
+            await event.answer(_selector_expired_message(False), alert=True)
             return
 
-        if not task.account_id:
+        account_id = str(ctx.get("account_id") or "") or ("" if task is None else str(task.account_id or ""))
+        if not account_id:
             await event.answer("请先选择执行账号", alert=True)
             await start_select_task_account(event, user_id, task_id)
             return
@@ -106,7 +140,7 @@ async def start_select_task_targets(event, user_id: int, task_id: str, page: int
         resource_result = await session.execute(
             select(Resource)
             .where(
-                Resource.account_id == task.account_id,
+                Resource.account_id == account_id,
                 Resource.is_active == True,
             )
             .order_by(Resource.title.asc().nullslast(), Resource.resource_id.asc())
@@ -118,7 +152,7 @@ async def start_select_task_targets(event, user_id: int, task_id: str, page: int
             search_query=search_query,
         )
 
-        selected_targets = _normalize_task_targets(task)
+        selected_targets = _staged_targets(ctx, task)
         selected_keys = {
             (str(item["peer_type"]), int(item["peer_id"]))
             for item in selected_targets
@@ -131,22 +165,28 @@ async def start_select_task_targets(event, user_id: int, task_id: str, page: int
         page=page,
         peer_filter=peer_filter,
         search_query=search_query,
+        back_callback="back_to_list" if draft_mode else None,
+        done_label=f"✅ 创建任务 ({len(selected_keys)})" if draft_mode else None,
     )
     _set_selector_context(
         user_id,
         task_id=task_id,
-        account_id=task.account_id,
+        account_id=account_id,
         page=page,
         peer_filter=peer_filter,
         search=search_query,
+        draft_mode=draft_mode,
+        draft_targets=selected_targets,
     )
 
+    next_step_text = "下一步：勾选目标后点击下方「✅ 创建任务」。" if draft_mode else "下一步：勾选目标后点击下方「✅ 完成」。"
     text = (
-        "🎯 **选择目标聊天（支持多选）**\n\n"
+        "📋 **选择目标聊天（支持多选）**\n\n"
         f"已选择: {len(selected_keys)} 个\n"
         f"类型筛选: {_target_filter_label(peer_filter)}\n"
         f"关键词: {_escape_markdown(search_query or '无')}\n"
-        f"第 {page + 1}/{total_pages} 页，每页 {TARGET_PAGE_SIZE} 条"
+        f"第 {page + 1}/{total_pages} 页，每页 {TARGET_PAGE_SIZE} 条\n\n"
+        f"{next_step_text}"
     )
     if not resources:
         text += "\n\n⚠️ 当前筛选条件下没有可选聊天，请调整筛选或搜索词。"
@@ -159,15 +199,26 @@ async def start_select_task_targets(event, user_id: int, task_id: str, page: int
 async def _handle_pick_account(event, user_id: int, account_id: str):
     ctx = _get_selector_context(user_id)
     if not ctx:
-        await event.answer("会话已过期，请重新进入任务设置", alert=True)
+        logger.warning("draft mode lost during callback: action=pick_acc, user_id={}", user_id)
+        await event.answer(_selector_expired_message(None), alert=True)
         return
 
     task_id = str(ctx["task_id"])
+    draft_mode = bool(ctx.get("draft_mode"))
     async with get_async_session() as session:
-        task = await _get_user_task(session, task_id, user_id)
         db_user_id = await _resolve_db_user_id(session, user_id)
-        if not task or db_user_id is None:
-            await event.answer("任务不存在或无权限", alert=True)
+        task = None if draft_mode else await _get_user_task(session, task_id, user_id)
+        if (not draft_mode and not task) or db_user_id is None:
+            logger.warning(
+                "{} selector context missing: action=pick_acc, user_id={}, task_id={}",
+                "draft" if draft_mode else "edit",
+                user_id,
+                task_id,
+            )
+            await event.answer(
+                _selector_expired_message(True if draft_mode else False),
+                alert=True,
+            )
             return
 
         account_result = await session.execute(
@@ -182,13 +233,10 @@ async def _handle_pick_account(event, user_id: int, account_id: str):
             await event.answer("账号不存在或不可用", alert=True)
             return
 
-        account_changed = task.account_id != account_id
-        task.account_id = account_id
-        if account_changed:
-            _apply_task_targets(task, [])
-        await session.commit()
+        previous_account_id = str(ctx.get("account_id") or "") if ctx else ""
+        account_changed = previous_account_id != account_id
 
-    await event.answer("已选择执行账号")
+        await event.answer("✅ 已选择执行账号")
     _set_selector_context(
         user_id,
         task_id=task_id,
@@ -196,6 +244,8 @@ async def _handle_pick_account(event, user_id: int, account_id: str):
         page=0,
         peer_filter="all",
         search="",
+        draft_mode=draft_mode,
+        draft_targets=[] if account_changed else list(ctx.get("draft_targets") or []),
     )
     await start_select_task_targets(event, user_id, task_id, page=0)
 
@@ -203,22 +253,29 @@ async def _handle_pick_account(event, user_id: int, account_id: str):
 async def _handle_pick_resource(event, user_id: int, resource_id: int):
     ctx = _get_selector_context(user_id)
     if not ctx:
-        await event.answer("会话已过期，请重新进入任务设置", alert=True)
+        logger.warning("draft mode lost during callback: action=pick_res, user_id={}", user_id)
+        await event.answer(_selector_expired_message(None), alert=True)
         return
 
     task_id = str(ctx["task_id"])
     page = int(ctx.get("page") or 0)
+    draft_mode = bool(ctx.get("draft_mode"))
 
     async with get_async_session() as session:
-        task = await _get_user_task(session, task_id, user_id)
-        if not task or not task.account_id:
+        task = None if draft_mode else await _get_user_task(session, task_id, user_id)
+        account_id = str(ctx.get("account_id") or "") or ("" if task is None else str(task.account_id or ""))
+        if not draft_mode and not task:
+            logger.warning("edit selector context missing: action=pick_res, user_id={}, task_id={}", user_id, task_id)
+            await event.answer(_selector_expired_message(False), alert=True)
+            return
+        if not account_id:
             await event.answer("请先选择执行账号", alert=True)
             return
 
         resource_result = await session.execute(
             select(Resource).where(
                 Resource.resource_id == resource_id,
-                Resource.account_id == task.account_id,
+                Resource.account_id == account_id,
                 Resource.is_active == True,
             )
         )
@@ -227,7 +284,7 @@ async def _handle_pick_resource(event, user_id: int, resource_id: int):
             await event.answer("目标聊天不存在或已失效", alert=True)
             return
 
-        targets = _normalize_task_targets(task)
+        targets = _staged_targets(ctx, task)
         key = (str(resource.peer_type), int(resource.peer_id))
         existing_keys = {(str(t["peer_type"]), int(t["peer_id"])) for t in targets}
 
@@ -236,7 +293,7 @@ async def _handle_pick_resource(event, user_id: int, resource_id: int):
                 t for t in targets
                 if (str(t["peer_type"]), int(t["peer_id"])) != key
             ]
-            await event.answer("已取消选择")
+            await event.answer("已取消选择该目标")
         else:
             targets.append(
                 {
@@ -245,10 +302,18 @@ async def _handle_pick_resource(event, user_id: int, resource_id: int):
                     "access_hash": resource.access_hash,
                 }
             )
-            await event.answer("已加入目标")
+            await event.answer("✅ 已加入目标")
 
-        _apply_task_targets(task, targets)
-        await session.commit()
+    _set_selector_context(
+        user_id,
+        task_id=task_id,
+        account_id=account_id,
+        page=page,
+        peer_filter=str(ctx.get("peer_filter") or "all"),
+        search=str(ctx.get("search") or ""),
+        draft_mode=draft_mode,
+        draft_targets=targets,
+    )
 
     await start_select_task_targets(event, user_id, task_id, page=page)
 
@@ -256,44 +321,103 @@ async def _handle_pick_resource(event, user_id: int, resource_id: int):
 async def _handle_pick_clear(event, user_id: int):
     ctx = _get_selector_context(user_id)
     if not ctx:
-        await event.answer("会话已过期，请重新进入任务设置", alert=True)
+        logger.warning("draft mode lost during callback: action=pick_clear, user_id={}", user_id)
+        await event.answer(_selector_expired_message(None), alert=True)
         return
 
     task_id = str(ctx["task_id"])
     page = int(ctx.get("page") or 0)
+    draft_mode = bool(ctx.get("draft_mode"))
 
     async with get_async_session() as session:
-        task = await _get_user_task(session, task_id, user_id)
-        if not task:
-            await event.answer("任务不存在", alert=True)
+        task = None if draft_mode else await _get_user_task(session, task_id, user_id)
+        if not draft_mode and not task:
+            logger.warning("edit selector context missing: action=pick_clear, user_id={}, task_id={}", user_id, task_id)
+            await event.answer(_selector_expired_message(False), alert=True)
             return
-        _apply_task_targets(task, [])
-        await session.commit()
+    _set_selector_context(
+        user_id,
+        task_id=task_id,
+        account_id=str(ctx.get("account_id") or ""),
+        page=page,
+        peer_filter=str(ctx.get("peer_filter") or "all"),
+        search=str(ctx.get("search") or ""),
+        draft_mode=draft_mode,
+        draft_targets=[],
+    )
 
-    await event.answer("已清空目标")
+    await event.answer("✅ 已清空目标")
     await start_select_task_targets(event, user_id, task_id, page=page)
 
 
 async def _handle_pick_done(event, user_id: int):
     ctx = _get_selector_context(user_id)
     if not ctx:
-        await event.answer("会话已过期，请重新进入任务设置", alert=True)
+        logger.warning("draft mode lost during callback: action=pick_done, user_id={}", user_id)
+        await event.answer(_selector_expired_message(None), alert=True)
         return
 
     task_id = str(ctx["task_id"])
+    draft_mode = bool(ctx.get("draft_mode"))
     async with get_async_session() as session:
-        task = await _get_user_task(session, task_id, user_id)
-        if not task:
-            await event.answer("任务不存在", alert=True)
+        task = None if draft_mode else await _get_user_task(session, task_id, user_id)
+        if not draft_mode and not task:
+            logger.warning("edit selector context missing: action=pick_done, user_id={}, task_id={}", user_id, task_id)
+            await event.answer(_selector_expired_message(False), alert=True)
             return
-        targets = _normalize_task_targets(task)
+        targets = _staged_targets(ctx, task)
 
     if not targets:
         await event.answer("请至少选择一个目标聊天", alert=True)
         return
 
     _clear_selector_context(user_id)
-    await event.answer(f"已保存 {len(targets)} 个目标")
+    if draft_mode:
+        account_id = str(ctx.get("account_id") or "")
+        if not account_id:
+            await event.answer("请先选择执行账号", alert=True)
+            return
+
+        async with get_async_session() as session:
+            db_user_id = await _resolve_db_user_id(session, user_id)
+            if db_user_id is None:
+                await event.answer("当前 Telegram 账号还未完成系统注册，请先发送 /start。", alert=True)
+                return
+
+            task = ScheduledMessageTask(
+                task_id=str(uuid.uuid4()),
+                user_id=db_user_id,
+                account_id=account_id,
+                chat_id=0,
+                title="未命名任务",
+                repeat_interval_min=60,
+                day_start_hour=0,
+                day_end_hour=24,
+                enabled=False,
+                next_run_at=None,
+            )
+            _apply_task_targets(task, targets)
+            session.add(task)
+            await session.commit()
+            created_task_id = task.task_id
+
+        await event.answer(f"✅ 已创建任务并保存 {len(targets)} 个目标")
+        from backend.bot.handlers.task.management import show_task_settings
+        await show_task_settings(event, user_id, created_task_id)
+        return
+
+    account_id = str(ctx.get("account_id") or "")
+    async with get_async_session() as session:
+        task = await _get_user_task(session, task_id, user_id)
+        if not task:
+            logger.warning("edit selector context missing: action=pick_done_commit, user_id={}, task_id={}", user_id, task_id)
+            await event.answer(_selector_expired_message(False), alert=True)
+            return
+        task.account_id = account_id or task.account_id
+        _apply_task_targets(task, targets)
+        await session.commit()
+
+    await event.answer(f"✅ 已保存 {len(targets)} 个目标")
 
     from backend.bot.handlers.task.management import show_task_settings
     await show_task_settings(event, user_id, task_id)
@@ -304,7 +428,8 @@ async def handle_target_search_input(event, user_id: int, text: str):
     ctx = _get_selector_context(user_id)
     if not ctx:
         fsm_storage.set_state(user_id, FSMState.NONE)
-        await event.respond("⚠️ 选择会话已过期，请重新进入任务设置")
+        logger.warning("selector context missing during search input: user_id={}", user_id)
+        await event.respond("⚠️ 当前选择流程已失效。\n下一步：请重新进入任务设置或重新点击“新建任务”。")
         return
 
     keyword = (text or "").strip()
@@ -321,6 +446,8 @@ async def handle_target_search_input(event, user_id: int, text: str):
             peer_filter=str(ctx.get("peer_filter") or "all"),
             search=str(ctx.get("search") or ""),
             expect_search=False,
+            draft_mode=bool(ctx.get("draft_mode")),
+            draft_targets=list(ctx.get("draft_targets") or []),
         )
         await start_select_task_targets(
             event,
@@ -337,7 +464,7 @@ async def handle_target_search_input(event, user_id: int, text: str):
         keyword = ""
 
     if len(keyword) > 32:
-        await event.respond("关键词过长，请控制在 32 个字符以内")
+        await event.respond("⚠️ 搜索关键词过长，请控制在 32 个字符以内。")
         return
 
     fsm_storage.set_state(user_id, FSMState.NONE)
@@ -348,5 +475,7 @@ async def handle_target_search_input(event, user_id: int, text: str):
         page=0,
         peer_filter=str(ctx.get("peer_filter") or "all"),
         search=keyword,
+        draft_mode=bool(ctx.get("draft_mode")),
+        draft_targets=list(ctx.get("draft_targets") or []),
     )
     await start_select_task_targets(event, user_id, str(ctx["task_id"]), page=0)

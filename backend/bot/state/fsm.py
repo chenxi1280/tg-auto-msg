@@ -16,6 +16,11 @@ class FSMState(str, Enum):
     WAIT_END_AT = "wait_end_at"  # 等待输入结束时间
     WAIT_INTERVAL = "wait_interval"  # 等待选择重复间隔
     WAIT_TARGET_SEARCH = "wait_target_search"  # 等待输入目标聊天搜索词
+    WAIT_REGISTER_USERNAME = "wait_register_username"  # 等待输入注册用户名
+    WAIT_REGISTER_PASSWORD = "wait_register_password"  # 等待输入注册密码
+    WAIT_REGISTER_EMAIL = "wait_register_email"  # 等待输入注册邮箱
+    WAIT_ACTIVATION_CODE = "wait_activation_code"  # 等待输入卡密
+    WAIT_LOGIN_PASSWORD = "wait_login_password"  # 等待输入 Telegram 二步密码
 
 
 # FSM 存储器（内存存储，生产环境可使用 Redis）

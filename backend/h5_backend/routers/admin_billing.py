@@ -17,6 +17,7 @@ class UpdatePlanRequest(BaseModel):
     display_name: Optional[str] = Field(default=None, max_length=100)
     price_cents: Optional[int] = Field(default=None, ge=1)
     duration_days: Optional[int] = Field(default=None, ge=1)
+    max_tg_accounts: Optional[int] = Field(default=None, ge=0)
     is_active: Optional[bool] = None
     sort_order: Optional[int] = None
 
@@ -94,6 +95,13 @@ class SetUserDeveloperAppRequest(BaseModel):
     """Assign user preferred developer app payload."""
 
     developer_app_id: Optional[int] = Field(default=None, ge=1)
+
+
+class UpdateUserTgAccountLimitRequest(BaseModel):
+    """Assign per-user TG account limit override."""
+
+    use_plan_default: bool = True
+    max_tg_accounts_override: Optional[int] = Field(default=None, ge=0)
 
 
 @router.get("/plans", dependencies=[Depends(require_admin_token)])
@@ -188,6 +196,7 @@ async def admin_update_plan(plan_code: str, payload: UpdatePlanRequest, request:
         display_name=payload.display_name,
         price_cents=payload.price_cents,
         duration_days=payload.duration_days,
+        max_tg_accounts=payload.max_tg_accounts,
         is_active=payload.is_active,
         sort_order=payload.sort_order,
         actor=request.headers.get("X-Admin-Token", ""),
@@ -349,6 +358,24 @@ async def admin_set_user_developer_app(user_id: int, payload: SetUserDeveloperAp
         ip_address=request.client.host if request.client else None,
     )
     return {"success": True, "message": "用户开发者应用已更新", "data": data}
+
+
+@router.put("/users/{user_id}/tg-account-limit", dependencies=[Depends(require_admin_token)])
+async def admin_update_user_tg_account_limit(
+    user_id: int,
+    payload: UpdateUserTgAccountLimitRequest,
+    request: Request,
+):
+    """管理员设置用户 TG 账号数量上限。"""
+    service = get_admin_billing_service()
+    data = await service.update_user_tg_account_limit(
+        user_id,
+        use_plan_default=payload.use_plan_default,
+        max_tg_accounts_override=payload.max_tg_accounts_override,
+        actor=request.headers.get("X-Admin-Token", ""),
+        ip_address=request.client.host if request.client else None,
+    )
+    return {"success": True, "message": "用户 TG 账号上限已更新", "data": data}
 
 
 @router.get("/audit-logs", dependencies=[Depends(require_admin_token)])

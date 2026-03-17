@@ -36,6 +36,7 @@ export interface AdminPlan {
   price_cents: number
   price_yuan: string
   duration_days: number
+  max_tg_accounts: number
   is_active: boolean
   sort_order: number
 }
@@ -60,6 +61,11 @@ export interface AdminUserSummary {
   is_active: boolean
   created_at: string | null
   account_count: number
+  plan_max_tg_accounts?: number | null
+  max_tg_accounts_override?: number | null
+  effective_max_tg_accounts: number
+  remaining_tg_account_slots?: number | null
+  is_over_limit: boolean
   developer_app_id?: number | null
   subscription: {
     plan_code: string | null
@@ -157,7 +163,7 @@ export const adminUpdatePurchaseSettings = (
 
 export const adminUpdatePlan = (
   planCode: string,
-  payload: Partial<Pick<AdminPlan, 'display_name' | 'price_cents' | 'duration_days' | 'is_active' | 'sort_order'>>,
+  payload: Partial<Pick<AdminPlan, 'display_name' | 'price_cents' | 'duration_days' | 'max_tg_accounts' | 'is_active' | 'sort_order'>>,
 ): Promise<{ success: boolean; data: AdminPlan }> =>
   adminApi.put(`/admin/plans/${planCode}`, payload)
 
@@ -242,6 +248,14 @@ export const adminSetUserDeveloperApp = (
   developerAppId?: number | null,
 ): Promise<{ success: boolean; data: any }> =>
   adminApi.put(`/admin/users/${userId}/developer-app`, { developer_app_id: developerAppId || null })
+
+export const adminUpdateUserTgAccountLimit = (
+  userId: number,
+  payload: {
+    use_plan_default: boolean
+    max_tg_accounts_override?: number | null
+  },
+): Promise<{ success: boolean; data: any }> => adminApi.put(`/admin/users/${userId}/tg-account-limit`, payload)
 
 export const adminListAccountOptions = (params?: {
   search?: string

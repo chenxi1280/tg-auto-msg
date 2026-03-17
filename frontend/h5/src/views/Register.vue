@@ -2,8 +2,13 @@
   <div class="register-page">
     <div class="register-container">
       <div class="register-header">
-        <h1>注册账号</h1>
-        <p class="subtitle">创建您的系统管理账号</p>
+        <img class="brand-logo" src="/quanqiu.png" alt="全球通" />
+        <h1>全球通注册</h1>
+        <p class="subtitle">Web 补充注册入口，也可以直接在 Telegram Bot 内完成注册</p>
+      </div>
+
+      <div class="bot-tip">
+        如果你已经在 Bot 中使用“TG 自动开户”或“用户名密码注册”完成注册，这里无需重复注册，直接去登录即可。
       </div>
 
       <el-form
@@ -180,6 +185,14 @@ const handleRegister = async () => {
   margin-bottom: 2rem;
 }
 
+.brand-logo {
+  width: 120px;
+  max-width: 42%;
+  height: auto;
+  display: block;
+  margin: 0 auto 0.8rem;
+}
+
 .register-header h1 {
   margin: 0 0 0.5rem 0;
   font-size: 1.8rem;
@@ -196,6 +209,16 @@ const handleRegister = async () => {
   width: 100%;
   font-weight: 600;
   letter-spacing: 1px;
+}
+
+.bot-tip {
+  margin-bottom: 1rem;
+  padding: 0.9rem 1rem;
+  border-radius: 12px;
+  background: #f3f5ff;
+  color: #4a5680;
+  font-size: 0.9rem;
+  line-height: 1.6;
 }
 
 .form-footer {

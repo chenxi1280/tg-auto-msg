@@ -26,6 +26,15 @@ export interface SubscriptionStatus {
   is_active: boolean
   current: CurrentSubscription | null
   remain_days: number | null
+  tg_account_limit: {
+    account_count: number
+    plan_limit: number | null
+    override_limit: number | null
+    effective_limit: number
+    remaining_slots: number | null
+    is_at_limit: boolean
+    is_over_limit: boolean
+  }
   plans: PricingPlan[]
   purchase: {
     url: string
@@ -45,6 +54,15 @@ export interface MeProfile {
     is_active: boolean
     current: CurrentSubscription | null
     remain_days: number | null
+  }
+  tg_account_limit: {
+    account_count: number
+    plan_limit: number | null
+    override_limit: number | null
+    effective_limit: number
+    remaining_slots: number | null
+    is_at_limit: boolean
+    is_over_limit: boolean
   }
   plans: PricingPlan[]
   purchase: {

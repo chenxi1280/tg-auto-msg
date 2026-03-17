@@ -1,7 +1,8 @@
 <template>
   <div class="admin-auth-page">
     <div class="panel">
-      <h1>管理员入口</h1>
+      <img class="brand-logo" src="/quanqiu.png" alt="全球通" />
+      <h1>全球通 · 管理员入口</h1>
       <p class="desc">请输入管理员密钥后进入后台</p>
       <el-input
         v-model.trim="token"
@@ -68,6 +69,14 @@ h1 {
   font-size: 24px;
 }
 
+.brand-logo {
+  width: 120px;
+  max-width: 42%;
+  height: auto;
+  display: block;
+  margin: 0 auto 12px;
+}
+
 .desc {
   margin: 0 0 16px;
   color: #606266;
@@ -77,4 +86,3 @@ h1 {
   margin-top: 14px;
 }
 </style>
-

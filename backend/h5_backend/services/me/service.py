@@ -12,6 +12,11 @@ from sqlalchemy.exc import IntegrityError
 from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import ActivationCard, AppSetting, PricingPlan, User, UserSubscription
 from backend.h5_backend.services.auth.service import get_auth_service
+from backend.h5_backend.services.me.account_limit import (
+    TgAccountLimitSnapshot,
+    ensure_can_add_tg_account,
+    get_tg_account_limit_snapshot,
+)
 
 DEFAULT_PURCHASE_URL = "https://t.me/"
 DEFAULT_PURCHASE_BUTTON_TEXT = "联系 Telegram 购买"
@@ -33,9 +38,14 @@ class MeService:
             "price_cents": plan.price_cents,
             "price_yuan": MeService._to_price_yuan(plan.price_cents),
             "duration_days": plan.duration_days,
+            "max_tg_accounts": int(plan.max_tg_accounts or 0),
             "is_active": plan.is_active,
             "sort_order": plan.sort_order,
         }
+
+    @staticmethod
+    def _serialize_tg_account_limit(snapshot: TgAccountLimitSnapshot) -> Dict[str, Any]:
+        return snapshot.to_dict()
 
     @staticmethod
     def _serialize_subscription(subscription: Optional[UserSubscription]) -> Optional[Dict[str, Any]]:
@@ -108,6 +118,7 @@ class MeService:
         active_subscription = await self.get_active_subscription(user_id)
         plans = await self.list_active_plans()
         purchase = await self.get_purchase_entry()
+        tg_account_limit = await get_tg_account_limit_snapshot(user_id)
 
         async with get_async_session() as session:
             user_result = await session.execute(select(User).where(User.id == user_id))
@@ -133,6 +144,7 @@ class MeService:
                 "current": self._serialize_subscription(active_subscription),
                 "remain_days": remain_days,
             },
+            "tg_account_limit": self._serialize_tg_account_limit(tg_account_limit),
             "plans": plans,
             "purchase": purchase,
         }
@@ -141,6 +153,7 @@ class MeService:
         active_subscription = await self.get_active_subscription(user_id)
         plans = await self.list_active_plans()
         purchase = await self.get_purchase_entry()
+        tg_account_limit = await get_tg_account_limit_snapshot(user_id)
         now = datetime.now()
         remain_days = None
         if active_subscription and active_subscription.end_at:
@@ -149,9 +162,18 @@ class MeService:
             "is_active": active_subscription is not None,
             "current": self._serialize_subscription(active_subscription),
             "remain_days": remain_days,
+            "tg_account_limit": self._serialize_tg_account_limit(tg_account_limit),
             "plans": plans,
             "purchase": purchase,
         }
+
+    async def get_tg_account_limit(self, user_id: int) -> Dict[str, Any]:
+        snapshot = await get_tg_account_limit_snapshot(user_id)
+        return self._serialize_tg_account_limit(snapshot)
+
+    async def ensure_can_add_tg_account(self, user_id: int, *, existing_tg_user_id: Optional[int] = None) -> Dict[str, Any]:
+        snapshot = await ensure_can_add_tg_account(user_id, existing_tg_user_id=existing_tg_user_id)
+        return self._serialize_tg_account_limit(snapshot)
 
     async def require_active_subscription(self, user_id: int) -> None:
         status_data = await self.get_subscription_status(user_id)

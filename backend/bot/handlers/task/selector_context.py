@@ -18,6 +18,8 @@ def set_selector_context(
     peer_filter: str = "all",
     search: str = "",
     expect_search: bool = False,
+    draft_mode: bool = False,
+    draft_targets: Optional[list[dict[str, Any]]] = None,
 ) -> None:
     """Store selector context in FSM user data."""
     fsm_storage.update_data(
@@ -30,6 +32,8 @@ def set_selector_context(
                 "peer_filter": normalize_target_filter(peer_filter),
                 "search": str(search or "").strip(),
                 "expect_search": bool(expect_search),
+                "draft_mode": bool(draft_mode),
+                "draft_targets": draft_targets or [],
             }
         }
     )

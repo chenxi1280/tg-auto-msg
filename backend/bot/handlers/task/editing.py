@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from telethon import events
 from telethon.tl.types import MessageMediaDocument, MessageMediaPhoto
 
 from backend.bot.state.fsm import FSMState, fsm_storage
@@ -28,6 +29,17 @@ async def _show_task_settings(event, user_id: int, task_id: str):
     await show_task_settings(event, user_id, task_id)
 
 
+async def _notify_event(event, text: str, *, alert: bool = False):
+    """Send feedback for both callback events and normal text messages."""
+    if isinstance(event, events.CallbackQuery.Event):
+        try:
+            await event.answer(text, alert=alert)
+            return
+        except TypeError:
+            pass
+    await event.respond(text)
+
+
 def _next_midnight(base_dt: datetime) -> datetime:
     """Return next midnight based on local datetime."""
     next_day = base_dt.date() + timedelta(days=1)
@@ -40,13 +52,13 @@ async def _set_start_at_value(event, user_id: int, task_id: str, timestamp: int)
         task = await _get_user_task(session, task_id, user_id)
         if task:
             if task.end_at and timestamp >= task.end_at:
-                await event.answer(ERROR_END_BEFORE_START, alert=True)
+                await _notify_event(event, ERROR_END_BEFORE_START, alert=True)
                 return
             task.start_at = timestamp
             await session.commit()
 
     fsm_storage.reset_state(user_id)
-    await event.answer(SUCCESS_START_AT_UPDATED)
+    await _notify_event(event, SUCCESS_START_AT_UPDATED)
     await _show_task_settings(event, user_id, task_id)
 
 
@@ -56,13 +68,13 @@ async def _set_end_at_value(event, user_id: int, task_id: str, timestamp: int):
         task = await _get_user_task(session, task_id, user_id)
         if task:
             if task.start_at and timestamp <= task.start_at:
-                await event.answer(ERROR_END_BEFORE_START, alert=True)
+                await _notify_event(event, ERROR_END_BEFORE_START, alert=True)
                 return
             task.end_at = timestamp
             await session.commit()
 
     fsm_storage.reset_state(user_id)
-    await event.answer(SUCCESS_END_AT_UPDATED)
+    await _notify_event(event, SUCCESS_END_AT_UPDATED)
     await _show_task_settings(event, user_id, task_id)
 
 
@@ -293,11 +305,18 @@ async def start_edit_start_at(event, user_id: int, task_id: str):
 async def handle_start_at_input(event, user_id: int, task_id: str, text: str):
     """处理开始时间输入。"""
     try:
-        dt = datetime.strptime(text, "%Y-%m-%d %H:%M")
+        raw_text = (text or "").strip()
+        dt = datetime.strptime(raw_text, "%Y-%m-%d %H:%M")
         timestamp = int(dt.timestamp())
         await _set_start_at_value(event, user_id, task_id, timestamp)
     except ValueError:
-        await event.respond(ERROR_INVALID_TIME_FORMAT)
+        await event.respond(
+            f"{ERROR_INVALID_TIME_FORMAT}\n"
+            "示例：`2026-03-16 18:30`\n"
+            "下一步：请重新输入开始时间，或点击下方按钮返回任务设置。",
+            buttons=get_cancel_keyboard(task_id),
+            parse_mode="markdown",
+        )
 
 
 async def start_edit_end_at(event, user_id: int, task_id: str):
@@ -328,11 +347,18 @@ async def start_edit_end_at(event, user_id: int, task_id: str):
 async def handle_end_at_input(event, user_id: int, task_id: str, text: str):
     """处理结束时间输入。"""
     try:
-        dt = datetime.strptime(text, "%Y-%m-%d %H:%M")
+        raw_text = (text or "").strip()
+        dt = datetime.strptime(raw_text, "%Y-%m-%d %H:%M")
         timestamp = int(dt.timestamp())
         await _set_end_at_value(event, user_id, task_id, timestamp)
     except ValueError:
-        await event.respond(ERROR_INVALID_TIME_FORMAT)
+        await event.respond(
+            f"{ERROR_INVALID_TIME_FORMAT}\n"
+            "示例：`2026-03-17 00:00`\n"
+            "下一步：请重新输入结束时间，或点击下方按钮返回任务设置。",
+            buttons=get_cancel_keyboard(task_id),
+            parse_mode="markdown",
+        )
 
 
 async def set_start_at_timestamp(event, user_id: int, task_id: str, timestamp: int):

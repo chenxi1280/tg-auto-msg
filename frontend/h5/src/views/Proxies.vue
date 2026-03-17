@@ -4,7 +4,10 @@
     <header class="header">
       <div class="container">
         <router-link to="/" class="back-link">← 返回首页</router-link>
-        <h1>代理管理</h1>
+        <div class="brand-header">
+          <img class="brand-logo" src="/quanqiu.png" alt="全球通" />
+          <h1>全球通代理管理</h1>
+        </div>
       </div>
     </header>
 
@@ -276,6 +279,18 @@ onMounted(() => {
   max-width: 1200px;
   margin: 0 auto;
   padding: 0 1.5rem;
+}
+
+.brand-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand-logo {
+  width: 72px;
+  height: auto;
+  display: block;
 }
 
 .back-link {

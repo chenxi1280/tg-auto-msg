@@ -2,7 +2,10 @@
   <div class="admin-page">
     <header class="header">
       <div class="container">
-        <h1>管理员后台</h1>
+        <div class="brand-header">
+          <img class="brand-logo" src="/quanqiu.png" alt="全球通" />
+          <h1>全球通 · 管理后台</h1>
+        </div>
       </div>
     </header>
 
@@ -17,11 +20,16 @@
                 </template>
                 <el-table :data="plans" stripe>
                   <el-table-column prop="display_name" label="套餐" min-width="120" />
-                  <el-table-column label="价格" width="110">
-                    <template #default="{ row }">¥{{ row.price_yuan }}</template>
-                  </el-table-column>
-                  <el-table-column prop="duration_days" label="时长(天)" width="110" />
-                  <el-table-column prop="billing_cycle" label="周期" width="100" />
+              <el-table-column label="价格" width="110">
+                <template #default="{ row }">¥{{ row.price_yuan }}</template>
+              </el-table-column>
+              <el-table-column prop="duration_days" label="时长(天)" width="110" />
+              <el-table-column label="TG账号上限" width="120">
+                <template #default="{ row }">
+                  {{ row.max_tg_accounts > 0 ? row.max_tg_accounts : '∞' }}
+                </template>
+              </el-table-column>
+              <el-table-column prop="billing_cycle" label="周期" width="100" />
                   <el-table-column label="状态" width="90">
                     <template #default="{ row }">
                       <el-tag :type="row.is_active ? 'success' : 'info'">{{ row.is_active ? '启用' : '停用' }}</el-tag>
@@ -140,6 +148,13 @@
               <el-table-column label="账号数" width="90">
                 <template #default="{ row }">{{ row.account_count }}</template>
               </el-table-column>
+              <el-table-column label="TG账号数/上限" width="140">
+                <template #default="{ row }">
+                  <el-tag :type="row.is_over_limit ? 'danger' : 'info'">
+                    {{ row.account_count }}/{{ row.effective_max_tg_accounts > 0 ? row.effective_max_tg_accounts : '∞' }}
+                  </el-tag>
+                </template>
+              </el-table-column>
               <el-table-column label="订阅到期" width="170">
                 <template #default="{ row }">{{ formatDateTime(row.subscription?.end_at) }}</template>
               </el-table-column>
@@ -174,6 +189,7 @@
               <el-table-column label="操作" width="300" fixed="right">
                 <template #default="{ row }">
                   <el-button link type="primary" @click="openAccountsDrawer(row)">账号列表</el-button>
+                  <el-button link type="primary" @click="openLimitDialog(row)">改上限</el-button>
                   <el-button link type="warning" @click="openSubscriptionDialog(row)">改订阅</el-button>
                   <el-button link type="danger" @click="resetPassword(row.id)">重置密码</el-button>
                 </template>
@@ -399,6 +415,9 @@
         <el-form-item label="时长（天）">
           <el-input-number v-model="planDialog.form.duration_days" :min="1" style="width: 100%" />
         </el-form-item>
+        <el-form-item label="TG账号上限（0=不限制）">
+          <el-input-number v-model="planDialog.form.max_tg_accounts" :min="0" style="width: 100%" />
+        </el-form-item>
         <el-form-item label="启用">
           <el-switch v-model="planDialog.form.is_active" />
         </el-form-item>
@@ -438,6 +457,37 @@
       <template #footer>
         <el-button @click="subDialog.visible = false">取消</el-button>
         <el-button type="primary" :loading="subDialog.saving" @click="saveSubscription">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="limitDialog.visible" title="修改用户TG账号上限" width="460px">
+      <el-form label-position="top">
+        <el-form-item label="用户">
+          <el-input :value="limitDialog.userLabel" disabled />
+        </el-form-item>
+        <el-form-item label="生效方式">
+          <el-radio-group v-model="limitDialog.form.use_plan_default">
+            <el-radio :value="true">跟随套餐</el-radio>
+            <el-radio :value="false">单独设置</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="单独上限（0=不限制）" v-if="!limitDialog.form.use_plan_default">
+          <el-input-number
+            v-model="limitDialog.form.max_tg_accounts_override"
+            :min="0"
+            controls-position="right"
+            style="width: 100%"
+          />
+        </el-form-item>
+        <el-alert
+          :closable="false"
+          type="info"
+          :title="`当前账号数：${limitDialog.accountCount}；当前生效上限：${limitDialog.effectiveLimit > 0 ? limitDialog.effectiveLimit : '∞'}`"
+        />
+      </el-form>
+      <template #footer>
+        <el-button @click="limitDialog.visible = false">取消</el-button>
+        <el-button type="primary" :loading="limitDialog.saving" @click="saveUserLimit">保存</el-button>
       </template>
     </el-dialog>
 
@@ -625,6 +675,7 @@ import {
   adminUpdatePurchaseSettings,
   adminUpdatePlan,
   adminUpdateUserSubscription,
+  adminUpdateUserTgAccountLimit,
   hasAdminToken,
 } from '@/api/admin'
 
@@ -717,6 +768,7 @@ const planDialog = reactive({
     display_name: '',
     price_cents: 20000,
     duration_days: 30,
+    max_tg_accounts: 0,
     is_active: true,
   },
 })
@@ -731,6 +783,19 @@ const subDialog = reactive({
     end_at: '' as string | null,
     extend_days: undefined as number | undefined,
     set_inactive: false,
+  },
+})
+
+const limitDialog = reactive({
+  visible: false,
+  saving: false,
+  userId: 0,
+  userLabel: '',
+  accountCount: 0,
+  effectiveLimit: 0,
+  form: {
+    use_plan_default: true,
+    max_tg_accounts_override: 0,
   },
 })
 
@@ -883,6 +948,7 @@ const openPlanDialog = (plan: AdminPlan) => {
   planDialog.form.display_name = plan.display_name
   planDialog.form.price_cents = plan.price_cents
   planDialog.form.duration_days = plan.duration_days
+  planDialog.form.max_tg_accounts = plan.max_tg_accounts
   planDialog.form.is_active = plan.is_active
   planDialog.visible = true
 }
@@ -895,6 +961,7 @@ const savePlan = async () => {
       display_name: planDialog.form.display_name,
       price_cents: planDialog.form.price_cents,
       duration_days: planDialog.form.duration_days,
+      max_tg_accounts: planDialog.form.max_tg_accounts,
       is_active: planDialog.form.is_active,
     })
     ElMessage.success('套餐已更新')
@@ -928,6 +995,16 @@ const openSubscriptionDialog = (user: AdminUserSummary) => {
   subDialog.form.extend_days = undefined
   subDialog.form.set_inactive = false
   subDialog.visible = true
+}
+
+const openLimitDialog = (user: AdminUserSummary) => {
+  limitDialog.userId = user.id
+  limitDialog.userLabel = `${user.username} (#${user.id})`
+  limitDialog.accountCount = user.account_count
+  limitDialog.effectiveLimit = user.effective_max_tg_accounts || 0
+  limitDialog.form.use_plan_default = user.max_tg_accounts_override == null
+  limitDialog.form.max_tg_accounts_override = user.max_tg_accounts_override ?? 0
+  limitDialog.visible = true
 }
 
 const createDeveloperApp = async () => {
@@ -1041,6 +1118,25 @@ const saveSubscription = async () => {
     await loadAuditLogs()
   } finally {
     subDialog.saving = false
+  }
+}
+
+const saveUserLimit = async () => {
+  if (!limitDialog.userId) return
+  limitDialog.saving = true
+  try {
+    await adminUpdateUserTgAccountLimit(limitDialog.userId, {
+      use_plan_default: limitDialog.form.use_plan_default,
+      max_tg_accounts_override: limitDialog.form.use_plan_default
+        ? null
+        : Number(limitDialog.form.max_tg_accounts_override || 0),
+    })
+    ElMessage.success('用户TG账号上限已更新')
+    limitDialog.visible = false
+    await loadUsers()
+    await loadAuditLogs()
+  } finally {
+    limitDialog.saving = false
   }
 }
 
@@ -1185,6 +1281,18 @@ onMounted(async () => {
 .header {
   background: #fff;
   border-bottom: 1px solid #ebeef5;
+}
+
+.brand-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand-logo {
+  width: 72px;
+  height: auto;
+  display: block;
 }
 
 h1 {

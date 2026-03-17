@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash VARCHAR(255) NOT NULL,
     email VARCHAR(100),
     is_active BOOLEAN DEFAULT TRUE NOT NULL,
+    max_tg_accounts_override INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
@@ -29,6 +30,7 @@ CREATE TABLE IF NOT EXISTS pricing_plans (
     billing_cycle VARCHAR(20) NOT NULL,
     price_cents INTEGER NOT NULL,
     duration_days INTEGER NOT NULL,
+    max_tg_accounts INTEGER DEFAULT 0 NOT NULL,
     is_active BOOLEAN DEFAULT TRUE NOT NULL,
     sort_order INTEGER DEFAULT 0 NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -38,16 +40,26 @@ CREATE TABLE IF NOT EXISTS pricing_plans (
 CREATE INDEX IF NOT EXISTS idx_pricing_plans_is_active ON pricing_plans(is_active, sort_order);
 
 -- 默认套餐（月付 200 元，年付 1100 元）
-INSERT INTO pricing_plans (plan_code, display_name, billing_cycle, price_cents, duration_days, is_active, sort_order)
+INSERT INTO pricing_plans (
+    plan_code,
+    display_name,
+    billing_cycle,
+    price_cents,
+    duration_days,
+    max_tg_accounts,
+    is_active,
+    sort_order
+)
 VALUES
-    ('monthly', '月付套餐', 'monthly', 20000, 30, TRUE, 10),
-    ('yearly', '年付套餐', 'yearly', 110000, 365, TRUE, 20)
+    ('monthly', '月付套餐', 'monthly', 20000, 30, 0, TRUE, 10),
+    ('yearly', '年付套餐', 'yearly', 110000, 365, 0, TRUE, 20)
 ON CONFLICT (plan_code) DO UPDATE
 SET
     display_name = EXCLUDED.display_name,
     billing_cycle = EXCLUDED.billing_cycle,
     price_cents = EXCLUDED.price_cents,
     duration_days = EXCLUDED.duration_days,
+    max_tg_accounts = EXCLUDED.max_tg_accounts,
     is_active = EXCLUDED.is_active,
     sort_order = EXCLUDED.sort_order;
 
@@ -71,7 +83,22 @@ CREATE INDEX IF NOT EXISTS idx_user_subscriptions_user_status ON user_subscripti
 CREATE INDEX IF NOT EXISTS idx_user_subscriptions_end_at ON user_subscriptions(end_at);
 
 -- ========================================
--- 4) 激活卡密
+-- 4) 订阅提醒记录
+-- ========================================
+CREATE TABLE IF NOT EXISTS subscription_notice_logs (
+    id SERIAL PRIMARY KEY,
+    subscription_id INTEGER NOT NULL REFERENCES user_subscriptions(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    days_before INTEGER NOT NULL,
+    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT uq_subscription_notice_once UNIQUE (subscription_id, days_before)
+);
+
+CREATE INDEX IF NOT EXISTS idx_subscription_notice_user_id ON subscription_notice_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_subscription_notice_sent_at ON subscription_notice_logs(sent_at);
+
+-- ========================================
+-- 5) 激活卡密
 -- ========================================
 CREATE TABLE IF NOT EXISTS activation_cards (
     id SERIAL PRIMARY KEY,
@@ -91,7 +118,7 @@ CREATE INDEX IF NOT EXISTS idx_activation_cards_is_used ON activation_cards(is_u
 CREATE INDEX IF NOT EXISTS idx_activation_cards_plan_code ON activation_cards(plan_code);
 
 -- ========================================
--- 5) 管理员审计日志
+-- 6) 管理员审计日志
 -- ========================================
 CREATE TABLE IF NOT EXISTS admin_audit_logs (
     id SERIAL PRIMARY KEY,
@@ -112,7 +139,7 @@ CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_action ON admin_audit_logs(actio
 CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_developer_app_id ON admin_audit_logs(developer_app_id);
 
 -- ========================================
--- 6) 系统配置
+-- 7) 系统配置
 -- ========================================
 CREATE TABLE IF NOT EXISTS app_settings (
     key VARCHAR(64) PRIMARY KEY,
@@ -155,7 +182,7 @@ VALUES ('default_developer_app_id', '')
 ON CONFLICT (key) DO NOTHING;
 
 -- ========================================
--- 7) Telegram 开发者应用凭证池
+-- 8) Telegram 开发者应用凭证池
 -- ========================================
 CREATE TABLE IF NOT EXISTS telegram_developer_apps (
     id SERIAL PRIMARY KEY,
@@ -195,7 +222,7 @@ END
 $$;
 
 -- ========================================
--- 8) 系统会话
+-- 9) 系统会话
 -- ========================================
 CREATE TABLE IF NOT EXISTS system_sessions (
     session_key VARCHAR(64) PRIMARY KEY,
@@ -210,7 +237,7 @@ CREATE INDEX IF NOT EXISTS idx_system_sessions_updated_at ON system_sessions(upd
 CREATE INDEX IF NOT EXISTS idx_system_sessions_developer_app_id ON system_sessions(developer_app_id);
 
 -- ========================================
--- 9) 代理池
+-- 10) 代理池
 -- ========================================
 CREATE TABLE IF NOT EXISTS proxies (
     proxy_id SERIAL PRIMARY KEY,
@@ -238,7 +265,7 @@ CREATE INDEX IF NOT EXISTS idx_proxies_is_active ON proxies(is_active, is_health
 CREATE INDEX IF NOT EXISTS idx_proxies_assigned ON proxies(assigned_account_id);
 
 -- ========================================
--- 10) 账号
+-- 11) 账号
 -- ========================================
 CREATE TABLE IF NOT EXISTS accounts (
     account_id VARCHAR(36) PRIMARY KEY,

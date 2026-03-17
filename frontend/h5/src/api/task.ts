@@ -73,6 +73,15 @@ export interface UploadTaskMediaResult {
   size: number
 }
 
+export interface TaskLogItem {
+  id: number
+  send_at: string | null
+  result: string
+  error_code: string | null
+  error_message: string | null
+  message_id: number | null
+}
+
 export const getTasks = (): Promise<ApiResponse<TaskItem[]>> => {
   return request.get('/tasks')
 }
@@ -101,4 +110,8 @@ export const uploadTaskMedia = (
 
 export const deleteTask = (taskId: string): Promise<ApiResponse<any>> => {
   return request.delete(`/tasks/${taskId}`)
+}
+
+export const getTaskLogs = (taskId: string, limit = 100): Promise<ApiResponse<TaskLogItem[]>> => {
+  return request.get(`/tasks/${taskId}/logs`, { params: { limit } })
 }

@@ -21,6 +21,7 @@ from backend.bot.developer_apps import get_developer_app_service
 from backend.bot.client_runtime.manager import _wait_for_qr_login, is_userbot_ready
 from backend.bot.session.redis_login_manager import LoginStatus, get_redis_login_manager
 from backend.database.runtime.session import get_async_session
+from backend.h5_backend.services.me.account_limit import TgAccountLimitExceededError
 from backend.h5_backend.services.me.service import get_me_service
 from backend.utils.security.crypto import decrypt_string_session, encrypt_string_session
 
@@ -95,6 +96,8 @@ class LoginService:
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail=f"登录收尾失败，请 {exc.retry_after_seconds} 秒后重试",
             ) from exc
+        except TgAccountLimitExceededError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         except RuntimeError as exc:
             logger.error(f"登录成功后自动建号失败: login_id={login_id}, error={exc}")
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -129,6 +132,10 @@ class LoginService:
     async def create_login_session(self, user_id: int, background_tasks: BackgroundTasks) -> Dict[str, Any]:
         me_service = get_me_service()
         await me_service.require_active_subscription(user_id)
+        try:
+            await me_service.ensure_can_add_tg_account(user_id)
+        except TgAccountLimitExceededError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         developer_app_service = get_developer_app_service()
         credentials = await developer_app_service.choose_login_credentials_for_user(user_id)
 
@@ -235,6 +242,8 @@ class LoginService:
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail=f"绑定失败次数过多，请 {exc.retry_after_seconds} 秒后再试",
             ) from exc
+        except TgAccountLimitExceededError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not account:

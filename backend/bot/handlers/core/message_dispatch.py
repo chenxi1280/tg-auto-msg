@@ -10,6 +10,12 @@ from backend.bot.handlers.task.editing import (
     handle_start_at_input,
     handle_text_input,
 )
+from backend.bot.onboarding import get_onboarding_service
+
+_SENSITIVE_INPUT_STATES = {
+    FSMState.WAIT_REGISTER_PASSWORD,
+    FSMState.WAIT_LOGIN_PASSWORD,
+}
 
 _TEXT_STATE_HANDLERS = {
     FSMState.WAIT_TEXT: handle_text_input,
@@ -25,6 +31,26 @@ _MEDIA_STATE_HANDLERS = {
 
 async def dispatch_message_by_state(event, user_id: int, state: FSMState, task_id: str):
     """Dispatch input message by FSM state."""
+    onboarding_service = get_onboarding_service()
+    if state in _SENSITIVE_INPUT_STATES:
+        await onboarding_service.delete_sensitive_input_message(event, state)
+
+    if state == FSMState.WAIT_REGISTER_USERNAME:
+        await onboarding_service.handle_register_username(event, user_id, event.message.message or "")
+        return
+    if state == FSMState.WAIT_REGISTER_PASSWORD:
+        await onboarding_service.handle_register_password(event, user_id, event.message.message or "")
+        return
+    if state == FSMState.WAIT_REGISTER_EMAIL:
+        await onboarding_service.handle_register_email(event, user_id, event.message.message or "")
+        return
+    if state == FSMState.WAIT_ACTIVATION_CODE:
+        await onboarding_service.handle_activation_code(event, user_id, event.message.message or "")
+        return
+    if state == FSMState.WAIT_LOGIN_PASSWORD:
+        await onboarding_service.handle_login_password(event, user_id, event.message.message or "")
+        return
+
     text_handler = _TEXT_STATE_HANDLERS.get(state)
     if text_handler:
         await text_handler(event, user_id, task_id, event.message.message)

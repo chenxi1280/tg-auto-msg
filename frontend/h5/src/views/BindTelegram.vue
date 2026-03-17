@@ -4,7 +4,10 @@
       <!-- 头部 -->
       <div class="login-header">
         <router-link to="/accounts" class="back-link">← 返回账号列表</router-link>
-        <h1>绑定 Telegram 账号</h1>
+        <div class="brand-header">
+          <img class="brand-logo" src="/quanqiu.png" alt="全球通" />
+          <h1>全球通 · 绑定 Telegram 账号</h1>
+        </div>
       </div>
 
       <!-- 扫码阶段 -->
@@ -366,6 +369,19 @@ onUnmounted(() => {
   padding: 1.5rem;
   border-bottom: 1px solid #eee;
   text-align: center;
+}
+
+.brand-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.brand-logo {
+  width: 72px;
+  height: auto;
+  display: block;
 }
 
 .login-header h1 {

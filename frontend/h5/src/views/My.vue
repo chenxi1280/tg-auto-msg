@@ -3,7 +3,10 @@
     <header class="header">
       <div class="container">
         <router-link to="/accounts" class="back-link">← 返回账号管理</router-link>
-        <h1>我的</h1>
+        <div class="brand-header">
+          <img class="brand-logo" src="/quanqiu.png" alt="全球通" />
+          <h1>全球通 · 我的</h1>
+        </div>
       </div>
     </header>
 
@@ -48,6 +51,14 @@
               <div class="subscription-meta">
                 <p>剩余天数：{{ subscription?.remain_days ?? 0 }}</p>
                 <p>到期时间：{{ formatDateTime(subscription?.current?.end_at) }}</p>
+                <p>
+                  TG账号上限：
+                  {{
+                    profile?.tg_account_limit.effective_limit === 0
+                      ? '∞'
+                      : `${profile?.tg_account_limit.account_count ?? 0} / ${profile?.tg_account_limit.effective_limit ?? 0}`
+                  }}
+                </p>
               </div>
             </div>
             <el-alert
@@ -197,6 +208,7 @@ const loadData = async () => {
       is_active: res.data.subscription.is_active,
       current: res.data.subscription.current,
       remain_days: res.data.subscription.remain_days,
+      tg_account_limit: res.data.tg_account_limit,
       plans: res.data.plans,
       purchase: res.data.purchase,
     }
@@ -313,6 +325,18 @@ onMounted(() => {
   color: #409eff;
   text-decoration: none;
   font-size: 14px;
+}
+
+.brand-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand-logo {
+  width: 72px;
+  height: auto;
+  display: block;
 }
 
 h1 {

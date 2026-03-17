@@ -13,6 +13,7 @@ from backend.bot.client_runtime.manager import (
     userbot_client,
 )
 from backend.bot.developer_apps import get_developer_app_service
+from backend.bot.subscription_notifier import subscription_notifier
 from backend.config.core.settings import settings
 from backend.database.runtime.session import init_database
 from backend.scheduler.core.worker import scheduler
@@ -49,7 +50,7 @@ async def _run_manager_bot_forever() -> None:
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
     """FastAPI lifespan context."""
-    logger.info("🚀 启动 Telegram 定时消息推送管理系统")
+    logger.info("🚀 启动全球通管理系统")
 
     logger.info("初始化数据库...")
     await init_database()
@@ -62,7 +63,7 @@ async def app_lifespan(app: FastAPI):
     logger.info("初始化 Userbot...")
     userbot_logged_in = await init_userbot()
     if not userbot_logged_in:
-        logger.warning("⚠️ Userbot 未登录，请通过 H5 页面扫码登录")
+        logger.warning("⚠️ Userbot 未登录，请通过 Bot 或 H5 发起扫码登录")
     logger.info("✅ Userbot 初始化完成")
 
     logger.info("初始化调度器...")
@@ -72,13 +73,16 @@ async def app_lifespan(app: FastAPI):
     scheduler_task = asyncio.create_task(scheduler.start())
     logger.info("✅ 任务调度器已启动")
 
+    notifier_task = asyncio.create_task(subscription_notifier.start())
+    logger.info("✅ 订阅提醒任务已启动")
+
     logger.info("🤖 启动 Bot（后台连接）...")
     expected_bot_id = str(settings.bot_token).split(":", 1)[0] if settings.bot_token else "unknown"
     logger.info(f"BOT_TOKEN 对应的 bot_id: {expected_bot_id}")
 
     bot_task = asyncio.create_task(_run_manager_bot_forever())
     logger.info("✅ Bot 后台连接任务已启动")
-    logger.info("📱 H5 登录页面: http://localhost:8000/login")
+    logger.info("📱 Web 管理入口: http://localhost:8000/login")
 
     yield
 
@@ -87,6 +91,13 @@ async def app_lifespan(app: FastAPI):
     scheduler_task.cancel()
     try:
         await scheduler_task
+    except asyncio.CancelledError:
+        pass
+
+    await subscription_notifier.stop()
+    notifier_task.cancel()
+    try:
+        await notifier_task
     except asyncio.CancelledError:
         pass
 

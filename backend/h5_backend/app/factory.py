@@ -20,7 +20,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 def create_app() -> FastAPI:
     """Create and configure FastAPI app."""
-    app = FastAPI(title="Telegram 定时消息推送管理 API", lifespan=app_lifespan)
+    app = FastAPI(title="全球通管理 API", lifespan=app_lifespan)
 
     app.include_router(auth_router)
     app.include_router(login_router)

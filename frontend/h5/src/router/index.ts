@@ -55,6 +55,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '任务管理', requiresAuth: true }
   },
   {
+    path: '/tasks/:taskId/logs',
+    name: 'TaskLogs',
+    component: () => import('@/views/TaskLogs.vue'),
+    meta: { title: '任务发送记录', requiresAuth: true }
+  },
+  {
     path: '/me',
     name: 'Me',
     component: () => import('@/views/My.vue'),
@@ -110,7 +116,7 @@ const isAuthenticated = (): boolean => {
 router.beforeEach((to, _from, next) => {
   // 设置页面标题
   if (to.meta?.title) {
-    document.title = `${to.meta.title} - Telegram 定时消息`
+    document.title = `${to.meta.title} - 全球通`
   }
 
   // 已登录时访问登录/注册页，统一回到主业务页

@@ -290,3 +290,9 @@ def generate_h5_url(task_id: str) -> str:
     """Generate H5 URL for task page."""
     base = normalize_h5_base_url() or "http://localhost:8000"
     return f"{base}/tasks?task_id={task_id}"
+
+
+def generate_h5_task_logs_url(task_id: str) -> str:
+    """Generate H5 URL for task send logs page."""
+    base = normalize_h5_base_url() or "http://localhost:8000"
+    return f"{base}/tasks/{task_id}/logs"

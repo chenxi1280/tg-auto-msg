@@ -3,7 +3,10 @@
     <header class="header">
       <div class="container">
         <router-link to="/accounts" class="back-link">← 返回账号列表</router-link>
-        <h1>任务管理</h1>
+        <div class="brand-header">
+          <img class="brand-logo" src="/quanqiu.png" alt="全球通" />
+          <h1>全球通任务管理</h1>
+        </div>
       </div>
     </header>
 
@@ -180,8 +183,9 @@
                 {{ formatUnix(row.next_run_at) }}
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="170" fixed="right">
+            <el-table-column label="操作" width="220" fixed="right">
               <template #default="{ row }">
+                <el-button type="primary" link @click="openTaskLogs(row.task_id)">发送记录</el-button>
                 <el-button type="primary" link @click="startEdit(row)">编辑</el-button>
                 <el-button type="danger" link @click="removeTask(row.task_id)">删除</el-button>
               </template>
@@ -195,7 +199,7 @@
 
 <script setup lang="ts">
 import { reactive, ref, onMounted, computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAccountStore } from '@/stores/account'
 import { useUserStore } from '@/stores/user'
@@ -213,6 +217,7 @@ interface ResourceOption {
 const accountStore = useAccountStore()
 const userStore = useUserStore()
 const route = useRoute()
+const router = useRouter()
 
 const tasks = ref<TaskItem[]>([])
 const resources = ref<ResourceOption[]>([])
@@ -738,6 +743,10 @@ const removeTask = async (taskId: string) => {
   }
 }
 
+const openTaskLogs = (taskId: string) => {
+  router.push({ path: `/tasks/${taskId}/logs` })
+}
+
 const renderTaskTarget = (task: TaskItem) => {
   const peers = Array.isArray(task.target_peers) ? task.target_peers : []
   if (peers.length > 1) {
@@ -812,6 +821,18 @@ onMounted(async () => {
   max-width: 1600px;
   margin: 0 auto;
   padding: 0 1.5rem;
+}
+
+.brand-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand-logo {
+  width: 72px;
+  height: auto;
+  display: block;
 }
 
 .back-link {

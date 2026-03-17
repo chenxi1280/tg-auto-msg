@@ -16,6 +16,7 @@ def build_account_picker_keyboard(
     task_id: str,
     accounts: list[Account],
     current_account_id: Optional[str],
+    back_callback: Optional[str] = None,
 ) -> list:
     """Build account picker keyboard."""
     buttons = []
@@ -29,7 +30,7 @@ def build_account_picker_keyboard(
         label = f"{checked} {truncate_text(display_name, 24)}"
         buttons.append([Button.inline(label, data=f"pick_acc:{account.account_id}")])
 
-    buttons.append([Button.inline("⬅️ 返回设置", data=f"settings:{task_id}")])
+    buttons.append([Button.inline("⬅️ 返回任务页", data=back_callback or f"settings:{task_id}")])
     return buttons
 
 
@@ -41,6 +42,8 @@ def build_target_picker_keyboard(
     page: int,
     peer_filter: str,
     search_query: str,
+    back_callback: Optional[str] = None,
+    done_label: Optional[str] = None,
 ) -> tuple[list, int, int]:
     """Build target picker keyboard with type filter/search/page controls."""
     total_pages = max(1, (len(resources) + TARGET_PAGE_SIZE - 1) // TARGET_PAGE_SIZE)
@@ -69,12 +72,12 @@ def build_target_picker_keyboard(
         buttons.append(
             [
                 Button.inline(f"🔎 {preview}", data="pick_noop"),
-                Button.inline("❌ 清除搜索", data="pick_search_clear"),
-                Button.inline("✏️ 重新搜索", data="pick_search"),
+                Button.inline("🔄 清空搜索", data="pick_search_clear"),
+                Button.inline("🔎 重新搜索", data="pick_search"),
             ]
         )
     else:
-        buttons.append([Button.inline("🔎 搜索", data="pick_search")])
+        buttons.append([Button.inline("🔎 输入搜索", data="pick_search")])
 
     for resource in page_items:
         key = (str(resource.peer_type), int(resource.peer_id))
@@ -98,9 +101,9 @@ def build_target_picker_keyboard(
 
     buttons.append(
         [
-            Button.inline(f"✅ 完成 ({len(selected_keys)})", data="pick_done"),
-            Button.inline("🧹 清空", data="pick_clear"),
+            Button.inline(done_label or f"✅ 完成 ({len(selected_keys)})", data="pick_done"),
+            Button.inline("🔄 清空目标", data="pick_clear"),
         ]
     )
-    buttons.append([Button.inline("⬅️ 返回设置", data=f"settings:{task_id}")])
+    buttons.append([Button.inline("⬅️ 返回任务页", data=back_callback or f"settings:{task_id}")])
     return buttons, page, total_pages

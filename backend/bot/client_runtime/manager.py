@@ -120,7 +120,7 @@ async def init_userbot() -> bool:
         logger.info(f"Userbot 已登录: {me.first_name} (@{me.username})")
         return True
 
-    logger.info("Userbot 未登录，请通过 H5 页面扫码登录")
+    logger.info("Userbot 未登录，请通过 Bot 或 H5 发起扫码登录")
     return False
 
 

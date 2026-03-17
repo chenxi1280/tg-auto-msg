@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 from sqlalchemy import Select, and_, func, select
+from sqlalchemy.orm import selectinload
 
 from backend.bot.developer_apps import get_developer_app_service
 from backend.bot.proxy.pool import get_proxy_pool
@@ -25,6 +26,7 @@ from backend.database.schema.models import (
     UserSubscription,
 )
 from backend.h5_backend.services.auth.service import get_auth_service
+from backend.h5_backend.services.me.account_limit import get_tg_account_limit_snapshot
 
 
 CARD_ALPHABET = string.ascii_uppercase + string.digits
@@ -45,6 +47,7 @@ AUDIT_ACTION_LABELS = {
     "admin.update_developer_app": "更新开发者应用",
     "admin.set_default_developer_app": "设置默认开发者应用",
     "admin.set_user_developer_app": "设置用户开发者应用",
+    "admin.update_user_tg_account_limit": "更新用户TG账号上限",
 }
 AUDIT_TARGET_TYPE_LABELS = {
     "user": "用户",
@@ -76,6 +79,7 @@ class AdminBillingService:
             "price_cents": plan.price_cents,
             "price_yuan": AdminBillingService._to_price_yuan(plan.price_cents),
             "duration_days": plan.duration_days,
+            "max_tg_accounts": int(plan.max_tg_accounts or 0),
             "is_active": plan.is_active,
             "sort_order": plan.sort_order,
             "created_at": plan.created_at.isoformat() if plan.created_at else None,
@@ -188,6 +192,76 @@ class AdminBillingService:
             return None
         return sub
 
+    @staticmethod
+    def _build_limit_summary(
+        *,
+        account_count: int,
+        plan_limit: Optional[int],
+        override_limit: Optional[int],
+    ) -> Dict[str, Any]:
+        effective_limit = (
+            int(override_limit)
+            if override_limit is not None
+            else int(plan_limit or 0)
+        )
+        remaining_slots = None if effective_limit == 0 else max(0, effective_limit - int(account_count))
+        return {
+            "account_count": int(account_count),
+            "plan_limit": plan_limit,
+            "override_limit": override_limit,
+            "effective_limit": effective_limit,
+            "remaining_slots": remaining_slots,
+            "is_over_limit": effective_limit > 0 and int(account_count) > effective_limit,
+        }
+
+    async def _solidify_over_limit_users_for_plan(
+        self,
+        session: Any,
+        *,
+        plan_code: str,
+        new_limit: int,
+    ) -> int:
+        if new_limit <= 0:
+            return 0
+
+        now = datetime.now()
+        rows = (
+            await session.execute(
+                select(
+                    User.id,
+                    func.count(Account.account_id).label("account_count"),
+                )
+                .join(
+                    UserSubscription,
+                    and_(
+                        UserSubscription.user_id == User.id,
+                        UserSubscription.plan_code == plan_code,
+                        UserSubscription.status == "active",
+                        UserSubscription.end_at > now,
+                    ),
+                )
+                .outerjoin(
+                    Account,
+                    and_(
+                        Account.user_id == User.id,
+                        Account.is_active.is_(True),
+                    ),
+                )
+                .where(User.max_tg_accounts_override.is_(None))
+                .group_by(User.id)
+                .having(func.count(Account.account_id) > new_limit)
+            )
+        ).all()
+
+        updated = 0
+        for row in rows:
+            user = await session.get(User, int(row.id))
+            if user is None:
+                continue
+            user.max_tg_accounts_override = int(row.account_count or 0)
+            updated += 1
+        return updated
+
     async def list_users(self, search: Optional[str] = None, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
         limit = max(1, min(500, int(limit)))
         offset = max(0, int(offset))
@@ -222,6 +296,7 @@ class AdminBillingService:
             if user_ids:
                 sub_rows = await session.execute(
                     select(UserSubscription)
+                    .options(selectinload(UserSubscription.plan))
                     .where(
                         and_(
                             UserSubscription.user_id.in_(user_ids),
@@ -261,6 +336,15 @@ class AdminBillingService:
                         "is_active": row.is_active,
                         "created_at": row.created_at.isoformat() if row.created_at else None,
                         "account_count": int(row.account_count or 0),
+                        "plan_max_tg_accounts": (
+                            int(getattr(sub.plan, "max_tg_accounts", 0) or 0)
+                            if sub and getattr(sub, "plan", None) is not None
+                            else None
+                        ),
+                        "max_tg_accounts_override": None,
+                        "effective_max_tg_accounts": 0,
+                        "remaining_tg_account_slots": None,
+                        "is_over_limit": False,
                         "developer_app_id": user_app_map.get(row.id),
                         "subscription": {
                             "plan_code": sub.plan_code if sub else None,
@@ -270,6 +354,23 @@ class AdminBillingService:
                         },
                     }
                 )
+            for item in data:
+                user = await session.get(User, int(item["id"]))
+                override_limit = (
+                    int(user.max_tg_accounts_override)
+                    if user and user.max_tg_accounts_override is not None
+                    else None
+                )
+                plan_limit = item["plan_max_tg_accounts"]
+                limit_summary = self._build_limit_summary(
+                    account_count=int(item["account_count"]),
+                    plan_limit=plan_limit,
+                    override_limit=override_limit,
+                )
+                item["max_tg_accounts_override"] = override_limit
+                item["effective_max_tg_accounts"] = limit_summary["effective_limit"]
+                item["remaining_tg_account_slots"] = limit_summary["remaining_slots"]
+                item["is_over_limit"] = limit_summary["is_over_limit"]
             return data
 
     async def list_account_options(self, search: Optional[str] = None, limit: int = 300) -> List[Dict[str, Any]]:
@@ -920,6 +1021,7 @@ class AdminBillingService:
         display_name: Optional[str] = None,
         price_cents: Optional[int] = None,
         duration_days: Optional[int] = None,
+        max_tg_accounts: Optional[int] = None,
         is_active: Optional[bool] = None,
         sort_order: Optional[int] = None,
         *,
@@ -934,6 +1036,16 @@ class AdminBillingService:
             if not plan:
                 raise HTTPException(status_code=404, detail="套餐不存在")
 
+            old_value = {
+                "display_name": plan.display_name,
+                "price_cents": plan.price_cents,
+                "duration_days": plan.duration_days,
+                "max_tg_accounts": int(plan.max_tg_accounts or 0),
+                "is_active": plan.is_active,
+                "sort_order": plan.sort_order,
+            }
+            previous_limit = int(plan.max_tg_accounts or 0)
+
             if display_name is not None:
                 plan.display_name = display_name.strip() or plan.display_name
             if price_cents is not None:
@@ -944,10 +1056,28 @@ class AdminBillingService:
                 if duration_days <= 0:
                     raise HTTPException(status_code=400, detail="duration_days 必须大于 0")
                 plan.duration_days = duration_days
+            if max_tg_accounts is not None:
+                if max_tg_accounts < 0:
+                    raise HTTPException(status_code=400, detail="max_tg_accounts 不能小于 0")
+                plan.max_tg_accounts = int(max_tg_accounts)
             if is_active is not None:
                 plan.is_active = is_active
             if sort_order is not None:
                 plan.sort_order = sort_order
+
+            solidified_users = 0
+            new_limit = int(plan.max_tg_accounts or 0)
+            limit_lowered = (
+                max_tg_accounts is not None
+                and new_limit > 0
+                and (previous_limit == 0 or new_limit < previous_limit)
+            )
+            if limit_lowered:
+                solidified_users = await self._solidify_over_limit_users_for_plan(
+                    session,
+                    plan_code=plan_code,
+                    new_limit=new_limit,
+                )
 
             await self._append_audit(
                 session,
@@ -955,18 +1085,98 @@ class AdminBillingService:
                 action="admin.update_plan",
                 target_type="plan",
                 target_id=plan_code,
+                old_value=old_value,
+                new_value={
+                    "display_name": plan.display_name,
+                    "price_cents": plan.price_cents,
+                    "duration_days": plan.duration_days,
+                    "max_tg_accounts": int(plan.max_tg_accounts or 0),
+                    "is_active": plan.is_active,
+                    "sort_order": plan.sort_order,
+                },
                 detail={
                     "display_name": display_name,
                     "price_cents": price_cents,
                     "duration_days": duration_days,
+                    "max_tg_accounts": max_tg_accounts,
                     "is_active": is_active,
                     "sort_order": sort_order,
+                    "solidified_users": solidified_users,
                 },
                 ip_address=ip_address,
             )
             await session.commit()
             await session.refresh(plan)
             return self._serialize_plan(plan)
+
+    async def update_user_tg_account_limit(
+        self,
+        user_id: int,
+        *,
+        use_plan_default: bool,
+        max_tg_accounts_override: Optional[int],
+        actor: str = "admin",
+        ip_address: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        async with get_async_session() as session:
+            user = await session.get(User, int(user_id))
+            if user is None:
+                raise HTTPException(status_code=404, detail="用户不存在")
+
+            old_snapshot = await get_tg_account_limit_snapshot(int(user_id), session)
+            old_override = (
+                int(user.max_tg_accounts_override)
+                if user.max_tg_accounts_override is not None
+                else None
+            )
+
+            if use_plan_default:
+                user.max_tg_accounts_override = None
+            else:
+                if max_tg_accounts_override is None or int(max_tg_accounts_override) < 0:
+                    raise HTTPException(status_code=400, detail="用户 TG 账号上限不能小于 0")
+                user.max_tg_accounts_override = int(max_tg_accounts_override)
+
+            await session.flush()
+            new_snapshot = await get_tg_account_limit_snapshot(int(user_id), session)
+            await self._append_audit(
+                session,
+                actor=actor,
+                action="admin.update_user_tg_account_limit",
+                target_type="user",
+                target_id=str(user_id),
+                old_value={
+                    "override_limit": old_override,
+                    "effective_limit": old_snapshot.effective_limit,
+                    "account_count": old_snapshot.account_count,
+                },
+                new_value={
+                    "override_limit": (
+                        int(user.max_tg_accounts_override)
+                        if user.max_tg_accounts_override is not None
+                        else None
+                    ),
+                    "effective_limit": new_snapshot.effective_limit,
+                    "account_count": new_snapshot.account_count,
+                },
+                detail={
+                    "use_plan_default": bool(use_plan_default),
+                    "plan_limit": new_snapshot.plan_limit,
+                    "is_over_limit": new_snapshot.is_over_limit,
+                },
+                ip_address=ip_address,
+            )
+            await session.commit()
+
+            return {
+                "user_id": int(user_id),
+                "plan_limit": new_snapshot.plan_limit,
+                "override_limit": new_snapshot.override_limit,
+                "effective_limit": new_snapshot.effective_limit,
+                "account_count": new_snapshot.account_count,
+                "remaining_slots": new_snapshot.remaining_slots,
+                "is_over_limit": new_snapshot.is_over_limit,
+            }
 
     async def generate_cards(
         self,

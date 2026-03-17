@@ -3,8 +3,13 @@
     <header class="header">
       <div class="container">
         <router-link to="/accounts" class="back-link">← 返回账号管理</router-link>
-        <h1>套餐购买</h1>
-        <p class="sub-title">开通套餐后才可添加 Telegram 账号</p>
+        <div class="brand-line">
+          <img class="brand-logo" src="/quanqiu.png" alt="全球通" />
+          <div>
+            <h1>全球通套餐购买</h1>
+            <p class="sub-title">开通全球通套餐后才可添加 Telegram 账号</p>
+          </div>
+        </div>
       </div>
     </header>
 
@@ -46,7 +51,7 @@
         <template #header>
           <div class="card-title">购买方式</div>
         </template>
-        <p class="helper-text">点击下方按钮跳转 Telegram 联系购买，购买后在“我的”页面输入卡密激活。</p>
+        <p class="helper-text">点击下方按钮跳转 Telegram 联系购买全球通套餐，购买后在“我的”页面输入卡密激活。</p>
         <div class="actions">
           <el-button type="primary" size="large" @click="goTelegramPurchase">
             {{ purchase.button_text || '去 TG 购买' }}
@@ -124,6 +129,19 @@ onMounted(() => {
   color: #409eff;
   text-decoration: none;
   font-size: 14px;
+}
+
+.brand-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.brand-logo {
+  width: 84px;
+  height: auto;
+  display: block;
 }
 
 h1 {

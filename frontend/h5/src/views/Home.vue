@@ -3,9 +3,16 @@
     <!-- 头部导航 -->
     <header class="header">
       <div class="container">
-        <h1 class="title">Telegram 定时消息推送系统</h1>
+        <div class="brand">
+          <img class="brand-logo" src="/quanqiu.png" alt="全球通" />
+          <div class="brand-copy">
+            <h1 class="title">全球通</h1>
+            <p class="brand-subtitle">Telegram 定时消息管理系统</p>
+          </div>
+        </div>
         <nav class="nav">
-          <router-link to="/login" class="nav-link">登录</router-link>
+          <router-link v-if="!isAuthenticated" to="/login" class="nav-link">Web 登录</router-link>
+          <router-link v-if="!isAuthenticated" to="/register" class="nav-link">Web 注册</router-link>
           <router-link v-if="isAuthenticated" to="/accounts" class="nav-link">账号管理</router-link>
           <router-link v-if="isAuthenticated" to="/resources" class="nav-link">资源列表</router-link>
           <router-link v-if="isAuthenticated" to="/proxies" class="nav-link">代理管理</router-link>
@@ -19,13 +26,16 @@
       <div class="container">
         <!-- 欢迎/未登录区域 -->
         <div class="hero">
-          <h2>欢迎使用 Telegram 定时消息推送系统</h2>
+          <h2>欢迎使用全球通</h2>
           <p class="description">
-            支持多 Userbot 账号管理、资源自动同步、智能风控等功能
+            全球通以 Telegram Bot 为主入口，Web 端作为补充管理后台，支持账号、任务、订阅与资源查看
+          </p>
+          <p class="bot-description">
+            推荐流程：先在 Bot 内完成注册、卡密激活与扫码登录，再回到 Web 端做更完整的管理操作。
           </p>
           <div class="actions">
             <router-link v-if="!isAuthenticated" to="/login" class="btn btn-primary">
-              立即登录
+              进入 Web 后台
             </router-link>
             <router-link v-else to="/accounts" class="btn btn-primary">
               管理账号
@@ -37,8 +47,8 @@
         <div class="features">
           <div class="feature-card">
             <div class="feature-icon">🔐</div>
-            <h3>扫码登录</h3>
-            <p>通过 Telegram 扫码快速登录，安全便捷</p>
+            <h3>Bot 注册激活</h3>
+            <p>关注管理 Bot 后即可完成注册、套餐激活和账号绑定</p>
           </div>
           <div class="feature-card">
             <div class="feature-icon">👥</div>
@@ -72,7 +82,7 @@
     <!-- 页脚 -->
     <footer class="footer">
       <div class="container">
-        <p>&copy; 2024 Telegram 定时消息推送系统</p>
+        <p>&copy; 2026 全球通</p>
       </div>
     </footer>
   </div>
@@ -105,11 +115,35 @@ const isAuthenticated = computed(() => userStore.isAuthenticated)
   padding: 0 1.5rem;
 }
 
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 1rem;
+}
+
+.brand-logo {
+  width: 78px;
+  height: auto;
+  display: block;
+}
+
+.brand-copy {
+  display: flex;
+  flex-direction: column;
+}
+
 .title {
   color: white;
-  font-size: 1.5rem;
+  font-size: 1.8rem;
   font-weight: 600;
-  margin: 0 0 1rem 0;
+  margin: 0;
+}
+
+.brand-subtitle {
+  margin: 4px 0 0;
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 0.95rem;
 }
 
 .nav {
@@ -147,6 +181,12 @@ const isAuthenticated = computed(() => userStore.isAuthenticated)
 .description {
   font-size: 1.1rem;
   color: #6c757d;
+  margin-bottom: 0.8rem;
+}
+
+.bot-description {
+  font-size: 0.98rem;
+  color: #7683a0;
   margin-bottom: 2rem;
 }
 

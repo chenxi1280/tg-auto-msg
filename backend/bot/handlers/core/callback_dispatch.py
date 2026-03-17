@@ -57,11 +57,13 @@ from backend.bot.handlers.task.management import (
     create_new_task_for_account,
     delete_task,
     open_h5_webapp,
+    open_task_logs_page,
     show_task_list,
     show_task_settings,
     toggle_task,
     update_task_enabled,
 )
+from backend.bot.onboarding import get_onboarding_service
 
 
 async def _handle_show_login_help(event, user_id: int):
@@ -145,7 +147,8 @@ async def _handle_pick_page_callback(event, user_id: int, parts: list[str]):
         return
     ctx = _get_selector_context(user_id)
     if not ctx:
-        await event.answer("会话已过期，请重新进入任务设置", alert=True)
+        logger.warning("selector context missing: action=pick_page, user_id={}", user_id)
+        await event.answer("当前选择流程已失效，请重新进入后再试。", alert=True)
         return
     task_id = str(ctx["task_id"])
     page = max(0, int(parts[1]))
@@ -157,6 +160,8 @@ async def _handle_pick_page_callback(event, user_id: int, parts: list[str]):
         peer_filter=str(ctx.get("peer_filter") or "all"),
         search=str(ctx.get("search") or ""),
         expect_search=bool(ctx.get("expect_search")),
+        draft_mode=bool(ctx.get("draft_mode")),
+        draft_targets=list(ctx.get("draft_targets") or []),
     )
     await start_select_task_targets(event, user_id, task_id, page=page)
 
@@ -167,7 +172,8 @@ async def _handle_pick_type_callback(event, user_id: int, parts: list[str]):
         return
     ctx = _get_selector_context(user_id)
     if not ctx:
-        await event.answer("会话已过期，请重新进入任务设置", alert=True)
+        logger.warning("selector context missing: action=pick_type, user_id={}", user_id)
+        await event.answer("当前选择流程已失效，请重新进入后再试。", alert=True)
         return
     peer_filter = _normalize_target_filter(parts[1])
     task_id = str(ctx["task_id"])
@@ -179,6 +185,8 @@ async def _handle_pick_type_callback(event, user_id: int, parts: list[str]):
         peer_filter=peer_filter,
         search=str(ctx.get("search") or ""),
         expect_search=False,
+        draft_mode=bool(ctx.get("draft_mode")),
+        draft_targets=list(ctx.get("draft_targets") or []),
     )
     await start_select_task_targets(event, user_id, task_id, page=0)
 
@@ -187,7 +195,8 @@ async def _handle_pick_search_callback(event, user_id: int, parts: list[str]):
     del parts
     ctx = _get_selector_context(user_id)
     if not ctx:
-        await event.answer("会话已过期，请重新进入任务设置", alert=True)
+        logger.warning("selector context missing: action=pick_search, user_id={}", user_id)
+        await event.answer("当前选择流程已失效，请重新进入后再试。", alert=True)
         return
     fsm_storage.set_state(user_id, FSMState.WAIT_TARGET_SEARCH)
     _set_selector_context(
@@ -198,12 +207,15 @@ async def _handle_pick_search_callback(event, user_id: int, parts: list[str]):
         peer_filter=str(ctx.get("peer_filter") or "all"),
         search=str(ctx.get("search") or ""),
         expect_search=True,
+        draft_mode=bool(ctx.get("draft_mode")),
+        draft_targets=list(ctx.get("draft_targets") or []),
     )
     fsm_storage.update_data(user_id, task_id=str(ctx["task_id"]))
     await event.respond(
-        "🔎 请输入搜索关键词（支持名称/@username/ID）\n"
-        "发送 `clear` 可清空搜索，发送 `/cancel` 取消输入。",
-        buttons=[[Button.inline("取消搜索输入", data="pick_search_cancel")]],
+        "🔎 **输入搜索关键词**\n\n"
+        "支持名称、@username 或 ID。\n"
+        "发送 `clear` 可清空搜索，发送 `/cancel` 可返回上一页。",
+        buttons=[[Button.inline("⬅️ 返回上一页", data="pick_search_cancel")]],
         parse_mode="markdown",
     )
 
@@ -212,7 +224,8 @@ async def _handle_pick_search_clear_callback(event, user_id: int, parts: list[st
     del parts
     ctx = _get_selector_context(user_id)
     if not ctx:
-        await event.answer("会话已过期，请重新进入任务设置", alert=True)
+        logger.warning("selector context missing: action=pick_search_clear, user_id={}", user_id)
+        await event.answer("当前选择流程已失效，请重新进入后再试。", alert=True)
         return
     task_id = str(ctx["task_id"])
     _set_selector_context(
@@ -223,6 +236,8 @@ async def _handle_pick_search_clear_callback(event, user_id: int, parts: list[st
         peer_filter=str(ctx.get("peer_filter") or "all"),
         search="",
         expect_search=False,
+        draft_mode=bool(ctx.get("draft_mode")),
+        draft_targets=list(ctx.get("draft_targets") or []),
     )
     await start_select_task_targets(event, user_id, task_id, page=0)
 
@@ -232,7 +247,8 @@ async def _handle_pick_search_cancel_callback(event, user_id: int, parts: list[s
     fsm_storage.set_state(user_id, FSMState.NONE)
     ctx = _get_selector_context(user_id)
     if not ctx:
-        await event.answer("会话已过期，请重新进入任务设置", alert=True)
+        logger.warning("selector context missing: action=pick_search_cancel, user_id={}", user_id)
+        await event.answer("当前选择流程已失效，请重新进入后再试。", alert=True)
         return
     task_id = str(ctx["task_id"])
     _set_selector_context(
@@ -243,12 +259,51 @@ async def _handle_pick_search_cancel_callback(event, user_id: int, parts: list[s
         peer_filter=str(ctx.get("peer_filter") or "all"),
         search=str(ctx.get("search") or ""),
         expect_search=False,
+        draft_mode=bool(ctx.get("draft_mode")),
+        draft_targets=list(ctx.get("draft_targets") or []),
     )
     await start_select_task_targets(event, user_id, task_id, page=int(ctx.get("page") or 0))
 
 
 async def _handle_sync_all(event, user_id: int):
     await sync_account_resources(event, user_id, None)
+
+
+async def _handle_bot_home(event, user_id: int):
+    await get_onboarding_service().show_home(event, user_id)
+
+
+async def _handle_bot_reg_auto(event, user_id: int):
+    await get_onboarding_service().auto_register(event, user_id)
+
+
+async def _handle_bot_reg_manual(event, user_id: int):
+    await get_onboarding_service().start_manual_registration(event, user_id)
+
+
+async def _handle_bot_activate(event, user_id: int):
+    await get_onboarding_service().start_activation(event, user_id)
+
+
+async def _handle_bot_purchase(event, user_id: int):
+    await get_onboarding_service().show_purchase(event, user_id)
+
+
+async def _handle_bot_subscription(event, user_id: int):
+    await get_onboarding_service().show_subscription(event, user_id)
+
+
+async def _handle_bot_bind_codes(event, user_id: int):
+    await get_onboarding_service().show_bind_codes(event, user_id)
+
+
+async def _handle_bot_login_account(event, user_id: int):
+    await get_onboarding_service().start_account_login(event, user_id)
+
+
+async def _handle_bot_cancel_login(event, user_id: int, parts: list[str]):
+    login_id = parts[1] if len(parts) > 1 else None
+    await get_onboarding_service().cancel_login(event, user_id, login_id)
 
 
 async def _handle_edit_targets(event, user_id: int, task_id: str):
@@ -324,6 +379,20 @@ _SIMPLE_ACTION_HANDLERS = {
     "pick_noop": _handle_pick_noop,
 }
 
+_PREAUTH_SIMPLE_ACTION_HANDLERS = {
+    "bot_home": _handle_bot_home,
+    "bot_reg_auto": _handle_bot_reg_auto,
+    "bot_reg_manual": _handle_bot_reg_manual,
+}
+
+_BOT_ACTION_HANDLERS = {
+    "bot_activate": _handle_bot_activate,
+    "bot_purchase": _handle_bot_purchase,
+    "bot_subscription": _handle_bot_subscription,
+    "bot_bind_codes": _handle_bot_bind_codes,
+    "bot_login_account": _handle_bot_login_account,
+}
+
 _TASK_ACTION_HANDLERS = {
     "view": show_task_settings,
     "toggle": toggle_task,
@@ -342,6 +411,7 @@ _TASK_ACTION_HANDLERS = {
     "edit_start": start_edit_start_at,
     "edit_end": start_edit_end_at,
     "open_h5": open_h5_webapp,
+    "task_logs": open_task_logs_page,
 }
 
 _SET_ENABLE_ACTIONS = {
@@ -370,6 +440,7 @@ _CUSTOM_ACTION_HANDLERS = {
     "acc_unbind": _handle_acc_unbind_callback,
     "acc_unbind_confirm": _handle_acc_unbind_confirm_callback,
     "acc_add_task": _handle_acc_add_task_callback,
+    "bot_cancel_login": _handle_bot_cancel_login,
 }
 
 
@@ -382,7 +453,17 @@ async def dispatch_callback(event, user_id: int, data: str):
         await _handle_show_login_help(event, user_id)
         return
 
+    preauth_handler = _PREAUTH_SIMPLE_ACTION_HANDLERS.get(action)
+    if preauth_handler:
+        await preauth_handler(event, user_id)
+        return
+
     if await require_db_user_id(event, user_id, alert=True) is None:
+        return
+
+    bot_handler = _BOT_ACTION_HANDLERS.get(action)
+    if bot_handler:
+        await bot_handler(event, user_id)
         return
 
     simple_handler = _SIMPLE_ACTION_HANDLERS.get(action)

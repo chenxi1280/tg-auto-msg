@@ -5,15 +5,15 @@ from backend.config.core.settings import settings
 
 # ============ 任务列表页 ============
 
-TASK_LIST_HEADER = """📢 **定时消息推送管理系统**
+TASK_LIST_HEADER = """📋 **任务列表**
 
-设置在群组中每隔几分钟/小时重复发送的消息。
+这里可以查看、编辑和管理你的定时任务。
 
 """
 
 TASK_EMPTY = """📭 暂无任务
 
-点击下方「➕ 添加任务」开始创建。"""
+下一步：点击下方「📋 新建任务」开始创建。"""
 
 # ============ 任务设置页 ============
 
@@ -44,14 +44,14 @@ TASK_SETTINGS_TEMPLATE = """⚙️ **任务设置**
 • 删除上一条: {delete_status}
 • 置顶消息: {pin_status}
 
-💡 *快速操作：修改上方任意选项后返回即可生效*
+下一步：修改任意选项后，可返回任务页继续管理
 """
 
 # ============ 编辑页面 ============
 
 EDIT_TEXT_PROMPT = """📝 **修改文本内容**
 
-请输入新的文本内容（支持 HTML 格式，最多 4096 字符）：
+请输入新的文本内容（支持 HTML 格式，最多 4096 字符）。
 
 当前内容:
 ```
@@ -62,6 +62,7 @@ EDIT_TEXT_PROMPT = """📝 **修改文本内容**
 EDIT_MEDIA_PROMPT = """🖼️ **修改媒体内容**
 
 请发送一张图片、视频、贴纸或动图作为新的媒体内容。
+下一步：发送完成后会自动保存并返回任务设置。
 
 当前媒体: {current_media}
 """
@@ -81,21 +82,27 @@ EDIT_BUTTONS_PROMPT = """🔘 **修改按钮内容**
 ```
 {current_buttons}
 ```
+
+下一步：发送后会自动保存并返回任务设置。
 """
 
 EDIT_START_AT_PROMPT = """📅 **设置开始时间**
 
 当前时间：`{now}`
 
-可直接点击下方快捷按钮，或手动输入开始时间（格式: `YYYY-MM-DD HH:mm`）
+请手动输入开始时间（格式: `YYYY-MM-DD HH:mm`）
 例如（可直接复制）：`2026-03-14 15:30`
+
+下一步：设置后任务将从该时间开始执行。
 """
 EDIT_END_AT_PROMPT = """📆 **设置结束时间**
 
 建议结束时间：`{suggested_end}`
 
-可直接点击下方快捷按钮，或手动输入结束时间（格式: `YYYY-MM-DD HH:mm`）
+请手动输入结束时间（格式: `YYYY-MM-DD HH:mm`）
 例如（可直接复制）：`2026-03-15 00:00`
+
+下一步：设置后任务将在该时间停止执行。
 """
 
 # ============ 错误消息 ============
@@ -109,25 +116,25 @@ ERROR_TIME_IN_PAST = "❌ 时间不能早于当前时间。"
 
 # ============ 成功消息 ============
 
-SUCCESS_TEXT_UPDATED = "✅ 文本内容已更新！"
-SUCCESS_MEDIA_UPDATED = "✅ 媒体内容已更新！"
-SUCCESS_BUTTONS_UPDATED = "✅ 按钮内容已更新！"
-SUCCESS_INTERVAL_UPDATED = "✅ 重复间隔已更新为 {interval} 分钟！"
-SUCCESS_TIME_RANGE_UPDATED = "✅ 发送时段已更新为 {start}:00 - {end}:00！"
-SUCCESS_START_AT_UPDATED = "✅ 开始时间已更新！"
-SUCCESS_END_AT_UPDATED = "✅ 结束时间已更新！"
-SUCCESS_TASK_ENABLED = "✅ 任务已启用！"
-SUCCESS_TASK_DISABLED = "✅ 任务已禁用！"
-SUCCESS_DELETE_PREVIOUS_TOGGLED = "✅ 删除上一条设置已更新！"
-SUCCESS_PIN_TOGGLED = "✅ 置顶设置已更新！"
-SUCCESS_TASK_CREATED = "✅ 任务已创建！"
-SUCCESS_TASK_DELETED = "✅ 任务已删除！"
+SUCCESS_TEXT_UPDATED = "✅ 文本内容已更新。\n下一步：可继续修改其他选项，或返回任务页。"
+SUCCESS_MEDIA_UPDATED = "✅ 媒体内容已更新。\n下一步：可继续修改其他选项，或返回任务页。"
+SUCCESS_BUTTONS_UPDATED = "✅ 按钮内容已更新。\n下一步：可继续修改其他选项，或返回任务页。"
+SUCCESS_INTERVAL_UPDATED = "✅ 重复间隔已更新为 {interval} 分钟。\n下一步：可继续设置时间段或消息内容。"
+SUCCESS_TIME_RANGE_UPDATED = "✅ 发送时段已更新为 {start}:00 - {end}:00。\n下一步：可继续设置开始/结束时间。"
+SUCCESS_START_AT_UPDATED = "✅ 开始时间已更新。\n下一步：可继续设置结束时间，或返回任务页。"
+SUCCESS_END_AT_UPDATED = "✅ 结束时间已更新。\n下一步：可返回任务页，或继续调整任务内容。"
+SUCCESS_TASK_ENABLED = "✅ 任务已启用。\n下一步：返回任务页可查看执行状态。"
+SUCCESS_TASK_DISABLED = "✅ 任务已禁用。\n下一步：如需恢复，可再次启用任务。"
+SUCCESS_DELETE_PREVIOUS_TOGGLED = "✅ 删除上一条设置已更新。"
+SUCCESS_PIN_TOGGLED = "✅ 置顶设置已更新。"
+SUCCESS_TASK_CREATED = "✅ 任务已创建。\n下一步：请继续选择执行账号和目标聊天。"
+SUCCESS_TASK_DELETED = "✅ 任务已删除。\n下一步：可返回任务页继续管理其他任务。"
 
 # ============ 选择提示 ============
 
-SELECT_START_HOUR = "🌅 请选择每日发送起始小时（或点击「🌐 全天」）："
-SELECT_END_HOUR = "🌆 请选择每日发送结束小时（或点击「🌐 全天」）："
-SELECT_INTERVAL = "⏰ 请选择重复间隔："
+SELECT_START_HOUR = "⏰ **设置发送时间段**\n\n请选择开始小时，或点击「🌐 全天」。"
+SELECT_END_HOUR = "⏰ **设置发送时间段**\n\n请选择结束小时，或点击「🌐 全天」。"
+SELECT_INTERVAL = "⏰ **设置重复间隔**\n\n请选择任务的重复执行间隔。"
 
 # ============ 确认消息 ============
 
@@ -154,17 +161,17 @@ H5_BASE_URL = (settings.h5_base_url or "http://localhost:8000").rstrip("/")
 
 # ============ 账号管理页 ============
 
-BIND_SUCCESS = """✅ 账号绑定成功！
+BIND_SUCCESS = """✅ **账号绑定成功**
 
-👤 用户名: @{username}
-🆔 账号ID: `{account_id}`
+👤 账号名称：@{username}
+🆔 账号 ID：`{account_id}`
 
-你现在可以在 Bot 里直接管理该账号。"""
+下一步：你现在可以在 Bot 里查看账号、同步资源或创建任务。"""
 
-ERROR_INVALID_BIND_CODE = "❌ 绑定失败：绑定码无效、已过期，或账号归属校验未通过。"
+ERROR_INVALID_BIND_CODE = "❌ 绑定失败：绑定码无效、已过期，或账号归属校验未通过。\n下一步：请重新获取最新绑定码后再试。"
 
-ACCOUNTS_LIST = """👥 **已绑定账号**（{count}）
+ACCOUNTS_LIST = """👥 **账号列表**（{count}）
 
 {accounts_text}
 
-请选择要操作的账号，或使用下方快捷功能。"""
+下一步：请选择要查看的账号，或使用下方快捷操作。"""

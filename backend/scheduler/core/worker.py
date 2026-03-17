@@ -50,6 +50,7 @@ class TaskScheduler:
 
     # 配置
     SCAN_INTERVAL = 10  # 10 秒扫描间隔
+    PROCESSING_TTL = 300
     JITTER_RANGE = 300  # 最大抖动 5 分钟（300秒）
     URGENT_PRIORITY_THRESHOLD = 100
     TELEGRAM_MEDIA_REF_PREFIX = "tgmsg://"
@@ -71,6 +72,7 @@ class TaskScheduler:
             decode_responses=True
         )
         await self._ensure_redis_connection()
+        await self._recover_runtime_state()
 
         logger.info("增强型任务调度器初始化完成")
 
@@ -84,6 +86,53 @@ class TaskScheduler:
         except Exception as e:
             logger.warning(f"调度器 Redis 连接不可用，尝试重连失败: {e}")
             raise
+
+    async def _recover_runtime_state(self):
+        """服务启动时恢复任务运行态，避免重启后任务卡死。"""
+        now = int(datetime.now().timestamp())
+        repaired_next_run = 0
+        disabled_expired = 0
+        cleared_processing = 0
+
+        async with get_async_session() as session:
+            from sqlalchemy import select
+
+            result = await session.execute(
+                select(ScheduledMessageTask).where(ScheduledMessageTask.enabled == True)
+            )
+            tasks = result.scalars().all()
+
+            for task in tasks:
+                if task.end_at and now > int(task.end_at):
+                    task.enabled = False
+                    disabled_expired += 1
+                    continue
+
+                if task.next_run_at is None:
+                    start_at_ts = int(task.start_at or 0)
+                    task.next_run_at = max(now, start_at_ts) if start_at_ts > 0 else now
+                    repaired_next_run += 1
+
+            if repaired_next_run or disabled_expired:
+                await session.commit()
+
+        cursor = None
+        pattern = f"{self.PROCESSING_QUEUE_KEY}:*"
+        while True:
+            cursor, keys = await self.redis_client.scan(cursor=cursor or 0, match=pattern, count=200)
+            if keys:
+                await self.redis_client.delete(*keys)
+                cleared_processing += len(keys)
+            if str(cursor) == "0":
+                break
+
+        await self._enqueue_tasks(now)
+        logger.info(
+            "调度器恢复完成: 修复 next_run_at={}, 禁用已过期任务={}, 清理处理中锁={}",
+            repaired_next_run,
+            disabled_expired,
+            cleared_processing,
+        )
 
     async def start(self):
         """启动调度器"""
@@ -189,7 +238,7 @@ class TaskScheduler:
             return
 
         # 标记为处理中
-        await self.redis_client.set(processing_key, "1", ex=300)
+        await self.redis_client.set(processing_key, "1", ex=self.PROCESSING_TTL)
 
         try:
             async with get_async_session() as session:
@@ -205,6 +254,18 @@ class TaskScheduler:
 
                 if not task or not task.enabled:
                     logger.debug(f"任务 {task_id} 不存在或已禁用")
+                    return
+
+                if task.next_run_at is None:
+                    start_at_ts = int(task.start_at or 0)
+                    task.next_run_at = max(now, start_at_ts) if start_at_ts > 0 else now
+                    await session.commit()
+
+                if task.next_run_at and task.next_run_at > now:
+                    await self.redis_client.zadd(self.TASK_QUEUE_KEY, {task.task_id: int(task.next_run_at)})
+                    logger.debug(
+                        f"任务 {task_id} 队列中存在旧调度，已按数据库 next_run_at={task.next_run_at} 重新入队"
+                    )
                     return
 
                 # 检查账号（新架构）

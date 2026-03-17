@@ -2,8 +2,13 @@
   <div class="login-page">
     <div class="login-container">
       <div class="login-header">
-        <h1>系统登录</h1>
-        <p class="subtitle">Telegram 定时消息推送管理系统</p>
+        <img class="brand-logo" src="/quanqiu.png" alt="全球通" />
+        <h1>全球通</h1>
+        <p class="subtitle">Web 管理入口，可使用 Bot 注册后获得的账号密码登录</p>
+      </div>
+
+      <div class="bot-tip">
+        推荐先在 Telegram Bot 内完成注册、激活和账号登录，Web 端用于补充管理任务、账号和订阅信息。
       </div>
 
       <el-form
@@ -48,7 +53,7 @@
 
         <div class="form-footer">
           <span>还没有账号？</span>
-          <router-link to="/register">立即注册</router-link>
+          <router-link to="/register">Web 注册</router-link>
         </div>
       </el-form>
     </div>
@@ -154,6 +159,14 @@ const handleLogin = async () => {
   margin-bottom: 2rem;
 }
 
+.brand-logo {
+  width: 120px;
+  max-width: 42%;
+  height: auto;
+  display: block;
+  margin: 0 auto 0.8rem;
+}
+
 .login-header h1 {
   margin: 0 0 0.5rem 0;
   font-size: 1.8rem;
@@ -170,6 +183,16 @@ const handleLogin = async () => {
   width: 100%;
   font-weight: 600;
   letter-spacing: 1px;
+}
+
+.bot-tip {
+  margin-bottom: 1rem;
+  padding: 0.9rem 1rem;
+  border-radius: 12px;
+  background: #f3f5ff;
+  color: #4a5680;
+  font-size: 0.9rem;
+  line-height: 1.6;
 }
 
 .form-footer {

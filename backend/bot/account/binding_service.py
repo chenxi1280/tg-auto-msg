@@ -18,6 +18,7 @@ from backend.bot.developer_apps import get_developer_app_service
 from backend.config.core.settings import settings
 from backend.database.schema.models import Account, AccountBindLog, HealthStatus, TelegramDeveloperApp
 from backend.database.runtime.session import get_async_session
+from backend.h5_backend.services.me.account_limit import ensure_can_add_tg_account
 from backend.utils.security.crypto import generate_bind_code
 
 
@@ -224,6 +225,12 @@ async def bind_account(
             return await _reject(
                 f"tg_account_owned_by_other_user:tg={tg_user_id},owner={existing_account.user_id}"
             )
+
+        await ensure_can_add_tg_account(
+            int(owner_user_id),
+            existing_tg_user_id=tg_user_id,
+            session=session,
+        )
 
         try:
             resolved_app_id = await developer_service.resolve_assignable_app_id(

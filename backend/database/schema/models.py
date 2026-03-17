@@ -26,6 +26,11 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False, comment="密码哈希")
     email: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, comment="邮箱")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, comment="是否激活")
+    max_tg_accounts_override: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="TG 账号数量上限覆盖值；NULL=跟随套餐，0=不限制",
+    )
 
     # 时间戳
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -53,6 +58,12 @@ class PricingPlan(Base):
     billing_cycle: Mapped[str] = mapped_column(String(20), nullable=False, comment="计费周期：monthly/yearly")
     price_cents: Mapped[int] = mapped_column(Integer, nullable=False, comment="价格（分）")
     duration_days: Mapped[int] = mapped_column(Integer, nullable=False, comment="开通时长（天）")
+    max_tg_accounts: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+        comment="套餐默认可登录的 TG 账号数量；0=不限制",
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, comment="是否启用")
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False, comment="排序")
 
@@ -99,6 +110,33 @@ class UserSubscription(Base):
     __table_args__ = (
         Index("idx_user_subscriptions_user_status", "user_id", "status"),
         Index("idx_user_subscriptions_end_at", "end_at"),
+    )
+
+
+class SubscriptionNoticeLog(Base):
+    """订阅到期提醒发送记录"""
+    __tablename__ = "subscription_notice_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    subscription_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("user_subscriptions.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="订阅 ID",
+    )
+    user_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="系统用户 ID",
+    )
+    days_before: Mapped[int] = mapped_column(Integer, nullable=False, comment="距到期前天数")
+    sent_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False, comment="发送时间")
+
+    __table_args__ = (
+        UniqueConstraint("subscription_id", "days_before", name="uq_subscription_notice_once"),
+        Index("idx_subscription_notice_user_id", "user_id"),
+        Index("idx_subscription_notice_sent_at", "sent_at"),
     )
 
 

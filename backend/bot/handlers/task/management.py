@@ -2,16 +2,16 @@
 from __future__ import annotations
 
 from datetime import datetime
-import uuid
 
 from telethon import Button, events
 from sqlalchemy import select
 
 from backend.bot.handlers.core.helpers import (
-    build_login_buttons as _build_login_buttons,
     escape_markdown as _escape_markdown,
     format_timestamp as _format_timestamp,
+    generate_h5_task_logs_url,
     generate_h5_url,
+    is_valid_button_url,
     normalize_task_targets as _normalize_task_targets,
     peer_meta as _peer_meta,
     truncate_text as _truncate_text,
@@ -85,22 +85,27 @@ def _format_run_bound(ts: int | None) -> str:
 
 async def show_task_list(event, user_id: int):
     """显示任务列表。"""
+    from backend.bot.onboarding import get_onboarding_service
     from backend.bot.handlers.task.selector_context import clear_selector_context
     clear_selector_context(user_id)
+
+    if await get_onboarding_service().ensure_active_subscription(event, user_id) is None:
+        return
 
     async with get_async_session() as session:
         db_user_id = await _resolve_db_user_id(session, user_id)
         if db_user_id is None:
             if hasattr(event, "answer"):
                 await event.answer(
-                    "当前 Telegram 账号未绑定系统用户，请先在 H5 登录并绑定。",
+                    "当前 Telegram 账号未完成系统注册，请先发送 /start。",
                     alert=True,
                 )
             else:
                 await event.respond(
-                    "⚠️ 当前 Telegram 账号未绑定系统用户。\n\n"
-                    "请先在 H5 登录并扫码绑定，再使用任务功能。",
-                    buttons=_build_login_buttons("🔐 前往 H5 登录"),
+                    "⚠️ 当前 Telegram 账号未完成系统注册。\n\n"
+                    "请先发送 `/start`，在 Bot 内完成注册、激活和登录。",
+                    buttons=[[Button.inline("🚀 开始使用", data="bot_home")]],
+                    parse_mode="markdown",
                 )
             return
 
@@ -113,7 +118,10 @@ async def show_task_list(event, user_id: int):
 
     if not tasks:
         text = TASK_LIST_HEADER + TASK_EMPTY
-        keyboard = [[Button.inline("➕ 添加任务", data="add_task")]]
+        keyboard = [
+            [Button.inline("📋 新建任务", data="add_task")],
+            [Button.inline("⬅️ 返回主菜单", data="bot_home")],
+        ]
     else:
         task_data = []
         for task in tasks:
@@ -128,7 +136,7 @@ async def show_task_list(event, user_id: int):
                     task.title[:30] + "..." if len(task.title) > 30 else task.title,
                 )
             )
-        text = TASK_LIST_HEADER + f"📊 共 {len(tasks)} 个任务\n"
+        text = TASK_LIST_HEADER + f"📊 共 {len(tasks)} 个任务\n\n下一步：请选择一个任务查看设置，或点击下方按钮新建任务。\n"
         keyboard = get_task_list_keyboard(task_data)
 
     if _should_edit_event(event):
@@ -167,7 +175,7 @@ async def show_task_settings(event, user_id: int, task_id: str):
                     resources_by_key[(str(resource.peer_type), int(resource.peer_id))] = resource
 
     if not task:
-        await event.answer("任务不存在", alert=True)
+        await event.answer("任务不存在，请返回任务页后重试。", alert=True)
         return
 
     account_display = "未设置"
@@ -225,14 +233,19 @@ async def show_task_settings(event, user_id: int, task_id: str):
 
 
 async def create_new_task(event, user_id: int):
-    """创建新任务并进入账号选择。"""
-    task_id = str(uuid.uuid4())
+    """开始新建任务流程，选择完成前不落库。"""
+    from backend.bot.onboarding import get_onboarding_service
+    from backend.bot.handlers.task.selector_context import set_selector_context
+
+    if await get_onboarding_service().ensure_active_subscription(event, user_id) is None:
+        return
+
     selected_account_id: str | None = None
 
     async with get_async_session() as session:
         db_user_id = await _resolve_db_user_id(session, user_id)
         if db_user_id is None:
-            await event.answer("未找到对应系统用户，请先完成绑定", alert=True)
+            await event.answer("当前 Telegram 账号还未完成系统注册，请先发送 /start。", alert=True)
             return
 
         preferred_account_id = await _get_active_account_id(session, user_id, db_user_id)
@@ -247,38 +260,36 @@ async def create_new_task(event, user_id: int):
             preferred_account = account_result.scalar_one_or_none()
             if preferred_account:
                 selected_account_id = preferred_account.account_id
-
-        task = ScheduledMessageTask(
-            task_id=task_id,
-            user_id=db_user_id,
-            account_id=selected_account_id,
-            # Legacy DB compatibility: some historical schemas still keep chat_id NOT NULL.
-            # Use 0 as placeholder before account/target is selected.
-            chat_id=0,
-            title="新任务",
-            repeat_interval_min=60,
-            day_start_hour=0,
-            day_end_hour=24,
-            enabled=False,
-            next_run_at=int(datetime.now().timestamp()) + 3600,
-        )
-        session.add(task)
-        await session.commit()
+    draft_task_id = "__draft_new_task__"
+    set_selector_context(
+        user_id,
+        task_id=draft_task_id,
+        account_id=selected_account_id,
+        page=0,
+        peer_filter="all",
+        search="",
+        draft_mode=True,
+        draft_targets=[],
+    )
 
     if selected_account_id:
-        await start_select_task_targets(event, user_id, task_id, page=0)
+        await start_select_task_targets(event, user_id, draft_task_id, page=0)
     else:
-        await start_select_task_account(event, user_id, task_id)
+        await start_select_task_account(event, user_id, draft_task_id)
 
 
 async def create_new_task_for_account(event, user_id: int, account_id: str):
-    """创建新任务并指定执行账号。"""
-    task_id = str(uuid.uuid4())
+    """从账号页开始新建任务流程，选择完成前不落库。"""
+    from backend.bot.onboarding import get_onboarding_service
+    from backend.bot.handlers.task.selector_context import set_selector_context
+
+    if await get_onboarding_service().ensure_active_subscription(event, user_id) is None:
+        return
 
     async with get_async_session() as session:
         db_user_id = await _resolve_db_user_id(session, user_id)
         if db_user_id is None:
-            await event.answer("未找到对应系统用户，请先完成绑定", alert=True)
+            await event.answer("当前 Telegram 账号还未完成系统注册，请先发送 /start。", alert=True)
             return
 
         account_result = await session.execute(
@@ -290,25 +301,21 @@ async def create_new_task_for_account(event, user_id: int, account_id: str):
         )
         account = account_result.scalar_one_or_none()
         if not account:
-            await event.answer("账号不存在或不可用", alert=True)
+            await event.answer("账号不存在或不可用，请先检查账号状态。", alert=True)
             return
+    draft_task_id = "__draft_new_task__"
+    set_selector_context(
+        user_id,
+        task_id=draft_task_id,
+        account_id=account_id,
+        page=0,
+        peer_filter="all",
+        search="",
+        draft_mode=True,
+        draft_targets=[],
+    )
 
-        task = ScheduledMessageTask(
-            task_id=task_id,
-            user_id=db_user_id,
-            account_id=account.account_id,
-            chat_id=0,
-            title="新任务",
-            repeat_interval_min=60,
-            day_start_hour=0,
-            day_end_hour=24,
-            enabled=False,
-            next_run_at=int(datetime.now().timestamp()) + 3600,
-        )
-        session.add(task)
-        await session.commit()
-
-    await start_select_task_targets(event, user_id, task_id, page=0)
+    await start_select_task_targets(event, user_id, draft_task_id, page=0)
 
 
 async def toggle_task(event, user_id: int, task_id: str):
@@ -322,7 +329,7 @@ async def toggle_task(event, user_id: int, task_id: str):
                 start_at_ts = int(task.start_at or 0)
                 task.next_run_at = max(now_ts, start_at_ts) if start_at_ts > 0 else now_ts
             await session.commit()
-            await event.answer(f"任务已{'启用' if task.enabled else '禁用'}")
+            await event.answer(f"✅ 任务已{'启用' if task.enabled else '禁用'}")
             await show_task_list(event, user_id)
 
 
@@ -341,7 +348,7 @@ async def delete_task(event, user_id: int, task_id: str):
     async with get_async_session() as session:
         db_user_id = await _resolve_db_user_id(session, user_id)
         if db_user_id is None:
-            await event.answer("未找到对应系统用户，请先完成绑定", alert=True)
+            await event.answer("当前 Telegram 账号还未完成系统注册，请先发送 /start。", alert=True)
             return
 
         from sqlalchemy import delete
@@ -353,7 +360,7 @@ async def delete_task(event, user_id: int, task_id: str):
         )
         await session.commit()
 
-    await event.answer("任务已删除")
+    await event.answer("✅ 任务已删除")
     await show_task_list(event, user_id)
 
 
@@ -382,3 +389,22 @@ async def open_h5_webapp(event, user_id: int, task_id: str):
 
     url = generate_h5_url(task_id)
     await event.answer(f"🌐 请点击下方链接进入 H5 控制台:\n{url}", alert=True)
+
+
+async def open_task_logs_page(event, user_id: int, task_id: str):
+    """打开任务发送记录页面。"""
+    async with get_async_session() as session:
+        task = await _get_user_task(session, task_id, user_id)
+        if not task:
+            await event.answer("任务不存在或无权限", alert=True)
+            return
+
+    url = generate_h5_task_logs_url(task_id)
+    if is_valid_button_url(url):
+        await event.respond(
+            "📋 **发送记录**\n\n下一步：点击下方按钮查看该任务的发送记录。",
+            buttons=[[Button.url("📋 查看记录", url)]],
+        )
+        return
+
+    await event.answer(f"📊 请在浏览器打开任务发送记录:\n{url}", alert=True)

@@ -3,7 +3,7 @@ Bot 键盘定义
 """
 from typing import Optional, List, Any
 from telethon import Button
-from telethon.tl.types import KeyboardButton, KeyboardButtonUrl
+from telethon.tl.types import KeyboardButtonUrl
 
 from backend.database.schema.models import ScheduledMessageTask, MediaType
 
@@ -37,22 +37,25 @@ def get_task_list_keyboard(
 
     for task_id, enabled, interval, has_media, has_buttons, has_text, title in tasks:
         task_row = [
-            Button.inline(f"📢 {title}", data=f"view:{task_id}"),
+            Button.inline(f"📋 {title}", data=f"view:{task_id}"),
             Button.inline("✅" if enabled else "❌", data=f"toggle:{task_id}"),
         ]
         buttons.append(task_row)
 
         # 第二行：设置和删除按钮
         settings_row = [
-            Button.inline("⚙️ 设置", data=f"settings:{task_id}"),
-            Button.inline("🗑️ 删除", data=f"delete:{task_id}"),
+            Button.inline("⚙️ 查看设置", data=f"settings:{task_id}"),
+            Button.inline("删除任务", data=f"delete:{task_id}"),
         ]
         buttons.append(settings_row)
 
     # 底部按钮
     buttons.append([
-        Button.inline("➕ 添加任务", data="add_task"),
-        Button.inline("🔄 刷新", data="refresh"),
+        Button.inline("📋 新建任务", data="add_task"),
+        Button.inline("🔄 刷新列表", data="refresh"),
+    ])
+    buttons.append([
+        Button.inline("⬅️ 返回主菜单", data="bot_home"),
     ])
 
     return buttons
@@ -74,14 +77,14 @@ def get_task_settings_keyboard(task: ScheduledMessageTask) -> list:
 
     # 状态开关
     buttons.append([
-        Button.inline("🟢 启用", data=f"set_enable:{task.task_id}") if not task.enabled
-        else Button.inline("🔴 禁用", data=f"set_disable:{task.task_id}")
+        Button.inline("🟢 启用任务", data=f"set_enable:{task.task_id}") if not task.enabled
+        else Button.inline("🔴 禁用任务", data=f"set_disable:{task.task_id}")
     ])
 
     # 账号与目标选择
     buttons.append([
-        Button.inline("👤 执行账号", data=f"edit_account:{task.task_id}"),
-        Button.inline("🎯 目标聊天", data=f"edit_targets:{task.task_id}"),
+        Button.inline("👥 选择账号", data=f"edit_account:{task.task_id}"),
+        Button.inline("📋 选择目标", data=f"edit_targets:{task.task_id}"),
     ])
 
     # 功能开关
@@ -110,7 +113,7 @@ def get_task_settings_keyboard(task: ScheduledMessageTask) -> list:
             data=f"edit_media:{task.task_id}"
         ),
         Button.inline(
-            f"🔘 按钮 {'✅' if task.buttons else '❌'}",
+            f"🧷 按钮 {'✅' if task.buttons else '❌'}",
             data=f"edit_buttons:{task.task_id}"
         ),
     ])
@@ -118,14 +121,14 @@ def get_task_settings_keyboard(task: ScheduledMessageTask) -> list:
     # 时间控制
     buttons.append([
         Button.inline(
-            f"⏰ 重复: 每 {task.repeat_interval_min} 分钟",
+            f"⏰ 间隔: 每 {task.repeat_interval_min} 分钟",
             data=f"edit_interval:{task.task_id}"
         ),
     ])
 
     buttons.append([
         Button.inline(
-            f"🌅 时段: {_format_time_range(task.day_start_hour, task.day_end_hour)}",
+            f"⏰ 时段: {_format_time_range(task.day_start_hour, task.day_end_hour)}",
             data=f"edit_hours:{task.task_id}"
         ),
     ])
@@ -141,9 +144,13 @@ def get_task_settings_keyboard(task: ScheduledMessageTask) -> list:
         ),
     ])
 
+    buttons.append([
+        Button.inline("📋 查看记录", data=f"task_logs:{task.task_id}"),
+    ])
+
     # 返回按钮
     buttons.append([
-        Button.inline("⬅️ 返回", data="back_to_list"),
+        Button.inline("⬅️ 返回任务页", data="back_to_list"),
     ])
 
     return buttons
@@ -180,7 +187,7 @@ def get_interval_keyboard(task_id: str) -> list:
 
     # 返回按钮
     buttons.append([
-        Button.inline("⬅️ 取消", data=f"settings:{task_id}"),
+        Button.inline("⬅️ 返回任务设置", data=f"settings:{task_id}"),
     ])
 
     return buttons
@@ -216,7 +223,7 @@ def get_hour_select_keyboard(task_id: str, for_start: bool = True) -> list:
 
     # 返回按钮
     buttons.append([
-        Button.inline("⬅️ 返回", data=f"settings:{task_id}"),
+        Button.inline("⬅️ 返回任务设置", data=f"settings:{task_id}"),
     ])
 
     return buttons
@@ -236,8 +243,8 @@ def get_confirm_delete_keyboard(task_id: str) -> list:
     """
     return [
         [
-            Button.inline("✅ 确认删除", data=f"confirm_delete:{task_id}"),
-            Button.inline("❌ 取消", data="back_to_list"),
+            Button.inline("确认删除", data=f"confirm_delete:{task_id}"),
+            Button.inline("⬅️ 返回任务页", data="back_to_list"),
         ]
     ]
 
@@ -256,7 +263,7 @@ def get_cancel_keyboard(task_id: str) -> list:
     """
     return [
         [
-            Button.inline("❌ 取消", data=f"settings:{task_id}"),
+            Button.inline("⬅️ 返回任务设置", data=f"settings:{task_id}"),
         ]
     ]
 
@@ -269,13 +276,10 @@ def get_start_time_keyboard(
     plus_10_label: str,
 ) -> list:
     """开始时间快捷键盘。"""
+    del now_ts, plus_10_ts, now_label, plus_10_label
     return [
         [
-            Button.inline(f"⚡ {now_label}", data=f"set_start_ts:{task_id}:{now_ts}"),
-            Button.inline(f"⏱ {plus_10_label}", data=f"set_start_ts:{task_id}:{plus_10_ts}"),
-        ],
-        [
-            Button.inline("❌ 取消", data=f"settings:{task_id}"),
+            Button.inline("⬅️ 返回任务设置", data=f"settings:{task_id}"),
         ],
     ]
 
@@ -288,19 +292,10 @@ def get_end_time_keyboard(
     plus_1_day_label: str,
 ) -> list:
     """结束时间快捷键盘。"""
+    del next_midnight_ts, plus_1_day_ts, next_midnight_label, plus_1_day_label
     return [
         [
-            Button.inline(
-                f"🌙 {next_midnight_label}",
-                data=f"set_end_ts:{task_id}:{next_midnight_ts}",
-            ),
-            Button.inline(
-                f"📆 {plus_1_day_label}",
-                data=f"set_end_ts:{task_id}:{plus_1_day_ts}",
-            ),
-        ],
-        [
-            Button.inline("❌ 取消", data=f"settings:{task_id}"),
+            Button.inline("⬅️ 返回任务设置", data=f"settings:{task_id}"),
         ],
     ]
 

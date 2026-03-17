@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import datetime, timezone
-from typing import Callable, Optional
+from typing import Awaitable, Callable, Optional
 
 from loguru import logger
 from telethon import TelegramClient
@@ -130,6 +130,7 @@ async def wait_for_qr_login(
     login_client: Optional[TelegramClient] = None,
     save_system_session_fn: Optional[Callable[..., asyncio.Future]] = None,
     system_userbot_session_key: Optional[str] = None,
+    on_qr_refreshed: Optional[Callable[[str, str], Awaitable[None]]] = None,
 ) -> None:
     """Wait for QR confirmation, refresh token when expired, and persist session."""
     global _current_qr_login_id
@@ -150,6 +151,8 @@ async def wait_for_qr_login(
                 qr_login = await qr_login.recreate()
                 await redis_manager.update_qr_url(login_id, qr_login.url)
                 await redis_manager.update_status(login_id, LoginStatus.PENDING, error="")
+                if on_qr_refreshed is not None:
+                    await on_qr_refreshed(qr_login.url, reason)
                 refresh_attempts += 1
                 logger.info(f"二维码已刷新({reason}): {login_id}, attempt={refresh_attempts}, strategy=recreate")
                 return True
@@ -160,6 +163,8 @@ async def wait_for_qr_login(
                 qr_login = await active_client.qr_login()
                 await redis_manager.update_qr_url(login_id, qr_login.url)
                 await redis_manager.update_status(login_id, LoginStatus.PENDING, error="")
+                if on_qr_refreshed is not None:
+                    await on_qr_refreshed(qr_login.url, reason)
                 refresh_attempts += 1
                 logger.info(f"二维码已刷新({reason}): {login_id}, attempt={refresh_attempts}, strategy=new")
                 return True
