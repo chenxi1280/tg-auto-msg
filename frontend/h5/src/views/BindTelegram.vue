@@ -10,12 +10,16 @@
         </div>
       </div>
 
-      <!-- 扫码阶段 -->
+      <!-- 登录阶段 -->
       <div
-        v-if="status === LoginStatus.PENDING || status === LoginStatus.SCANNING || status === LoginStatus.PASSWORD_REQUIRED"
+        v-if="status !== LoginStatus.CONFIRMED && status !== LoginStatus.ERROR && status !== LoginStatus.EXPIRED"
         class="login-content"
       >
-        <div class="qr-section">
+        <div class="mode-switch">
+          <el-segmented v-model="loginMode" :options="loginModeOptions" block @change="handleModeChange" />
+        </div>
+
+        <div v-if="loginMode === 'qr'" class="qr-section">
           <div class="qr-placeholder">
             <div v-if="loading" class="loading-spinner">
               <el-icon class="is-loading"><Loading /></el-icon>
@@ -34,12 +38,11 @@
               </el-button>
             </div>
             <div v-else-if="qrUrl" class="qr-code">
-              <!-- 这里使用 QR Code 库显示二维码 -->
               <img :src="qrUrl" alt="扫码登录" />
             </div>
           </div>
           <div class="instructions">
-            <h3>扫码绑定</h3>
+            <h3>扫码登录</h3>
             <ol class="steps">
               <li>打开 Telegram 手机应用</li>
               <li>点击 Settings → Devices → Link Desktop Device</li>
@@ -59,22 +62,76 @@
             </div>
           </div>
         </div>
+
+        <div v-else class="phone-login-section">
+          <div class="instructions">
+            <h3>手机号登录</h3>
+            <p class="scan-tip">输入 Telegram 绑定手机号，系统会通过 Telegram 官方登录流程发送验证码。</p>
+          </div>
+
+          <div v-if="status === LoginStatus.PHONE_INPUT_REQUIRED" class="phone-form">
+            <el-input
+              v-model="phoneNumber"
+              placeholder="请输入手机号，例如 +8613812345678"
+              clearable
+              @keyup.enter="handleSendPhoneCode"
+            />
+            <div class="phone-actions">
+              <el-button type="primary" :loading="sendingPhoneCode" @click="handleSendPhoneCode">
+                发送验证码
+              </el-button>
+            </div>
+          </div>
+
+          <div v-else-if="status === LoginStatus.CODE_INPUT_REQUIRED" class="phone-form">
+            <p class="scan-tip">验证码已发送到 {{ phoneNumber || '你的 Telegram 账号' }}，请输入验证码继续登录。</p>
+            <el-input
+              v-model="phoneCode"
+              placeholder="请输入 Telegram 验证码"
+              clearable
+              @keyup.enter="handleSubmitPhoneCode"
+            />
+            <div class="phone-actions">
+              <el-button :loading="sendingPhoneCode" @click="handleSendPhoneCode">
+                重新发送验证码
+              </el-button>
+              <el-button type="primary" :loading="submittingPhoneCode" @click="handleSubmitPhoneCode">
+                提交验证码
+              </el-button>
+            </div>
+          </div>
+
+          <div v-else-if="status === LoginStatus.PASSWORD_REQUIRED" class="scan-progress">
+            <el-icon class="is-loading scan-progress-icon"><Loading /></el-icon>
+            <div class="scan-progress-text">
+              <strong>验证码已验证，等待输入 Telegram 二步密码</strong>
+              <p>该账号已开启二步验证，请在弹框中输入密码完成登录。</p>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <!-- 绑定码显示阶段 -->
+      <!-- 登录成功阶段 -->
       <div v-if="status === LoginStatus.CONFIRMED" class="login-content">
         <div class="bind-code-section">
           <div class="success-icon">✓</div>
           <h3>扫码成功！</h3>
-          <p class="bind-code-label">绑定码</p>
-          <div class="bind-code">{{ bindCode }}</div>
+          <p class="bind-code-label">系统账号已登录</p>
+          <div class="bind-code">{{ confirmedUsername || 'Telegram 账号' }}</div>
           <div class="bind-instructions">
-            <p>请发送以下命令到 Telegram Bot：</p>
-            <code class="command">/bind {{ bindCode }}</code>
+            <p>点击下方按钮，可把当前系统账号直接绑定到 TG Bot 中使用。</p>
+            <p v-if="trialSlotEndAt" class="trial-tip">
+              已自动开通 7 天试用套餐位，到期时间：{{ trialSlotEndAt }}
+            </p>
           </div>
-          <el-button type="primary" @click="copyCommandAndGoHome">
-            复制并返回首页
-          </el-button>
+          <div class="bind-actions">
+            <el-button type="primary" :disabled="!canOpenBindBot" @click="goBindInBot">
+              系统账号绑定到 TG Bot
+            </el-button>
+            <el-button @click="goHome">
+              返回首页
+            </el-button>
+          </div>
         </div>
       </div>
 
@@ -130,20 +187,33 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Loading } from '@element-plus/icons-vue'
-import { createLoginSession, getLoginStatus, LoginStatus, submitLoginPassword } from '@/api/login'
-import { getSubscription } from '@/api/me'
+import {
+  createLoginSession,
+  createPhoneLoginSession,
+  getLoginStatus,
+  LoginStatus,
+  sendPhoneLoginCode,
+  submitLoginPassword,
+  submitPhoneLoginCode
+} from '@/api/login'
+import { getLicenseStatus } from '@/api/me'
 import QRCode from 'qrcode'
 
 const router = useRouter()
+type LoginMode = 'qr' | 'phone'
 
 // 状态
+const loginMode = ref<LoginMode>('qr')
+const loginModeOptions = [
+  { label: '扫码登录', value: 'qr' },
+  { label: '手机号登录', value: 'phone' }
+]
 const status = ref<LoginStatus>(LoginStatus.PENDING)
 const loginId = ref('')
-const bindCode = ref('')
 const qrUrl = ref('')
 const qrUrlData = ref('')
 const loading = ref(false)
@@ -151,15 +221,21 @@ const error = ref('')
 const password = ref('')
 const passwordHint = ref('')
 const submittingPassword = ref(false)
+const submittingPhoneCode = ref(false)
+const sendingPhoneCode = ref(false)
 const awaitingConfirm = ref(false)
 const passwordDialogVisible = ref(false)
+const botUsername = ref('')
+const botBindUrl = ref('')
+const confirmedUsername = ref('')
+const phoneNumber = ref('')
+const phoneCode = ref('')
+const trialSlotEndAt = ref('')
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
-// 创建登录会话
-const createSession = async () => {
-  loading.value = true
-  status.value = LoginStatus.PENDING
+const resetCommonState = () => {
+  stopPolling()
   error.value = ''
   qrUrl.value = ''
   qrUrlData.value = ''
@@ -167,6 +243,18 @@ const createSession = async () => {
   passwordHint.value = ''
   awaitingConfirm.value = false
   passwordDialogVisible.value = false
+  phoneCode.value = ''
+  trialSlotEndAt.value = ''
+}
+
+const updateTrialSlotState = (trialSlot?: { end_at?: string | null } | null) => {
+  trialSlotEndAt.value = trialSlot?.end_at || ''
+}
+
+const createQrSession = async () => {
+  loading.value = true
+  status.value = LoginStatus.PENDING
+  resetCommonState()
 
   try {
     const res = await createLoginSession()
@@ -182,6 +270,31 @@ const createSession = async () => {
   } finally {
     loading.value = false
   }
+}
+
+const createPhoneSession = async () => {
+  loading.value = true
+  resetCommonState()
+  status.value = LoginStatus.PHONE_INPUT_REQUIRED
+
+  try {
+    const res = await createPhoneLoginSession()
+    loginId.value = res.data.login_id
+    status.value = res.data.status
+  } catch (err: any) {
+    error.value = err.message || '创建手机号登录会话失败'
+    status.value = LoginStatus.ERROR
+  } finally {
+    loading.value = false
+  }
+}
+
+const createSession = async () => {
+  if (loginMode.value === 'phone') {
+    await createPhoneSession()
+    return
+  }
+  await createQrSession()
 }
 
 // 轮询状态
@@ -203,8 +316,11 @@ const pollStatus = async () => {
 
     awaitingConfirm.value = data.status === LoginStatus.SCANNING || data.status === LoginStatus.PASSWORD_REQUIRED
 
-    if (data.status === LoginStatus.CONFIRMED && data.bind_code) {
-      bindCode.value = data.bind_code
+    if (data.status === LoginStatus.CONFIRMED) {
+      botBindUrl.value = data.bot_bind_url || ''
+      botUsername.value = data.bot_username || botUsername.value
+      confirmedUsername.value = data.username || ''
+      updateTrialSlotState(data.trial_slot)
       stopPolling()
       return
     } else if (data.status === LoginStatus.PASSWORD_REQUIRED) {
@@ -282,22 +398,89 @@ const generateQRWithLogo = async () => {
   }
 }
 
-const copyCommandAndGoHome = async () => {
-  const command = `/bind ${bindCode.value}`
-  try {
-    await navigator.clipboard.writeText(command)
-    ElMessage.success('绑定命令已复制，正在返回首页')
-  } catch (_err) {
-    ElMessage.warning('复制失败，正在返回首页')
-  } finally {
-    await router.replace({
-      path: '/accounts',
-      query: {
-        refresh: '1',
-        t: String(Date.now())
-      }
-    })
+const canOpenBindBot = computed(() => !!botBindUrl.value && !!botUsername.value)
+
+const handleModeChange = async (value: string | number | boolean) => {
+  loginMode.value = value === 'phone' ? 'phone' : 'qr'
+  await createSession()
+}
+
+const handleSendPhoneCode = async () => {
+  if (!loginId.value) {
+    await createPhoneSession()
   }
+  if (!phoneNumber.value) {
+    ElMessage.warning('请输入手机号')
+    return
+  }
+
+  sendingPhoneCode.value = true
+  try {
+    const res = await sendPhoneLoginCode(loginId.value, phoneNumber.value)
+    phoneNumber.value = res.data.phone_number
+    status.value = res.data.status
+    error.value = ''
+    ElMessage.success('验证码已发送，请在 Telegram 中查看')
+  } catch (err: any) {
+    error.value = err.message || '发送验证码失败'
+    ElMessage.error(error.value)
+  } finally {
+    sendingPhoneCode.value = false
+  }
+}
+
+const handleSubmitPhoneCode = async () => {
+  if (!loginId.value) return
+  if (!phoneCode.value) {
+    ElMessage.warning('请输入验证码')
+    return
+  }
+
+  submittingPhoneCode.value = true
+  try {
+    const res = await submitPhoneLoginCode(loginId.value, phoneCode.value)
+    status.value = res.data.status
+    error.value = ''
+    if (res.data.status === LoginStatus.PASSWORD_REQUIRED) {
+      passwordHint.value = res.data.password_hint || ''
+      passwordDialogVisible.value = true
+      ElMessage.success('验证码已验证，请继续输入 Telegram 二步密码')
+      return
+    }
+    botBindUrl.value = res.data.bot_bind_url || ''
+    botUsername.value = res.data.bot_username || botUsername.value
+    confirmedUsername.value = res.data.username || ''
+    updateTrialSlotState(res.data.trial_slot)
+    ElMessage.success(
+      res.data.trial_slot
+        ? '登录成功，已自动开通 7 天试用套餐位'
+        : '登录成功，可直接把系统账号绑定到 TG Bot'
+    )
+  } catch (err: any) {
+    error.value = err.message || '验证码验证失败'
+    ElMessage.error(error.value)
+  } finally {
+    submittingPhoneCode.value = false
+  }
+}
+
+const goBindInBot = () => {
+  const link = botBindUrl.value
+  if (!link) {
+    ElMessage.warning('当前未配置 TG Bot 入口，请稍后重试')
+    return
+  }
+  window.location.href = link
+}
+
+const goHome = async () => {
+  await router.replace({
+    path: '/accounts',
+    query: {
+      refresh: '1',
+      t: String(Date.now())
+    }
+  })
 }
 
 const handleSubmitPassword = async () => {
@@ -310,11 +493,18 @@ const handleSubmitPassword = async () => {
   submittingPassword.value = true
   try {
     const res = await submitLoginPassword(loginId.value, password.value)
-    bindCode.value = res.data.bind_code
+    botBindUrl.value = res.data.bot_bind_url || ''
+    botUsername.value = res.data.bot_username || botUsername.value
+    confirmedUsername.value = res.data.username || ''
+    updateTrialSlotState(res.data.trial_slot)
     status.value = LoginStatus.CONFIRMED
     error.value = ''
     passwordDialogVisible.value = false
-    ElMessage.success('登录成功，请发送绑定命令到 Bot')
+    ElMessage.success(
+      res.data.trial_slot
+        ? '登录成功，已自动开通 7 天试用套餐位'
+        : '登录成功，可直接把系统账号绑定到 TG Bot'
+    )
   } catch (err: any) {
     error.value = err.message || '二步密码验证失败'
     ElMessage.error(error.value)
@@ -327,12 +517,8 @@ const handleRetry = () => createSession()
 
 onMounted(async () => {
   try {
-    const res = await getSubscription()
-    if (!res.data.is_active) {
-      ElMessage.warning('未开通套餐，请先购买套餐')
-      router.replace('/purchase')
-      return
-    }
+    const res = await getLicenseStatus()
+    botUsername.value = res.data.bot?.username || ''
   } catch (_err) {
     router.replace('/accounts')
     return
@@ -401,6 +587,10 @@ onUnmounted(() => {
   padding: 2rem;
 }
 
+.mode-switch {
+  margin-bottom: 1.5rem;
+}
+
 .qr-placeholder {
   width: 300px;
   height: 300px;
@@ -458,6 +648,24 @@ onUnmounted(() => {
   line-height: 1.5;
 }
 
+.phone-login-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.phone-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.phone-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 .scan-actions {
   margin-top: 1rem;
 }
@@ -513,6 +721,14 @@ onUnmounted(() => {
   color: #e6a23c;
   display: block;
   margin: 0.5rem 0;
+}
+
+.bind-actions {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 1rem;
 }
 
 @media (max-width: 640px) {

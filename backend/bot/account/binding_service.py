@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 
 from backend.bot.session.redis_login_manager import get_redis_login_manager
 from backend.bot.handlers.core.user_link import (
+    get_linked_system_user_id,
     set_active_account_id,
     set_linked_system_user_id,
 )
@@ -18,7 +19,11 @@ from backend.bot.developer_apps import get_developer_app_service
 from backend.config.core.settings import settings
 from backend.database.schema.models import Account, AccountBindLog, HealthStatus, TelegramDeveloperApp
 from backend.database.runtime.session import get_async_session
-from backend.h5_backend.services.me.account_limit import ensure_can_add_tg_account
+from backend.h5_backend.services.licensing.service import (
+    auto_bind_available_slot_to_account,
+    ensure_can_add_tg_account,
+    grant_bot_trial_slot_if_eligible,
+)
 from backend.utils.security.crypto import generate_bind_code
 
 
@@ -132,8 +137,13 @@ async def bind_account(
         owner_user_id = int(owner_raw)
         # 安全校验：
         # - H5 绑定：user_id 应该是系统用户ID，必须等于 owner_user_id
-        # - Bot /bind：user_id 可能是已映射系统用户ID，或首次绑定时的 tg_user_id
-        if user_id != owner_user_id and user_id != tg_user_id:
+        # - Bot /bind：user_id 可能是已映射系统用户ID，或首次迁移时的 Telegram 私聊用户ID
+        allow_bot_migration = bool(
+            actor_tg_user_id
+            and int(actor_tg_user_id) > 0
+            and int(user_id) == int(actor_tg_user_id)
+        )
+        if user_id != owner_user_id and user_id != tg_user_id and not allow_bot_migration:
             return await _reject(
                 "invalid_request_source:"
                 f"user_id={user_id},owner={owner_user_id},tg={tg_user_id}"
@@ -160,6 +170,14 @@ async def bind_account(
         logger.info(f"绑定请求 user_id={user_id} 与绑定码归属 owner_user_id={owner_user_id} 不一致，按归属用户绑定")
 
     async with get_async_session() as session:
+        if actor_tg_user_id and int(actor_tg_user_id) > 0:
+            linked_user_id = await get_linked_system_user_id(session, int(actor_tg_user_id))
+            if linked_user_id is not None and int(linked_user_id) != int(owner_user_id):
+                return await _reject(
+                    "actor_already_linked_to_other_user:"
+                    f"actor={actor_tg_user_id},linked={linked_user_id},owner={owner_user_id}"
+                )
+
         developer_service = get_developer_app_service()
         existing = await session.execute(
             select(Account).where(
@@ -210,6 +228,12 @@ async def bind_account(
                 await set_active_account_id(session, actor_tg_user_id, owner_user_id, existing_account.account_id)
             await session.commit()
             await session.refresh(existing_account)
+            async with get_async_session() as slot_session:
+                await auto_bind_available_slot_to_account(
+                    user_id=int(owner_user_id),
+                    account_id=existing_account.account_id,
+                    session=slot_session,
+                )
 
             await login_manager.consume_bind_code(bind_code)
             await login_manager.set_user_logged_in(owner_user_id)
@@ -274,6 +298,17 @@ async def bind_account(
             await set_linked_system_user_id(session, actor_tg_user_id, owner_user_id)
             await set_active_account_id(session, actor_tg_user_id, owner_user_id, account.account_id)
         await session.commit()
+        async with get_async_session() as slot_session:
+            await auto_bind_available_slot_to_account(
+                user_id=int(owner_user_id),
+                account_id=account.account_id,
+                session=slot_session,
+            )
+            await grant_bot_trial_slot_if_eligible(
+                user_id=int(owner_user_id),
+                account_id=account.account_id,
+                session=slot_session,
+            )
 
         await login_manager.consume_bind_code(bind_code)
         await login_manager.set_user_logged_in(owner_user_id)

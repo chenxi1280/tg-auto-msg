@@ -12,6 +12,7 @@ from backend.bot.account.manager import get_account_manager
 from backend.database.schema.models import Account, ScheduledMessageTask, TaskLog
 from backend.database.runtime.session import get_async_session
 from backend.h5_backend.dependencies import check_account_permission, check_task_permission
+from backend.h5_backend.services.licensing.service import require_account_task_permission
 from backend.h5_backend.services.task.payload import (
     apply_system_strategy_fields,
     apply_update_payload,
@@ -53,6 +54,8 @@ class TaskService:
         payload = dict(task_data or {})
         payload["user_id"] = user_id
         account = await self._resolve_account(payload, user_id)
+        if account is not None:
+            await require_account_task_permission(account.account_id, action_text="创建自动发送任务")
         now_ts = int(datetime.now().timestamp())
 
         normalize_targets(payload, fallback_task=None)
@@ -73,6 +76,8 @@ class TaskService:
         now_ts = int(datetime.now().timestamp())
 
         account = await self._resolve_account(payload, user_id, default_account_id=original_task.account_id)
+        if account is not None:
+            await require_account_task_permission(account.account_id, action_text="保存自动发送任务")
         normalize_targets(payload, fallback_task=original_task)
         validate_task_payload(payload, current_task=original_task)
         apply_system_strategy_fields(payload, account)

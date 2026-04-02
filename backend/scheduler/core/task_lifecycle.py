@@ -39,6 +39,7 @@ async def handle_task_success(
     session,
     task: ScheduledMessageTask,
     message_id: int,
+    target_message_ids: dict[tuple[str, int], int] | None,
     now: int,
     account_manager,
 ) -> None:
@@ -46,7 +47,15 @@ async def handle_task_success(
     log = TaskLog(task_id=task.task_id, result="success", message_id=message_id)
     session.add(log)
 
-    task.last_sent_message_id = message_id
+    if target_message_ids:
+        from backend.scheduler.core.task_execution import update_task_target_last_message_ids
+
+        update_task_target_last_message_ids(
+            task,
+            target_message_ids=target_message_ids,
+        )
+    else:
+        task.last_sent_message_id = message_id
     task.failure_count = 0
     task.next_run_at = now + task.repeat_interval_min * 60
 

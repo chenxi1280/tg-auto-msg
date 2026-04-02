@@ -8,9 +8,14 @@ CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     username VARCHAR(50) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
+    bot_initial_password_encrypted VARCHAR(1024),
+    bot_initial_password_viewable BOOLEAN DEFAULT FALSE NOT NULL,
+    password_changed_after_bot_registration BOOLEAN DEFAULT FALSE NOT NULL,
+    bot_trial_eligible_at TIMESTAMP,
+    bot_trial_granted_at TIMESTAMP,
+    bot_trial_slot_id VARCHAR(36),
     email VARCHAR(100),
     is_active BOOLEAN DEFAULT TRUE NOT NULL,
-    max_tg_accounts_override INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
@@ -22,7 +27,7 @@ ON users ((LOWER(email)))
 WHERE email IS NOT NULL;
 
 -- ========================================
--- 2) 套餐配置
+-- 2) Key 规格配置
 -- ========================================
 CREATE TABLE IF NOT EXISTS pricing_plans (
     plan_code VARCHAR(32) PRIMARY KEY,
@@ -30,7 +35,6 @@ CREATE TABLE IF NOT EXISTS pricing_plans (
     billing_cycle VARCHAR(20) NOT NULL,
     price_cents INTEGER NOT NULL,
     duration_days INTEGER NOT NULL,
-    max_tg_accounts INTEGER DEFAULT 0 NOT NULL,
     is_active BOOLEAN DEFAULT TRUE NOT NULL,
     sort_order INTEGER DEFAULT 0 NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -46,59 +50,23 @@ INSERT INTO pricing_plans (
     billing_cycle,
     price_cents,
     duration_days,
-    max_tg_accounts,
     is_active,
     sort_order
 )
 VALUES
-    ('monthly', '月付套餐', 'monthly', 20000, 30, 0, TRUE, 10),
-    ('yearly', '年付套餐', 'yearly', 110000, 365, 0, TRUE, 20)
+    ('monthly', '月付Key', 'monthly', 20000, 30, TRUE, 10),
+    ('yearly', '年付Key', 'yearly', 110000, 365, TRUE, 20)
 ON CONFLICT (plan_code) DO UPDATE
 SET
     display_name = EXCLUDED.display_name,
     billing_cycle = EXCLUDED.billing_cycle,
     price_cents = EXCLUDED.price_cents,
     duration_days = EXCLUDED.duration_days,
-    max_tg_accounts = EXCLUDED.max_tg_accounts,
     is_active = EXCLUDED.is_active,
     sort_order = EXCLUDED.sort_order;
 
 -- ========================================
--- 3) 用户订阅
--- ========================================
-CREATE TABLE IF NOT EXISTS user_subscriptions (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    plan_code VARCHAR(32) REFERENCES pricing_plans(plan_code) ON DELETE SET NULL,
-    source VARCHAR(20) DEFAULT 'card' NOT NULL,
-    card_code VARCHAR(64),
-    start_at TIMESTAMP NOT NULL,
-    end_at TIMESTAMP NOT NULL,
-    status VARCHAR(20) DEFAULT 'active' NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_user_subscriptions_user_status ON user_subscriptions(user_id, status);
-CREATE INDEX IF NOT EXISTS idx_user_subscriptions_end_at ON user_subscriptions(end_at);
-
--- ========================================
--- 4) 订阅提醒记录
--- ========================================
-CREATE TABLE IF NOT EXISTS subscription_notice_logs (
-    id SERIAL PRIMARY KEY,
-    subscription_id INTEGER NOT NULL REFERENCES user_subscriptions(id) ON DELETE CASCADE,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    days_before INTEGER NOT NULL,
-    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT uq_subscription_notice_once UNIQUE (subscription_id, days_before)
-);
-
-CREATE INDEX IF NOT EXISTS idx_subscription_notice_user_id ON subscription_notice_logs(user_id);
-CREATE INDEX IF NOT EXISTS idx_subscription_notice_sent_at ON subscription_notice_logs(sent_at);
-
--- ========================================
--- 5) 激活卡密
+-- 3) 激活卡密
 -- ========================================
 CREATE TABLE IF NOT EXISTS activation_cards (
     id SERIAL PRIMARY KEY,
@@ -118,7 +86,63 @@ CREATE INDEX IF NOT EXISTS idx_activation_cards_is_used ON activation_cards(is_u
 CREATE INDEX IF NOT EXISTS idx_activation_cards_plan_code ON activation_cards(plan_code);
 
 -- ========================================
--- 6) 管理员审计日志
+-- 4) 套餐位与账号授权
+-- ========================================
+CREATE TABLE IF NOT EXISTS user_license_slots (
+    slot_id VARCHAR(36) PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    current_account_id VARCHAR(36),
+    source_card_id INTEGER REFERENCES activation_cards(id) ON DELETE SET NULL,
+    grant_source VARCHAR(20) DEFAULT 'card' NOT NULL,
+    total_duration_days INTEGER DEFAULT 0 NOT NULL,
+    start_at TIMESTAMP NOT NULL,
+    end_at TIMESTAMP NOT NULL,
+    status VARCHAR(20) DEFAULT 'active' NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_license_slots_user_status ON user_license_slots(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_user_license_slots_account ON user_license_slots(current_account_id);
+CREATE INDEX IF NOT EXISTS idx_user_license_slots_end_at ON user_license_slots(end_at);
+
+CREATE TABLE IF NOT EXISTS user_license_slot_cards (
+    id SERIAL PRIMARY KEY,
+    slot_id VARCHAR(36) NOT NULL REFERENCES user_license_slots(slot_id) ON DELETE CASCADE,
+    activation_card_id INTEGER NOT NULL REFERENCES activation_cards(id) ON DELETE CASCADE,
+    duration_days INTEGER NOT NULL,
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT uq_user_license_slot_cards_activation_card_id UNIQUE (activation_card_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_license_slot_cards_slot_id ON user_license_slot_cards(slot_id);
+
+CREATE TABLE IF NOT EXISTS user_license_slot_bindings (
+    id SERIAL PRIMARY KEY,
+    slot_id VARCHAR(36) NOT NULL REFERENCES user_license_slots(slot_id) ON DELETE CASCADE,
+    account_id VARCHAR(36) NOT NULL,
+    bind_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    unbind_at TIMESTAMP,
+    unbind_reason VARCHAR(50)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_license_slot_bindings_slot_id ON user_license_slot_bindings(slot_id);
+CREATE INDEX IF NOT EXISTS idx_user_license_slot_bindings_account_id ON user_license_slot_bindings(account_id);
+
+CREATE TABLE IF NOT EXISTS slot_notice_logs (
+    id SERIAL PRIMARY KEY,
+    slot_id VARCHAR(36) NOT NULL REFERENCES user_license_slots(slot_id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    days_before INTEGER NOT NULL,
+    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT uq_slot_notice_once UNIQUE (slot_id, days_before)
+);
+
+CREATE INDEX IF NOT EXISTS idx_slot_notice_user_id ON slot_notice_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_slot_notice_sent_at ON slot_notice_logs(sent_at);
+
+-- ========================================
+-- 5) 管理员审计日志
 -- ========================================
 CREATE TABLE IF NOT EXISTS admin_audit_logs (
     id SERIAL PRIMARY KEY,
@@ -139,7 +163,7 @@ CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_action ON admin_audit_logs(actio
 CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_developer_app_id ON admin_audit_logs(developer_app_id);
 
 -- ========================================
--- 7) 系统配置
+-- 6) 系统配置
 -- ========================================
 CREATE TABLE IF NOT EXISTS app_settings (
     key VARCHAR(64) PRIMARY KEY,
@@ -182,7 +206,7 @@ VALUES ('default_developer_app_id', '')
 ON CONFLICT (key) DO NOTHING;
 
 -- ========================================
--- 8) Telegram 开发者应用凭证池
+-- 7) Telegram 开发者应用凭证池
 -- ========================================
 CREATE TABLE IF NOT EXISTS telegram_developer_apps (
     id SERIAL PRIMARY KEY,
@@ -440,7 +464,7 @@ CREATE INDEX IF NOT EXISTS idx_task_id ON task_logs(task_id);
 CREATE INDEX IF NOT EXISTS idx_send_at ON task_logs(send_at DESC);
 
 -- ========================================
--- 15) 循环外键补齐（proxies.assigned_account_id -> accounts）
+-- 15) 循环外键补齐（proxies.assigned_account_id / user_license_slots.current_account_id -> accounts）
 -- ========================================
 DO $$
 BEGIN
@@ -452,6 +476,18 @@ BEGIN
         ALTER TABLE proxies
         ADD CONSTRAINT proxies_assigned_account_id_fkey
         FOREIGN KEY (assigned_account_id)
+        REFERENCES accounts(account_id)
+        ON DELETE SET NULL;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'user_license_slots_current_account_id_fkey'
+    ) THEN
+        ALTER TABLE user_license_slots
+        ADD CONSTRAINT user_license_slots_current_account_id_fkey
+        FOREIGN KEY (current_account_id)
         REFERENCES accounts(account_id)
         ON DELETE SET NULL;
     END IF;
@@ -496,12 +532,6 @@ CREATE TRIGGER update_pricing_plans_updated_at
 DROP TRIGGER IF EXISTS update_telegram_developer_apps_updated_at ON telegram_developer_apps;
 CREATE TRIGGER update_telegram_developer_apps_updated_at
     BEFORE UPDATE ON telegram_developer_apps
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-DROP TRIGGER IF EXISTS update_user_subscriptions_updated_at ON user_subscriptions;
-CREATE TRIGGER update_user_subscriptions_updated_at
-    BEFORE UPDATE ON user_subscriptions
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 

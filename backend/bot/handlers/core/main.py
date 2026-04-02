@@ -21,7 +21,7 @@ from backend.bot.handlers.core.command_handlers import (
 
 # ============ 命令处理 ============
 
-@bot_client.on(events.NewMessage(pattern='/start'))
+@bot_client.on(events.NewMessage(pattern=r'(?i)^/start(?:@[\w\d_]+)?(?:\s+.*)?$'))
 async def start_handler(event):
     """开始命令"""
     await handle_start_command(event)
@@ -46,9 +46,9 @@ async def bind_handler(event):
     await handle_bind_command(event)
 
 
-@bot_client.on(events.NewMessage(pattern=r'(?i)^/(tasks|accounts|sync|proxy)(?:@[\w\d_]+)?(?:\s+.*)?$'))
+@bot_client.on(events.NewMessage(pattern=r'(?i)^/(help|login|newtask|tasks|accounts|sync|proxy)(?:@[\w\d_]+)?(?:\s+.*)?$'))
 async def short_commands_handler(event):
-    """短命令入口：/tasks /accounts /sync /proxy"""
+    """短命令入口：/help /login /newtask /tasks /accounts /sync /proxy"""
     await dispatch_short_command(event)
 
 
@@ -73,7 +73,7 @@ async def callback_handler(event):
                 fsm_storage.reset_state(user_id)
                 task_id = data.split(":")[1]
                 await show_task_settings(event, user_id, task_id)
-            elif data in {"bot_home", "bot_purchase", "bot_subscription", "bot_bind_codes"}:
+            elif data in {"bot_home", "bot_purchase", "bot_slots"}:
                 fsm_storage.reset_state(user_id)
                 await handle_callback(event, user_id, data)
             elif current_state in {
@@ -118,7 +118,7 @@ async def handle_callback(event, user_id: int, data: str):
     await dispatch_callback(event, user_id, data)
 
 
-_RECOGNIZED_COMMANDS = {"start", "bind", "tasks", "accounts", "sync", "proxy"}
+_RECOGNIZED_COMMANDS = {"start", "bind", "help", "login", "newtask", "tasks", "accounts", "sync", "proxy"}
 
 
 def _extract_command_name(text: str) -> str:

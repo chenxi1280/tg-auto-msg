@@ -11,124 +11,175 @@
 
     <div class="container main">
       <el-tabs v-model="activeTab">
-        <el-tab-pane label="卡密与套餐" name="billing">
-          <el-row :gutter="12">
-            <el-col :xs="24" :lg="14">
+        <el-tab-pane label="卡密与套餐位" name="licenses">
+          <el-tabs v-model="licenseSubTab">
+            <el-tab-pane label="配置中心" name="config">
+              <el-row :gutter="12">
+                <el-col :xs="24" :lg="14">
+                  <el-card shadow="hover">
+                    <template #header>
+                      <div class="card-header card-header-between">
+                        <span>Key规格配置</span>
+                        <el-button type="primary" size="small" @click="openCreatePlanDialog">新增Key规格</el-button>
+                      </div>
+                    </template>
+                    <el-table :data="plans" stripe>
+                      <el-table-column prop="display_name" label="Key规格" min-width="120" />
+                      <el-table-column label="价格" width="110">
+                        <template #default="{ row }">¥{{ row.price_yuan }}</template>
+                      </el-table-column>
+                      <el-table-column prop="duration_days" label="时长(天)" width="110" />
+                      <el-table-column prop="billing_cycle" label="周期" width="100" />
+                      <el-table-column label="状态" width="90">
+                        <template #default="{ row }">
+                          <el-tag :type="row.is_active ? 'success' : 'info'">{{ row.is_active ? '启用' : '停用' }}</el-tag>
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="操作" width="200">
+                        <template #default="{ row }">
+                          <el-button link type="primary" @click="openPlanDialog(row)">编辑</el-button>
+                          <el-button link type="danger" @click="deletePlan(row)">删除</el-button>
+                        </template>
+                      </el-table-column>
+                    </el-table>
+                  </el-card>
+                </el-col>
+
+                <el-col :xs="24" :lg="10">
+                  <el-card shadow="hover">
+                    <template #header>
+                      <div class="card-header">快捷操作</div>
+                    </template>
+                    <el-button type="primary" @click="generateCardDialogVisible = true">生成卡密</el-button>
+                  </el-card>
+
+                  <el-card class="mt12" shadow="hover">
+                    <template #header>
+                      <div class="card-header">购买入口配置</div>
+                    </template>
+                    <el-form label-position="top">
+                      <el-form-item label="购买链接（Telegram 个人或 Bot）">
+                        <el-input
+                          v-model.trim="purchaseSettings.purchase_url"
+                          placeholder="https://t.me/your_account_or_bot"
+                        />
+                      </el-form-item>
+                      <el-form-item label="购买按钮文案">
+                        <el-input
+                          v-model.trim="purchaseSettings.purchase_button_text"
+                          placeholder="联系 Telegram 购买"
+                        />
+                      </el-form-item>
+                      <el-button type="primary" :loading="purchaseSaving" @click="savePurchaseSettings">
+                        保存购买入口
+                      </el-button>
+                    </el-form>
+                  </el-card>
+                </el-col>
+              </el-row>
+            </el-tab-pane>
+
+            <el-tab-pane label="Key与套餐位数据" name="data">
               <el-card shadow="hover">
                 <template #header>
-                  <div class="card-header">套餐配置</div>
+                  <div class="card-header">Key列表</div>
                 </template>
-                <el-table :data="plans" stripe>
-                  <el-table-column prop="display_name" label="套餐" min-width="120" />
-              <el-table-column label="价格" width="110">
-                <template #default="{ row }">¥{{ row.price_yuan }}</template>
-              </el-table-column>
-              <el-table-column prop="duration_days" label="时长(天)" width="110" />
-              <el-table-column label="TG账号上限" width="120">
-                <template #default="{ row }">
-                  {{ row.max_tg_accounts > 0 ? row.max_tg_accounts : '∞' }}
-                </template>
-              </el-table-column>
-              <el-table-column prop="billing_cycle" label="周期" width="100" />
-                  <el-table-column label="状态" width="90">
+                <div class="stats-row">
+                  <div class="stats-item">
+                    <div class="stats-label">总数</div>
+                    <div class="stats-value">{{ cardStats.total }}</div>
+                  </div>
+                  <div class="stats-item">
+                    <div class="stats-label">已用</div>
+                    <div class="stats-value text-warning">{{ cardStats.used }}</div>
+                  </div>
+                  <div class="stats-item">
+                    <div class="stats-label">未用</div>
+                    <div class="stats-value text-success">{{ cardStats.unused }}</div>
+                  </div>
+                </div>
+                <div class="toolbar">
+                  <el-select v-model="cardFilter.plan_code" clearable placeholder="Key规格" style="width: 140px">
+                    <el-option v-for="p in plans" :key="p.plan_code" :label="p.display_name" :value="p.plan_code" />
+                  </el-select>
+                  <el-select v-model="cardFilter.is_used" clearable placeholder="使用状态" style="width: 130px">
+                    <el-option label="未使用" :value="false" />
+                    <el-option label="已使用" :value="true" />
+                  </el-select>
+                  <el-select v-model="cardFilter.is_active" clearable placeholder="启用状态" style="width: 130px">
+                    <el-option label="启用" :value="true" />
+                    <el-option label="停用" :value="false" />
+                  </el-select>
+                  <el-select v-model="cardSort.sort_by" placeholder="时间字段" style="width: 140px">
+                    <el-option label="创建时间" value="created_at" />
+                    <el-option label="使用时间" value="used_at" />
+                    <el-option label="过期时间" value="expires_at" />
+                  </el-select>
+                  <el-select v-model="cardSort.sort_order" placeholder="排序" style="width: 110px">
+                    <el-option label="倒序" value="desc" />
+                    <el-option label="正序" value="asc" />
+                  </el-select>
+                  <el-button @click="applyCardFilters">筛选</el-button>
+                  <el-button type="primary" :loading="exportingCards" @click="exportCardsXlsx">导出XLSX</el-button>
+                </div>
+                <el-table :data="cards" stripe class="mt12">
+                  <el-table-column prop="card_code" label="卡密" min-width="220" />
+                  <el-table-column prop="plan_code" label="规格" width="110" />
+                  <el-table-column label="绑定账号" min-width="160">
+                    <template #default="{ row }">
+                      {{ row.bound_account_name || (row.bound_account_id ? `${row.bound_account_id.slice(0, 8)}...` : '未绑定') }}
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="套餐位到期" width="170">
+                    <template #default="{ row }">{{ formatDateTime(row.slot_end_at) }}</template>
+                  </el-table-column>
+                  <el-table-column label="状态" width="120">
                     <template #default="{ row }">
                       <el-tag :type="row.is_active ? 'success' : 'info'">{{ row.is_active ? '启用' : '停用' }}</el-tag>
                     </template>
                   </el-table-column>
-                  <el-table-column label="操作" width="140">
+                  <el-table-column label="使用" width="100">
                     <template #default="{ row }">
-                      <el-button link type="primary" @click="openPlanDialog(row)">编辑</el-button>
+                      <el-tag :type="row.is_used ? 'warning' : 'success'">{{ row.is_used ? '已使用' : '未使用' }}</el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="过期时间" width="170">
+                    <template #default="{ row }">{{ formatDateTime(row.expires_at) }}</template>
+                  </el-table-column>
+                  <el-table-column label="使用时间" width="170">
+                    <template #default="{ row }">{{ formatDateTime(row.used_at) }}</template>
+                  </el-table-column>
+                  <el-table-column label="操作" width="120">
+                    <template #default="{ row }">
+                      <el-button
+                        v-if="row.is_active"
+                        link
+                        type="danger"
+                        :disabled="row.is_used"
+                        @click="toggleCard(row.card_code, false)"
+                      >
+                        停用
+                      </el-button>
+                      <el-button v-else link type="primary" :disabled="row.is_used" @click="toggleCard(row.card_code, true)">
+                        启用
+                      </el-button>
                     </template>
                   </el-table-column>
                 </el-table>
+                <el-pagination
+                  class="mt12"
+                  background
+                  layout="total, sizes, prev, pager, next"
+                  :total="cardsPagination.total"
+                  :current-page="cardsPagination.currentPage"
+                  :page-size="cardsPagination.pageSize"
+                  :page-sizes="[20, 50, 100]"
+                  @current-change="handleCardsPageChange"
+                  @size-change="handleCardsSizeChange"
+                />
               </el-card>
-            </el-col>
-
-            <el-col :xs="24" :lg="10">
-              <el-card shadow="hover">
-                <template #header>
-                  <div class="card-header">快捷操作</div>
-                </template>
-                <el-button type="primary" @click="generateCardDialogVisible = true">生成卡密</el-button>
-              </el-card>
-
-              <el-card class="mt12" shadow="hover">
-                <template #header>
-                  <div class="card-header">购买入口配置</div>
-                </template>
-                <el-form label-position="top">
-                  <el-form-item label="购买链接（Telegram 个人或 Bot）">
-                    <el-input
-                      v-model.trim="purchaseSettings.purchase_url"
-                      placeholder="https://t.me/your_account_or_bot"
-                    />
-                  </el-form-item>
-                  <el-form-item label="购买按钮文案">
-                    <el-input
-                      v-model.trim="purchaseSettings.purchase_button_text"
-                      placeholder="联系 Telegram 购买"
-                    />
-                  </el-form-item>
-                  <el-button type="primary" :loading="purchaseSaving" @click="savePurchaseSettings">
-                    保存购买入口
-                  </el-button>
-                </el-form>
-              </el-card>
-            </el-col>
-          </el-row>
-
-          <el-card class="mt12" shadow="hover">
-            <template #header>
-              <div class="card-header">卡密列表</div>
-            </template>
-            <div class="toolbar">
-              <el-select v-model="cardFilter.plan_code" clearable placeholder="套餐" style="width: 140px">
-                <el-option v-for="p in plans" :key="p.plan_code" :label="p.display_name" :value="p.plan_code" />
-              </el-select>
-              <el-select v-model="cardFilter.is_used" clearable placeholder="使用状态" style="width: 130px">
-                <el-option label="未使用" :value="false" />
-                <el-option label="已使用" :value="true" />
-              </el-select>
-              <el-select v-model="cardFilter.is_active" clearable placeholder="启用状态" style="width: 130px">
-                <el-option label="启用" :value="true" />
-                <el-option label="停用" :value="false" />
-              </el-select>
-              <el-button @click="loadCards">筛选</el-button>
-            </div>
-            <el-table :data="cards" stripe class="mt12">
-              <el-table-column prop="card_code" label="卡密" min-width="220" />
-              <el-table-column prop="plan_code" label="套餐" width="110" />
-              <el-table-column label="状态" width="120">
-                <template #default="{ row }">
-                  <el-tag :type="row.is_active ? 'success' : 'info'">{{ row.is_active ? '启用' : '停用' }}</el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column label="使用" width="100">
-                <template #default="{ row }">
-                  <el-tag :type="row.is_used ? 'warning' : 'success'">{{ row.is_used ? '已使用' : '未使用' }}</el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column label="过期时间" width="170">
-                <template #default="{ row }">{{ formatDateTime(row.expires_at) }}</template>
-              </el-table-column>
-              <el-table-column label="操作" width="120">
-                <template #default="{ row }">
-                  <el-button
-                    v-if="row.is_active"
-                    link
-                    type="danger"
-                    :disabled="row.is_used"
-                    @click="toggleCard(row.card_code, false)"
-                  >
-                    停用
-                  </el-button>
-                  <el-button v-else link type="primary" :disabled="row.is_used" @click="toggleCard(row.card_code, true)">
-                    启用
-                  </el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-          </el-card>
+            </el-tab-pane>
+          </el-tabs>
         </el-tab-pane>
 
         <el-tab-pane label="用户与账号" name="users">
@@ -148,15 +199,19 @@
               <el-table-column label="账号数" width="90">
                 <template #default="{ row }">{{ row.account_count }}</template>
               </el-table-column>
-              <el-table-column label="TG账号数/上限" width="140">
+              <el-table-column label="已登录TG账号" width="120">
                 <template #default="{ row }">
-                  <el-tag :type="row.is_over_limit ? 'danger' : 'info'">
-                    {{ row.account_count }}/{{ row.effective_max_tg_accounts > 0 ? row.effective_max_tg_accounts : '∞' }}
-                  </el-tag>
+                  <el-tag>{{ row.account_count }}</el-tag>
                 </template>
               </el-table-column>
-              <el-table-column label="订阅到期" width="170">
-                <template #default="{ row }">{{ formatDateTime(row.subscription?.end_at) }}</template>
+              <el-table-column label="最近到期" width="170">
+                <template #default="{ row }">{{ formatDateTime(row.current_license?.end_at) }}</template>
+              </el-table-column>
+              <el-table-column label="套餐位" width="150">
+                <template #default="{ row }">
+                  <el-tag type="success">{{ row.active_license_slot_count || 0 }} 生效</el-tag>
+                  <el-tag type="info">{{ row.unbound_active_slot_count || 0 }} 待绑</el-tag>
+                </template>
               </el-table-column>
               <el-table-column label="开发者应用" min-width="260">
                 <template #default="{ row }">
@@ -189,8 +244,6 @@
               <el-table-column label="操作" width="300" fixed="right">
                 <template #default="{ row }">
                   <el-button link type="primary" @click="openAccountsDrawer(row)">账号列表</el-button>
-                  <el-button link type="primary" @click="openLimitDialog(row)">改上限</el-button>
-                  <el-button link type="warning" @click="openSubscriptionDialog(row)">改订阅</el-button>
                   <el-button link type="danger" @click="resetPassword(row.id)">重置密码</el-button>
                 </template>
               </el-table-column>
@@ -205,6 +258,26 @@
                 <template #header>
                   <div class="card-header">开发者应用列表</div>
                 </template>
+                <div class="toolbar">
+                  <el-select v-model="developerAppSettings.assignment_mode" style="width: 180px">
+                    <el-option label="轮询分配" value="round_robin" />
+                    <el-option label="权重优先" value="weight" />
+                  </el-select>
+                  <el-input
+                    v-model.trim="developerAppSettings.alert_tg_user_ids_text"
+                    placeholder="管理员告警 TG 用户ID，多个用逗号分隔"
+                    style="width: 360px"
+                  />
+                  <el-button type="primary" :loading="developerAppSettingsSaving" @click="saveDeveloperAppSettings">
+                    保存策略
+                  </el-button>
+                </div>
+                <el-alert
+                  class="mt12"
+                  type="info"
+                  :closable="false"
+                  title="新账号默认按“轮询主选、权重兜底”分配开发者应用；已绑定账号保持粘性。"
+                />
                 <div class="toolbar">
                   <el-button type="primary" @click="developerAppCreateDialogVisible = true">新增开发者应用</el-button>
                   <el-button @click="loadDeveloperApps">刷新</el-button>
@@ -227,11 +300,40 @@
                       {{ row.account_usage }}/{{ row.max_accounts > 0 ? row.max_accounts : '∞' }}
                     </template>
                   </el-table-column>
+                  <el-table-column label="权重" width="90">
+                    <template #default="{ row }">{{ row.selection_weight }}</template>
+                  </el-table-column>
                   <el-table-column label="凭证版本" width="110">
                     <template #default="{ row }">{{ row.credentials_version }}</template>
                   </el-table-column>
+                  <el-table-column label="健康状态" width="120">
+                    <template #default="{ row }">
+                      <el-tag
+                        :type="row.health_status === 'healthy' ? 'success' : row.health_status === 'unhealthy' ? 'danger' : 'info'"
+                      >
+                        {{
+                          row.health_status === 'healthy'
+                            ? '健康'
+                            : row.health_status === 'unhealthy'
+                              ? '异常'
+                              : row.health_status === 'disabled'
+                                ? '停用'
+                                : '检测中'
+                        }}
+                      </el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="最近检测" width="170">
+                    <template #default="{ row }">{{ formatDateTime(row.last_health_check_at) }}</template>
+                  </el-table-column>
+                  <el-table-column label="最近耗时" width="100">
+                    <template #default="{ row }">{{ row.last_health_latency_ms ? `${row.last_health_latency_ms}ms` : '-' }}</template>
+                  </el-table-column>
                   <el-table-column label="最近轮换" width="170">
                     <template #default="{ row }">{{ formatDateTime(row.last_rotated_at) }}</template>
+                  </el-table-column>
+                  <el-table-column label="最近错误" min-width="220">
+                    <template #default="{ row }">{{ row.last_health_error || '-' }}</template>
                   </el-table-column>
                   <el-table-column label="状态" width="90">
                     <template #default="{ row }">
@@ -241,8 +343,16 @@
                   <el-table-column label="备注" min-width="140">
                     <template #default="{ row }">{{ row.notes || '-' }}</template>
                   </el-table-column>
-                  <el-table-column label="操作" width="200" fixed="right">
+                  <el-table-column label="操作" width="260" fixed="right">
                     <template #default="{ row }">
+                      <el-button
+                        link
+                        type="warning"
+                        :loading="developerAppHealthChecking[row.id] === true"
+                        @click="checkDeveloperApp(row.id)"
+                      >
+                        检测
+                      </el-button>
                       <el-button link type="primary" @click="openDeveloperAppEdit(row)">编辑</el-button>
                       <el-button link :disabled="row.is_default" @click="setDefaultDeveloperApp(row.id)">设为默认</el-button>
                     </template>
@@ -404,19 +514,19 @@
       </el-tabs>
     </div>
 
-    <el-dialog v-model="planDialog.visible" title="编辑套餐" width="420px">
-      <el-form label-position="top">
+    <el-dialog v-model="planDialog.visible" title="编辑Key规格" width="420px">
+        <el-form label-position="top">
         <el-form-item label="名称">
           <el-input v-model.trim="planDialog.form.display_name" />
+        </el-form-item>
+        <el-form-item label="计费周期">
+          <el-input v-model.trim="planDialog.form.billing_cycle" placeholder="monthly/yearly/custom" />
         </el-form-item>
         <el-form-item label="价格（分）">
           <el-input-number v-model="planDialog.form.price_cents" :min="1" style="width: 100%" />
         </el-form-item>
         <el-form-item label="时长（天）">
           <el-input-number v-model="planDialog.form.duration_days" :min="1" style="width: 100%" />
-        </el-form-item>
-        <el-form-item label="TG账号上限（0=不限制）">
-          <el-input-number v-model="planDialog.form.max_tg_accounts" :min="0" style="width: 100%" />
         </el-form-item>
         <el-form-item label="启用">
           <el-switch v-model="planDialog.form.is_active" />
@@ -428,72 +538,39 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="subDialog.visible" title="修改用户订阅" width="460px">
+    <el-dialog v-model="planCreateDialog.visible" title="新增Key规格" width="440px">
       <el-form label-position="top">
-        <el-form-item label="用户">
-          <el-input :value="subDialog.userLabel" disabled />
+        <el-form-item label="Key规格编码">
+          <el-input v-model.trim="planCreateDialog.form.plan_code" placeholder="例如 quarterly_90d" />
         </el-form-item>
-        <el-form-item label="套餐">
-          <el-select v-model="subDialog.form.plan_code" clearable style="width: 100%">
-            <el-option v-for="p in plans" :key="p.plan_code" :label="p.display_name" :value="p.plan_code" />
-          </el-select>
+        <el-form-item label="显示名称">
+          <el-input v-model.trim="planCreateDialog.form.display_name" placeholder="例如 90天Key" />
         </el-form-item>
-        <el-form-item label="直接设置到期时间（可选）">
-          <el-date-picker
-            v-model="subDialog.form.end_at"
-            type="datetime"
-            value-format="YYYY-MM-DDTHH:mm:ss"
-            style="width: 100%"
-            placeholder="选择到期时间"
-          />
+        <el-form-item label="计费周期">
+          <el-input v-model.trim="planCreateDialog.form.billing_cycle" placeholder="monthly/yearly/custom" />
         </el-form-item>
-        <el-form-item label="延长天数（可选，支持负数）">
-          <el-input-number v-model="subDialog.form.extend_days" :min="-3650" :max="3650" style="width: 100%" />
+        <el-form-item label="价格（分）">
+          <el-input-number v-model="planCreateDialog.form.price_cents" :min="1" style="width: 100%" />
         </el-form-item>
-        <el-form-item label="设为无效">
-          <el-switch v-model="subDialog.form.set_inactive" />
+        <el-form-item label="时长（天）">
+          <el-input-number v-model="planCreateDialog.form.duration_days" :min="1" style="width: 100%" />
+        </el-form-item>
+        <el-form-item label="排序">
+          <el-input-number v-model="planCreateDialog.form.sort_order" :min="0" style="width: 100%" />
+        </el-form-item>
+        <el-form-item label="启用">
+          <el-switch v-model="planCreateDialog.form.is_active" />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="subDialog.visible = false">取消</el-button>
-        <el-button type="primary" :loading="subDialog.saving" @click="saveSubscription">保存</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog v-model="limitDialog.visible" title="修改用户TG账号上限" width="460px">
-      <el-form label-position="top">
-        <el-form-item label="用户">
-          <el-input :value="limitDialog.userLabel" disabled />
-        </el-form-item>
-        <el-form-item label="生效方式">
-          <el-radio-group v-model="limitDialog.form.use_plan_default">
-            <el-radio :value="true">跟随套餐</el-radio>
-            <el-radio :value="false">单独设置</el-radio>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item label="单独上限（0=不限制）" v-if="!limitDialog.form.use_plan_default">
-          <el-input-number
-            v-model="limitDialog.form.max_tg_accounts_override"
-            :min="0"
-            controls-position="right"
-            style="width: 100%"
-          />
-        </el-form-item>
-        <el-alert
-          :closable="false"
-          type="info"
-          :title="`当前账号数：${limitDialog.accountCount}；当前生效上限：${limitDialog.effectiveLimit > 0 ? limitDialog.effectiveLimit : '∞'}`"
-        />
-      </el-form>
-      <template #footer>
-        <el-button @click="limitDialog.visible = false">取消</el-button>
-        <el-button type="primary" :loading="limitDialog.saving" @click="saveUserLimit">保存</el-button>
+        <el-button @click="planCreateDialog.visible = false">取消</el-button>
+        <el-button type="primary" :loading="planCreateDialog.saving" @click="createPlan">创建</el-button>
       </template>
     </el-dialog>
 
     <el-dialog v-model="generateCardDialogVisible" title="生成卡密" width="460px">
       <el-form label-position="top">
-        <el-form-item label="套餐">
+        <el-form-item label="Key规格">
           <el-select v-model="genForm.plan_code" style="width: 100%">
             <el-option v-for="p in plans" :key="p.plan_code" :label="p.display_name" :value="p.plan_code" />
           </el-select>
@@ -501,9 +578,11 @@
         <el-form-item label="数量">
           <el-input-number v-model="genForm.quantity" :min="1" :max="500" style="width: 100%" />
         </el-form-item>
-        <el-form-item label="覆盖时长(天，可选)">
-          <el-input-number v-model="genForm.duration_days" :min="1" :max="3650" style="width: 100%" />
-        </el-form-item>
+        <el-alert
+          type="info"
+          :closable="false"
+          title="卡密时长统一使用所选Key规格配置，不再支持覆盖时长。"
+        />
         <el-form-item label="卡密有效期(天，可选)">
           <el-input-number v-model="genForm.valid_days" :min="1" :max="3650" style="width: 100%" />
         </el-form-item>
@@ -538,6 +617,15 @@
           <el-input-number
             v-model="developerAppCreateForm.max_accounts"
             :min="0"
+            :step="1"
+            controls-position="right"
+            style="width: 100%"
+          />
+        </el-form-item>
+        <el-form-item label="分配权重">
+          <el-input-number
+            v-model="developerAppCreateForm.selection_weight"
+            :min="1"
             :step="1"
             controls-position="right"
             style="width: 100%"
@@ -600,6 +688,14 @@
             style="width: 100%"
           />
         </el-form-item>
+        <el-form-item label="分配权重">
+          <el-input-number
+            v-model="developerAppEditDialog.form.selection_weight"
+            :min="1"
+            controls-position="right"
+            style="width: 100%"
+          />
+        </el-form-item>
         <el-form-item label="备注">
           <el-input v-model.trim="developerAppEditDialog.form.notes" />
         </el-form-item>
@@ -643,6 +739,7 @@ import type {
   AdminAuditLog,
   AdminCard,
   AdminDeveloperApp,
+  AdminDeveloperAppSettings,
   AdminPlan,
   AdminPurchaseSettings,
   AdminProxy,
@@ -652,17 +749,22 @@ import {
   adminAddProxy,
   adminAssignProxy,
   adminCheckProxyHealth,
+  adminCheckDeveloperAppHealth,
+  adminCreatePlan,
   adminCreateDeveloperApp,
+  adminDeletePlan,
   adminDeleteProxy,
   adminDeleteAccount,
   adminDisableCard,
   adminEnableCard,
+  adminExportCardsXlsx,
   adminGetPurchaseSettings,
   adminGenerateCards,
   adminListDeveloperApps,
   adminListAccountOptions,
   adminListAuditLogs,
   adminListCards,
+  adminGetDeveloperAppSettings,
   adminListPlans,
   adminListProxies,
   adminListUserAccounts,
@@ -672,14 +774,14 @@ import {
   adminSetUserDeveloperApp,
   adminUnassignProxy,
   adminUpdateDeveloperApp,
+  adminUpdateDeveloperAppSettings,
   adminUpdatePurchaseSettings,
   adminUpdatePlan,
-  adminUpdateUserSubscription,
-  adminUpdateUserTgAccountLimit,
   hasAdminToken,
 } from '@/api/admin'
 
-const activeTab = ref('billing')
+const activeTab = ref('licenses')
+const licenseSubTab = ref('config')
 const router = useRouter()
 
 const plans = ref<AdminPlan[]>([])
@@ -694,17 +796,34 @@ const generateCardDialogVisible = ref(false)
 const proxyCreateDialogVisible = ref(false)
 const developerAppCreateDialogVisible = ref(false)
 const generating = ref(false)
+const exportingCards = ref(false)
 const addingProxy = ref(false)
 const creatingDeveloperApp = ref(false)
+const developerAppSettingsSaving = ref(false)
 const proxyAssigning = ref<Record<number, boolean>>({})
 const proxyHealthChecking = ref<Record<number, boolean>>({})
+const developerAppHealthChecking = ref<Record<number, boolean>>({})
 const userDeveloperAppSaving = ref<Record<number, boolean>>({})
 const purchaseSaving = ref(false)
+const cardsPagination = reactive({
+  currentPage: 1,
+  pageSize: 20,
+  total: 0,
+})
+const cardStats = reactive({
+  total: 0,
+  used: 0,
+  unused: 0,
+})
 
 const cardFilter = reactive({
   plan_code: '',
   is_used: undefined as boolean | undefined,
   is_active: undefined as boolean | undefined,
+})
+const cardSort = reactive({
+  sort_by: 'created_at' as 'created_at' | 'used_at' | 'expires_at',
+  sort_order: 'desc' as 'asc' | 'desc',
 })
 
 const auditFilter = reactive({
@@ -729,6 +848,11 @@ const purchaseSettings = reactive<AdminPurchaseSettings>({
 })
 
 const userDeveloperAppDraft = reactive<Record<number, number | null>>({})
+const developerAppSettings = reactive<AdminDeveloperAppSettings>({
+  assignment_mode: 'round_robin',
+  alert_tg_user_ids: [],
+  alert_tg_user_ids_text: '',
+})
 
 const developerAppCreateForm = reactive({
   app_name: '',
@@ -736,6 +860,7 @@ const developerAppCreateForm = reactive({
   api_hash: '',
   is_active: true,
   max_accounts: 0,
+  selection_weight: 100,
   notes: '',
 })
 
@@ -748,6 +873,7 @@ const developerAppEditDialog = reactive({
     api_hash: '',
     is_active: true,
     max_accounts: 0,
+    selection_weight: 100,
     notes: '',
   },
 })
@@ -755,7 +881,6 @@ const developerAppEditDialog = reactive({
 const genForm = reactive({
   plan_code: '',
   quantity: 10,
-  duration_days: undefined as number | undefined,
   valid_days: undefined as number | undefined,
   prefix: '',
 })
@@ -766,36 +891,24 @@ const planDialog = reactive({
   planCode: '',
   form: {
     display_name: '',
+    billing_cycle: 'monthly',
     price_cents: 20000,
     duration_days: 30,
-    max_tg_accounts: 0,
     is_active: true,
   },
 })
 
-const subDialog = reactive({
+const planCreateDialog = reactive({
   visible: false,
   saving: false,
-  userId: 0,
-  userLabel: '',
   form: {
-    plan_code: '' as string | null,
-    end_at: '' as string | null,
-    extend_days: undefined as number | undefined,
-    set_inactive: false,
-  },
-})
-
-const limitDialog = reactive({
-  visible: false,
-  saving: false,
-  userId: 0,
-  userLabel: '',
-  accountCount: 0,
-  effectiveLimit: 0,
-  form: {
-    use_plan_default: true,
-    max_tg_accounts_override: 0,
+    plan_code: '',
+    display_name: '',
+    billing_cycle: 'custom',
+    price_cents: 10000,
+    duration_days: 30,
+    sort_order: 0,
+    is_active: true,
   },
 })
 
@@ -817,6 +930,22 @@ const formatDateTime = (value?: string | null) => {
   return `${y}-${m}-${d} ${hh}:${mm}`
 }
 
+const parseBlobErrorMessage = async (error: any): Promise<string> => {
+  const fallback = error?.message || '请求失败'
+  const data = error?.response?.data
+  if (!data) return fallback
+  if (data instanceof Blob) {
+    try {
+      const text = await data.text()
+      const json = JSON.parse(text)
+      return json?.detail || fallback
+    } catch {
+      return fallback
+    }
+  }
+  return data?.detail || fallback
+}
+
 const loadPlans = async () => {
   const res = await adminListPlans()
   plans.value = res.data || []
@@ -836,9 +965,54 @@ const loadCards = async () => {
     plan_code: cardFilter.plan_code || undefined,
     is_used: cardFilter.is_used,
     is_active: cardFilter.is_active,
-    limit: 100,
+    sort_by: cardSort.sort_by,
+    sort_order: cardSort.sort_order,
+    limit: cardsPagination.pageSize,
+    offset: (cardsPagination.currentPage - 1) * cardsPagination.pageSize,
   })
-  cards.value = res.data || []
+  cards.value = res.data?.items || []
+  cardsPagination.total = Number(res.data?.total || 0)
+  cardStats.total = Number(res.data?.stats?.total || 0)
+  cardStats.used = Number(res.data?.stats?.used || 0)
+  cardStats.unused = Number(res.data?.stats?.unused || 0)
+}
+
+const applyCardFilters = async () => {
+  cardsPagination.currentPage = 1
+  await loadCards()
+}
+
+const handleCardsPageChange = async (page: number) => {
+  cardsPagination.currentPage = page
+  await loadCards()
+}
+
+const handleCardsSizeChange = async (size: number) => {
+  cardsPagination.pageSize = size
+  cardsPagination.currentPage = 1
+  await loadCards()
+}
+
+const deletePlan = async (row: AdminPlan) => {
+  try {
+    await ElMessageBox.confirm(
+      `将删除 Key规格「${row.display_name}」，并自动停用该规格下所有未使用卡密；已使用卡密仅保留历史记录。确认继续吗？`,
+      '删除Key规格',
+      {
+        type: 'warning',
+        confirmButtonText: '确认删除',
+        cancelButtonText: '取消',
+      },
+    )
+  } catch {
+    return
+  }
+
+  const res = await adminDeletePlan(row.plan_code)
+  ElMessage.success(
+    `Key规格已删除，已停用未使用卡密 ${res.data?.disabled_unused_cards || 0} 个，保留已使用卡密 ${res.data?.used_cards_kept || 0} 个`,
+  )
+  await Promise.all([loadPlans(), loadCards(), loadAuditLogs()])
 }
 
 const loadUsers = async () => {
@@ -852,6 +1026,18 @@ const loadUsers = async () => {
 const loadDeveloperApps = async () => {
   const res = await adminListDeveloperApps()
   developerApps.value = res.data?.apps || []
+  if (res.data?.settings) {
+    developerAppSettings.assignment_mode = res.data.settings.assignment_mode || 'round_robin'
+    developerAppSettings.alert_tg_user_ids = res.data.settings.alert_tg_user_ids || []
+    developerAppSettings.alert_tg_user_ids_text = res.data.settings.alert_tg_user_ids_text || ''
+  }
+}
+
+const loadDeveloperAppSettings = async () => {
+  const res = await adminGetDeveloperAppSettings()
+  developerAppSettings.assignment_mode = res.data?.assignment_mode || 'round_robin'
+  developerAppSettings.alert_tg_user_ids = res.data?.alert_tg_user_ids || []
+  developerAppSettings.alert_tg_user_ids_text = res.data?.alert_tg_user_ids_text || ''
 }
 
 const loadAuditLogs = async () => {
@@ -884,6 +1070,7 @@ const loadAll = async () => {
     loadPurchaseSettings(),
     loadCards(),
     loadDeveloperApps(),
+    loadDeveloperAppSettings(),
     loadUsers(),
     loadAuditLogs(),
     loadProxies(),
@@ -911,7 +1098,7 @@ const savePurchaseSettings = async () => {
 
 const handleGenerateCards = async () => {
   if (!genForm.plan_code) {
-    ElMessage.warning('请选择套餐')
+    ElMessage.warning('请选择Key规格')
     return
   }
   generating.value = true
@@ -919,7 +1106,6 @@ const handleGenerateCards = async () => {
     await adminGenerateCards({
       plan_code: genForm.plan_code,
       quantity: genForm.quantity,
-      duration_days: genForm.duration_days || undefined,
       valid_days: genForm.valid_days || undefined,
       prefix: genForm.prefix || '',
     })
@@ -927,8 +1113,46 @@ const handleGenerateCards = async () => {
     generateCardDialogVisible.value = false
     await loadCards()
     await loadAuditLogs()
+  } catch (error: any) {
+    const message = error?.response?.data?.detail || error?.message || '卡密生成失败，请稍后重试'
+    ElMessage.error(message)
   } finally {
     generating.value = false
+  }
+}
+
+const exportCardsXlsx = async () => {
+  exportingCards.value = true
+  try {
+    const blob = await adminExportCardsXlsx({
+      plan_code: cardFilter.plan_code || undefined,
+      is_used: cardFilter.is_used,
+      is_active: cardFilter.is_active,
+    })
+    const now = new Date()
+    const stamp = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, '0'),
+      String(now.getDate()).padStart(2, '0'),
+      '_',
+      String(now.getHours()).padStart(2, '0'),
+      String(now.getMinutes()).padStart(2, '0'),
+      String(now.getSeconds()).padStart(2, '0'),
+    ].join('')
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `cards_export_${stamp}.xlsx`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    window.URL.revokeObjectURL(url)
+    ElMessage.success('导出成功')
+  } catch (error: any) {
+    const message = await parseBlobErrorMessage(error)
+    ElMessage.error(message)
+  } finally {
+    exportingCards.value = false
   }
 }
 
@@ -946,9 +1170,9 @@ const toggleCard = async (cardCode: string, enable: boolean) => {
 const openPlanDialog = (plan: AdminPlan) => {
   planDialog.planCode = plan.plan_code
   planDialog.form.display_name = plan.display_name
+  planDialog.form.billing_cycle = plan.billing_cycle
   planDialog.form.price_cents = plan.price_cents
   planDialog.form.duration_days = plan.duration_days
-  planDialog.form.max_tg_accounts = plan.max_tg_accounts
   planDialog.form.is_active = plan.is_active
   planDialog.visible = true
 }
@@ -959,17 +1183,57 @@ const savePlan = async () => {
   try {
     await adminUpdatePlan(planDialog.planCode, {
       display_name: planDialog.form.display_name,
+      billing_cycle: planDialog.form.billing_cycle,
       price_cents: planDialog.form.price_cents,
       duration_days: planDialog.form.duration_days,
-      max_tg_accounts: planDialog.form.max_tg_accounts,
       is_active: planDialog.form.is_active,
     })
-    ElMessage.success('套餐已更新')
+    ElMessage.success('Key规格已更新')
     planDialog.visible = false
     await loadPlans()
     await loadAuditLogs()
   } finally {
     planDialog.saving = false
+  }
+}
+
+const openCreatePlanDialog = () => {
+  planCreateDialog.form.plan_code = ''
+  planCreateDialog.form.display_name = ''
+  planCreateDialog.form.billing_cycle = 'custom'
+  planCreateDialog.form.price_cents = 10000
+  planCreateDialog.form.duration_days = 30
+  planCreateDialog.form.sort_order = 0
+  planCreateDialog.form.is_active = true
+  planCreateDialog.visible = true
+}
+
+const createPlan = async () => {
+  if (!planCreateDialog.form.plan_code.trim()) {
+    ElMessage.warning('请填写Key规格编码')
+    return
+  }
+  if (!planCreateDialog.form.display_name.trim()) {
+    ElMessage.warning('请填写显示名称')
+    return
+  }
+  planCreateDialog.saving = true
+  try {
+    await adminCreatePlan({
+      plan_code: planCreateDialog.form.plan_code.trim(),
+      display_name: planCreateDialog.form.display_name.trim(),
+      billing_cycle: planCreateDialog.form.billing_cycle.trim() || 'custom',
+      price_cents: Number(planCreateDialog.form.price_cents),
+      duration_days: Number(planCreateDialog.form.duration_days),
+      sort_order: Number(planCreateDialog.form.sort_order || 0),
+      is_active: Boolean(planCreateDialog.form.is_active),
+    })
+    ElMessage.success('Key规格已创建')
+    planCreateDialog.visible = false
+    await loadPlans()
+    await loadAuditLogs()
+  } finally {
+    planCreateDialog.saving = false
   }
 }
 
@@ -985,26 +1249,6 @@ const resetPassword = async (userId: number) => {
   await adminResetUserPassword(userId, newPassword)
   ElMessage.success('密码重置成功')
   await loadAuditLogs()
-}
-
-const openSubscriptionDialog = (user: AdminUserSummary) => {
-  subDialog.userId = user.id
-  subDialog.userLabel = `${user.username} (#${user.id})`
-  subDialog.form.plan_code = user.subscription?.plan_code || null
-  subDialog.form.end_at = user.subscription?.end_at ? user.subscription.end_at.slice(0, 19) : null
-  subDialog.form.extend_days = undefined
-  subDialog.form.set_inactive = false
-  subDialog.visible = true
-}
-
-const openLimitDialog = (user: AdminUserSummary) => {
-  limitDialog.userId = user.id
-  limitDialog.userLabel = `${user.username} (#${user.id})`
-  limitDialog.accountCount = user.account_count
-  limitDialog.effectiveLimit = user.effective_max_tg_accounts || 0
-  limitDialog.form.use_plan_default = user.max_tg_accounts_override == null
-  limitDialog.form.max_tg_accounts_override = user.max_tg_accounts_override ?? 0
-  limitDialog.visible = true
 }
 
 const createDeveloperApp = async () => {
@@ -1028,6 +1272,7 @@ const createDeveloperApp = async () => {
       api_hash: developerAppCreateForm.api_hash.trim(),
       is_active: developerAppCreateForm.is_active,
       max_accounts: Number(developerAppCreateForm.max_accounts || 0),
+      selection_weight: Number(developerAppCreateForm.selection_weight || 100),
       notes: developerAppCreateForm.notes.trim() || undefined,
     })
     ElMessage.success('开发者应用已创建')
@@ -1036,6 +1281,7 @@ const createDeveloperApp = async () => {
     developerAppCreateForm.api_hash = ''
     developerAppCreateForm.is_active = true
     developerAppCreateForm.max_accounts = 0
+    developerAppCreateForm.selection_weight = 100
     developerAppCreateForm.notes = ''
     developerAppCreateDialogVisible.value = false
     await loadDeveloperApps()
@@ -1051,6 +1297,7 @@ const openDeveloperAppEdit = (app: AdminDeveloperApp) => {
   developerAppEditDialog.form.api_hash = ''
   developerAppEditDialog.form.is_active = app.is_active
   developerAppEditDialog.form.max_accounts = app.max_accounts
+  developerAppEditDialog.form.selection_weight = app.selection_weight
   developerAppEditDialog.form.notes = app.notes || ''
   developerAppEditDialog.visible = true
 }
@@ -1068,6 +1315,7 @@ const saveDeveloperAppEdit = async () => {
       api_hash: developerAppEditDialog.form.api_hash.trim() || undefined,
       is_active: developerAppEditDialog.form.is_active,
       max_accounts: Number(developerAppEditDialog.form.max_accounts || 0),
+      selection_weight: Number(developerAppEditDialog.form.selection_weight || 100),
       notes: developerAppEditDialog.form.notes.trim() || undefined,
     })
     const rotated = Number(response.data?.rotated_accounts || 0)
@@ -1083,11 +1331,38 @@ const saveDeveloperAppEdit = async () => {
   }
 }
 
+const saveDeveloperAppSettings = async () => {
+  developerAppSettingsSaving.value = true
+  try {
+    await adminUpdateDeveloperAppSettings({
+      assignment_mode: developerAppSettings.assignment_mode,
+      alert_tg_user_ids: developerAppSettings.alert_tg_user_ids_text || '',
+    })
+    ElMessage.success('开发者应用分配设置已更新')
+    await Promise.all([loadDeveloperApps(), loadAuditLogs()])
+  } finally {
+    developerAppSettingsSaving.value = false
+  }
+}
+
 const setDefaultDeveloperApp = async (appId: number) => {
   await adminSetDefaultDeveloperApp(appId)
   ElMessage.success('默认开发者应用已更新')
   await loadDeveloperApps()
   await loadAuditLogs()
+}
+
+const checkDeveloperApp = async (appId: number) => {
+  developerAppHealthChecking.value[appId] = true
+  try {
+    const res = await adminCheckDeveloperAppHealth(appId)
+    const migrated = res.data?.migrated_account_ids?.length || 0
+    const stalled = res.data?.stalled_account_ids?.length || 0
+    ElMessage.success(`检测完成：${res.data?.current_status || 'unknown'}，迁移 ${migrated} 个，待处理 ${stalled} 个`)
+    await Promise.all([loadDeveloperApps(), loadUsers(), loadAuditLogs()])
+  } finally {
+    developerAppHealthChecking.value[appId] = false
+  }
 }
 
 const saveUserDeveloperApp = async (user: AdminUserSummary) => {
@@ -1099,44 +1374,6 @@ const saveUserDeveloperApp = async (user: AdminUserSummary) => {
     await loadAuditLogs()
   } finally {
     userDeveloperAppSaving.value[user.id] = false
-  }
-}
-
-const saveSubscription = async () => {
-  if (!subDialog.userId) return
-  subDialog.saving = true
-  try {
-    await adminUpdateUserSubscription(subDialog.userId, {
-      plan_code: subDialog.form.plan_code || undefined,
-      end_at: subDialog.form.end_at || undefined,
-      extend_days: subDialog.form.extend_days,
-      set_inactive: subDialog.form.set_inactive,
-    })
-    ElMessage.success('订阅已更新')
-    subDialog.visible = false
-    await loadUsers()
-    await loadAuditLogs()
-  } finally {
-    subDialog.saving = false
-  }
-}
-
-const saveUserLimit = async () => {
-  if (!limitDialog.userId) return
-  limitDialog.saving = true
-  try {
-    await adminUpdateUserTgAccountLimit(limitDialog.userId, {
-      use_plan_default: limitDialog.form.use_plan_default,
-      max_tg_accounts_override: limitDialog.form.use_plan_default
-        ? null
-        : Number(limitDialog.form.max_tg_accounts_override || 0),
-    })
-    ElMessage.success('用户TG账号上限已更新')
-    limitDialog.visible = false
-    await loadUsers()
-    await loadAuditLogs()
-  } finally {
-    limitDialog.saving = false
   }
 }
 
@@ -1308,10 +1545,50 @@ h1 {
   font-weight: 600;
 }
 
+.card-header-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
 .toolbar {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.stats-item {
+  padding: 12px 14px;
+  border: 1px solid #ebeef5;
+  border-radius: 10px;
+  background: #fafafa;
+}
+
+.stats-label {
+  color: #909399;
+  font-size: 13px;
+}
+
+.stats-value {
+  margin-top: 6px;
+  font-size: 24px;
+  font-weight: 700;
+  color: #303133;
+}
+
+.text-warning {
+  color: #e6a23c;
+}
+
+.text-success {
+  color: #67c23a;
 }
 
 .user-dev-app-cell {
@@ -1327,6 +1604,10 @@ h1 {
 @media (max-width: 768px) {
   h1 {
     font-size: 20px;
+  }
+
+  .stats-row {
+    grid-template-columns: 1fr;
   }
 }
 </style>

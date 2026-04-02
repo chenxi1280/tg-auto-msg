@@ -10,7 +10,9 @@ import { hasAdminToken } from '@/api/admin'
 const routes: RouteRecordRaw[] = [
   {
     path: '/',
-    redirect: () => (isAuthenticated() ? '/accounts' : '/login')
+    name: 'Home',
+    component: () => import('@/views/Home.vue'),
+    meta: { title: '全球通' }
   },
   {
     path: '/login',
@@ -70,7 +72,7 @@ const routes: RouteRecordRaw[] = [
     path: '/purchase',
     name: 'Purchase',
     component: () => import('@/views/Purchase.vue'),
-    meta: { title: '购买套餐', requiresAuth: true }
+    meta: { title: '购买Key', requiresAuth: true }
   },
   {
     path: '/admin',
@@ -95,7 +97,7 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/:pathMatch(.*)*',
     name: 'NotFound',
-    redirect: () => (isAuthenticated() ? '/accounts' : '/login')
+    redirect: () => (isAuthenticated() ? '/accounts' : '/')
   }
 ]
 
@@ -121,6 +123,11 @@ router.beforeEach((to, _from, next) => {
 
   // 已登录时访问登录/注册页，统一回到主业务页
   if ((to.path === '/login' || to.path === '/register') && isAuthenticated()) {
+    next('/accounts')
+    return
+  }
+
+  if (to.path === '/' && isAuthenticated()) {
     next('/accounts')
     return
   }

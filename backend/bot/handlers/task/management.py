@@ -17,8 +17,9 @@ from backend.bot.handlers.core.helpers import (
     truncate_text as _truncate_text,
 )
 from backend.bot.handlers.task.queries import (
+    USER_MODE_ACCOUNT_SCOPED,
     get_user_task as _get_user_task,
-    resolve_db_user_id as _resolve_db_user_id,
+    resolve_actor_access_context as _resolve_actor_access_context,
 )
 from backend.bot.handlers.core.user_link import get_active_account_id as _get_active_account_id
 from backend.bot.ui.keyboards import (
@@ -89,37 +90,41 @@ async def show_task_list(event, user_id: int):
     from backend.bot.handlers.task.selector_context import clear_selector_context
     clear_selector_context(user_id)
 
-    if await get_onboarding_service().ensure_active_subscription(event, user_id) is None:
+    if await get_onboarding_service().ensure_registered_user(event, user_id) is None:
         return
 
     async with get_async_session() as session:
-        db_user_id = await _resolve_db_user_id(session, user_id)
+        access_ctx = await _resolve_actor_access_context(session, user_id)
+        db_user_id = access_ctx.system_user_id
         if db_user_id is None:
             if hasattr(event, "answer"):
                 await event.answer(
-                    "当前 Telegram 账号未完成系统注册，请先发送 /start。",
+                    "当前 Telegram 账号还未绑定系统账号，请先发送 /start，或回到 Web 首页点击“系统账号绑定到 TG Bot”。",
                     alert=True,
                 )
             else:
                 await event.respond(
-                    "⚠️ 当前 Telegram 账号未完成系统注册。\n\n"
-                    "请先发送 `/start`，在 Bot 内完成注册、激活和登录。",
+                    "⚠️ 当前 Telegram 账号还未绑定系统账号。\n\n"
+                    "请先发送 `/start`，或回到 Web 首页点击“系统账号绑定到 TG Bot”完成绑定。",
                     buttons=[[Button.inline("🚀 开始使用", data="bot_home")]],
                     parse_mode="markdown",
                 )
             return
 
-        result = await session.execute(
+        stmt = (
             select(ScheduledMessageTask)
             .where(ScheduledMessageTask.user_id == db_user_id)
             .order_by(ScheduledMessageTask.created_at.desc())
         )
+        if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED and access_ctx.scoped_account_id:
+            stmt = stmt.where(ScheduledMessageTask.account_id == str(access_ctx.scoped_account_id))
+        result = await session.execute(stmt)
         tasks = result.scalars().all()
 
     if not tasks:
         text = TASK_LIST_HEADER + TASK_EMPTY
         keyboard = [
-            [Button.inline("📋 新建任务", data="add_task")],
+            [Button.inline("➕ 新建任务", data="add_task")],
             [Button.inline("⬅️ 返回主菜单", data="bot_home")],
         ]
     else:
@@ -237,18 +242,21 @@ async def create_new_task(event, user_id: int):
     from backend.bot.onboarding import get_onboarding_service
     from backend.bot.handlers.task.selector_context import set_selector_context
 
-    if await get_onboarding_service().ensure_active_subscription(event, user_id) is None:
+    if await get_onboarding_service().ensure_registered_user(event, user_id) is None:
         return
 
     selected_account_id: str | None = None
 
     async with get_async_session() as session:
-        db_user_id = await _resolve_db_user_id(session, user_id)
+        access_ctx = await _resolve_actor_access_context(session, user_id)
+        db_user_id = access_ctx.system_user_id
         if db_user_id is None:
-            await event.answer("当前 Telegram 账号还未完成系统注册，请先发送 /start。", alert=True)
+            await event.answer("当前 Telegram 账号还未绑定系统账号，请先发送 /start，或回到 Web 首页点击“系统账号绑定到 TG Bot”。", alert=True)
             return
 
         preferred_account_id = await _get_active_account_id(session, user_id, db_user_id)
+        if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED and access_ctx.scoped_account_id:
+            preferred_account_id = str(access_ctx.scoped_account_id)
         if preferred_account_id:
             account_result = await session.execute(
                 select(Account).where(
@@ -260,6 +268,14 @@ async def create_new_task(event, user_id: int):
             preferred_account = account_result.scalar_one_or_none()
             if preferred_account:
                 selected_account_id = preferred_account.account_id
+        if (
+            access_ctx.mode == USER_MODE_ACCOUNT_SCOPED
+            and access_ctx.scoped_account_id
+            and selected_account_id is None
+        ):
+            await event.answer("当前账号不可用，请先重新绑定你的 Telegram 账号。", alert=True)
+            return
+
     draft_task_id = "__draft_new_task__"
     set_selector_context(
         user_id,
@@ -283,13 +299,21 @@ async def create_new_task_for_account(event, user_id: int, account_id: str):
     from backend.bot.onboarding import get_onboarding_service
     from backend.bot.handlers.task.selector_context import set_selector_context
 
-    if await get_onboarding_service().ensure_active_subscription(event, user_id) is None:
+    if await get_onboarding_service().ensure_registered_user(event, user_id) is None:
         return
 
     async with get_async_session() as session:
-        db_user_id = await _resolve_db_user_id(session, user_id)
+        access_ctx = await _resolve_actor_access_context(session, user_id)
+        db_user_id = access_ctx.system_user_id
         if db_user_id is None:
-            await event.answer("当前 Telegram 账号还未完成系统注册，请先发送 /start。", alert=True)
+            await event.answer("当前 Telegram 账号还未绑定系统账号，请先发送 /start，或回到 Web 首页点击“系统账号绑定到 TG Bot”。", alert=True)
+            return
+        if (
+            access_ctx.mode == USER_MODE_ACCOUNT_SCOPED
+            and access_ctx.scoped_account_id
+            and str(account_id) != str(access_ctx.scoped_account_id)
+        ):
+            await event.answer("受限模式下仅可为自己的账号创建任务。", alert=True)
             return
 
         account_result = await session.execute(
@@ -346,18 +370,11 @@ async def confirm_delete_task(event, user_id: int, task_id: str):
 async def delete_task(event, user_id: int, task_id: str):
     """删除任务。"""
     async with get_async_session() as session:
-        db_user_id = await _resolve_db_user_id(session, user_id)
-        if db_user_id is None:
-            await event.answer("当前 Telegram 账号还未完成系统注册，请先发送 /start。", alert=True)
+        task = await _get_user_task(session, task_id, user_id)
+        if not task:
+            await event.answer("任务不存在或无权限", alert=True)
             return
-
-        from sqlalchemy import delete
-        await session.execute(
-            delete(ScheduledMessageTask).where(
-                ScheduledMessageTask.task_id == task_id,
-                ScheduledMessageTask.user_id == db_user_id,
-            )
-        )
+        await session.delete(task)
         await session.commit()
 
     await event.answer("✅ 任务已删除")

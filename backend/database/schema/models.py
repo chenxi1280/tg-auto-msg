@@ -24,121 +24,51 @@ class User(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     username: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, comment="用户名")
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False, comment="密码哈希")
+    bot_initial_password_encrypted: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True, comment="Bot自动注册初始密码（加密）")
+    bot_initial_password_viewable: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, comment="是否允许在Bot中查看初始密码")
+    password_changed_after_bot_registration: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, comment="Bot自动注册后是否已修改密码")
+    bot_trial_eligible_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="Bot首绑试用资格获得时间")
+    bot_trial_granted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="Bot首绑试用套餐位发放时间")
+    bot_trial_slot_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, comment="Bot首绑试用套餐位ID")
     email: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, comment="邮箱")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, comment="是否激活")
-    max_tg_accounts_override: Mapped[Optional[int]] = mapped_column(
-        Integer,
-        nullable=True,
-        comment="TG 账号数量上限覆盖值；NULL=跟随套餐，0=不限制",
-    )
-
     # 时间戳
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     # 关系
     accounts: Mapped[List["Account"]] = relationship("Account", back_populates="user", cascade="all, delete-orphan")
-    subscriptions: Mapped[List["UserSubscription"]] = relationship(
-        "UserSubscription",
-        back_populates="user",
-        cascade="all, delete-orphan",
-    )
     activated_cards: Mapped[List["ActivationCard"]] = relationship(
         "ActivationCard",
         back_populates="used_by_user",
     )
+    license_slots: Mapped[List["UserLicenseSlot"]] = relationship(
+        "UserLicenseSlot",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 class PricingPlan(Base):
-    """收费套餐配置"""
+    """Key 规格配置"""
     __tablename__ = "pricing_plans"
 
-    plan_code: Mapped[str] = mapped_column(String(32), primary_key=True, comment="套餐编码：monthly/yearly")
-    display_name: Mapped[str] = mapped_column(String(100), nullable=False, comment="套餐展示名称")
+    plan_code: Mapped[str] = mapped_column(String(32), primary_key=True, comment="Key规格编码：monthly/yearly")
+    display_name: Mapped[str] = mapped_column(String(100), nullable=False, comment="Key规格展示名称")
     billing_cycle: Mapped[str] = mapped_column(String(20), nullable=False, comment="计费周期：monthly/yearly")
     price_cents: Mapped[int] = mapped_column(Integer, nullable=False, comment="价格（分）")
-    duration_days: Mapped[int] = mapped_column(Integer, nullable=False, comment="开通时长（天）")
-    max_tg_accounts: Mapped[int] = mapped_column(
-        Integer,
-        default=0,
-        nullable=False,
-        comment="套餐默认可登录的 TG 账号数量；0=不限制",
-    )
+    duration_days: Mapped[int] = mapped_column(Integer, nullable=False, comment="授权时长（天）")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, comment="是否启用")
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False, comment="排序")
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
-    subscriptions: Mapped[List["UserSubscription"]] = relationship("UserSubscription", back_populates="plan")
     activation_cards: Mapped[List["ActivationCard"]] = relationship("ActivationCard", back_populates="plan")
 
     __table_args__ = (
         Index("idx_pricing_plans_is_active", "is_active", "sort_order"),
     )
-
-
-class UserSubscription(Base):
-    """用户订阅表"""
-    __tablename__ = "user_subscriptions"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(
-        Integer,
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-        comment="系统用户 ID",
-    )
-    plan_code: Mapped[Optional[str]] = mapped_column(
-        String(32),
-        ForeignKey("pricing_plans.plan_code", ondelete="SET NULL"),
-        nullable=True,
-        comment="套餐编码",
-    )
-    source: Mapped[str] = mapped_column(String(20), default="card", nullable=False, comment="来源：card/admin")
-    card_code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, comment="激活时使用的卡密")
-    start_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, comment="开始时间")
-    end_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, comment="到期时间")
-    status: Mapped[str] = mapped_column(String(20), default="active", nullable=False, comment="状态：active/expired/cancelled")
-
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-
-    user: Mapped["User"] = relationship("User", back_populates="subscriptions")
-    plan: Mapped[Optional["PricingPlan"]] = relationship("PricingPlan", back_populates="subscriptions")
-
-    __table_args__ = (
-        Index("idx_user_subscriptions_user_status", "user_id", "status"),
-        Index("idx_user_subscriptions_end_at", "end_at"),
-    )
-
-
-class SubscriptionNoticeLog(Base):
-    """订阅到期提醒发送记录"""
-    __tablename__ = "subscription_notice_logs"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    subscription_id: Mapped[int] = mapped_column(
-        Integer,
-        ForeignKey("user_subscriptions.id", ondelete="CASCADE"),
-        nullable=False,
-        comment="订阅 ID",
-    )
-    user_id: Mapped[int] = mapped_column(
-        Integer,
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-        comment="系统用户 ID",
-    )
-    days_before: Mapped[int] = mapped_column(Integer, nullable=False, comment="距到期前天数")
-    sent_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False, comment="发送时间")
-
-    __table_args__ = (
-        UniqueConstraint("subscription_id", "days_before", name="uq_subscription_notice_once"),
-        Index("idx_subscription_notice_user_id", "user_id"),
-        Index("idx_subscription_notice_sent_at", "sent_at"),
-    )
-
 
 class ActivationCard(Base):
     """卡密表"""
@@ -169,10 +99,163 @@ class ActivationCard(Base):
 
     plan: Mapped[Optional["PricingPlan"]] = relationship("PricingPlan", back_populates="activation_cards")
     used_by_user: Mapped[Optional["User"]] = relationship("User", back_populates="activated_cards")
+    slot_usages: Mapped[List["UserLicenseSlotCard"]] = relationship(
+        "UserLicenseSlotCard",
+        back_populates="activation_card",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         Index("idx_activation_cards_is_used", "is_used", "is_active"),
         Index("idx_activation_cards_plan_code", "plan_code"),
+    )
+
+
+class UserLicenseSlot(Base):
+    """系统用户下的可独立计费套餐位。"""
+    __tablename__ = "user_license_slots"
+
+    slot_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="归属系统用户 ID",
+    )
+    current_account_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey("accounts.account_id", ondelete="SET NULL"),
+        nullable=True,
+        comment="当前绑定的 TG 账号 ID",
+    )
+    source_card_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("activation_cards.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="首次创建该套餐位的卡密 ID",
+    )
+    grant_source: Mapped[str] = mapped_column(
+        String(20),
+        default="card",
+        nullable=False,
+        comment="套餐位来源：card/bot_trial",
+    )
+    total_duration_days: Mapped[int] = mapped_column(Integer, default=0, nullable=False, comment="累计授权天数")
+    start_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, comment="首次生效时间")
+    end_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, comment="当前到期时间")
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default="active",
+        nullable=False,
+        comment="状态：active/expired/disabled",
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    user: Mapped["User"] = relationship("User", back_populates="license_slots")
+    current_account: Mapped[Optional["Account"]] = relationship("Account", foreign_keys=[current_account_id])
+    source_card: Mapped[Optional["ActivationCard"]] = relationship("ActivationCard", foreign_keys=[source_card_id])
+    card_usages: Mapped[List["UserLicenseSlotCard"]] = relationship(
+        "UserLicenseSlotCard",
+        back_populates="slot",
+        cascade="all, delete-orphan",
+    )
+    bindings: Mapped[List["UserLicenseSlotBinding"]] = relationship(
+        "UserLicenseSlotBinding",
+        back_populates="slot",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        Index("idx_user_license_slots_user_status", "user_id", "status"),
+        Index("idx_user_license_slots_account", "current_account_id"),
+        Index("idx_user_license_slots_end_at", "end_at"),
+    )
+
+
+class UserLicenseSlotCard(Base):
+    """套餐位所消费的激活 key 记录。"""
+    __tablename__ = "user_license_slot_cards"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    slot_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("user_license_slots.slot_id", ondelete="CASCADE"),
+        nullable=False,
+        comment="套餐位 ID",
+    )
+    activation_card_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("activation_cards.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="卡密 ID",
+    )
+    duration_days: Mapped[int] = mapped_column(Integer, nullable=False, comment="本次增加时长（天）")
+    applied_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False, comment="应用时间")
+
+    slot: Mapped["UserLicenseSlot"] = relationship("UserLicenseSlot", back_populates="card_usages")
+    activation_card: Mapped["ActivationCard"] = relationship("ActivationCard", back_populates="slot_usages")
+
+    __table_args__ = (
+        UniqueConstraint("activation_card_id", name="uq_user_license_slot_cards_activation_card_id"),
+        Index("idx_user_license_slot_cards_slot_id", "slot_id"),
+    )
+
+
+class UserLicenseSlotBinding(Base):
+    """套餐位与 TG 账号的切换历史。"""
+    __tablename__ = "user_license_slot_bindings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    slot_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("user_license_slots.slot_id", ondelete="CASCADE"),
+        nullable=False,
+        comment="套餐位 ID",
+    )
+    account_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("accounts.account_id", ondelete="CASCADE"),
+        nullable=False,
+        comment="TG 账号 ID",
+    )
+    bind_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False, comment="绑定时间")
+    unbind_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="解绑时间")
+    unbind_reason: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, comment="解绑原因")
+
+    slot: Mapped["UserLicenseSlot"] = relationship("UserLicenseSlot", back_populates="bindings")
+    account: Mapped["Account"] = relationship("Account")
+
+    __table_args__ = (
+        Index("idx_user_license_slot_bindings_slot_id", "slot_id"),
+        Index("idx_user_license_slot_bindings_account_id", "account_id"),
+    )
+
+
+class SlotNoticeLog(Base):
+    """套餐位到期提醒发送记录。"""
+    __tablename__ = "slot_notice_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    slot_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("user_license_slots.slot_id", ondelete="CASCADE"),
+        nullable=False,
+        comment="套餐位 ID",
+    )
+    user_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="系统用户 ID",
+    )
+    days_before: Mapped[int] = mapped_column(Integer, nullable=False, comment="距到期前天数")
+    sent_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False, comment="发送时间")
+
+    __table_args__ = (
+        UniqueConstraint("slot_id", "days_before", name="uq_slot_notice_once"),
+        Index("idx_slot_notice_user_id", "user_id"),
+        Index("idx_slot_notice_sent_at", "sent_at"),
     )
 
 
@@ -207,6 +290,14 @@ class ProxyType(str, Enum):
     MTPROTO = "mtproto"
 
 
+class DeveloperAppHealthStatus(str, Enum):
+    """开发者应用健康状态枚举"""
+    HEALTHY = "healthy"
+    UNHEALTHY = "unhealthy"
+    CHECKING = "checking"
+    DISABLED = "disabled"
+
+
 class TelegramDeveloperApp(Base):
     """Telegram 开发者应用凭证池（多 API_ID/API_HASH）"""
     __tablename__ = "telegram_developer_apps"
@@ -217,6 +308,12 @@ class TelegramDeveloperApp(Base):
     api_hash_encrypted: Mapped[str] = mapped_column(Text, nullable=False, comment="加密存储的 API_HASH")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, comment="是否可分配使用")
     max_accounts: Mapped[int] = mapped_column(Integer, default=0, nullable=False, comment="最大账号数，0 表示不限制")
+    selection_weight: Mapped[int] = mapped_column(Integer, default=100, nullable=False, comment="自动分配权重")
+    health_status: Mapped[str] = mapped_column(String(20), default=DeveloperAppHealthStatus.HEALTHY.value, nullable=False, comment="健康状态")
+    last_health_check_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="最近健康检查时间")
+    last_health_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="最近健康检查错误")
+    last_health_latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="最近健康检查耗时（毫秒）")
+    health_fail_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False, comment="连续健康检查失败次数")
     credentials_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False, comment="凭证版本号")
     last_rotated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="最近凭证轮换时间")
     notes: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="备注")
@@ -229,6 +326,7 @@ class TelegramDeveloperApp(Base):
 
     __table_args__ = (
         Index("idx_telegram_developer_apps_active", "is_active"),
+        Index("idx_telegram_developer_apps_health_status", "health_status"),
     )
 
     def __repr__(self) -> str:

@@ -11,8 +11,8 @@
           </div>
         </div>
         <nav class="nav">
-          <router-link v-if="!isAuthenticated" to="/login" class="nav-link">Web 登录</router-link>
-          <router-link v-if="!isAuthenticated" to="/register" class="nav-link">Web 注册</router-link>
+          <router-link v-if="!isAuthenticated" to="/register" class="nav-link">注册</router-link>
+          <router-link v-if="!isAuthenticated" to="/login" class="nav-link">登录</router-link>
           <router-link v-if="isAuthenticated" to="/accounts" class="nav-link">账号管理</router-link>
           <router-link v-if="isAuthenticated" to="/resources" class="nav-link">资源列表</router-link>
           <router-link v-if="isAuthenticated" to="/proxies" class="nav-link">代理管理</router-link>
@@ -28,18 +28,24 @@
         <div class="hero">
           <h2>欢迎使用全球通</h2>
           <p class="description">
-            全球通以 Telegram Bot 为主入口，Web 端作为补充管理后台，支持账号、任务、订阅与资源查看
+            全球通以 Telegram Bot 为主入口，Web 端作为补充管理后台，支持账号、任务、套餐位与资源查看
           </p>
           <p class="bot-description">
-            推荐流程：先在 Bot 内完成注册、卡密激活与扫码登录，再回到 Web 端做更完整的管理操作。
+            推荐流程：先在 TG Bot 内完成注册、卡密激活与扫码登录，再回到 Web 端做更完整的管理操作。
           </p>
           <div class="actions">
-            <router-link v-if="!isAuthenticated" to="/login" class="btn btn-primary">
-              进入 Web 后台
+            <router-link v-if="!isAuthenticated" to="/register" class="btn btn-primary">
+              立即注册
+            </router-link>
+            <router-link v-if="!isAuthenticated" to="/login" class="btn btn-secondary">
+              立即登录
             </router-link>
             <router-link v-else to="/accounts" class="btn btn-primary">
               管理账号
             </router-link>
+            <button v-if="isAuthenticated" class="btn btn-secondary" type="button" @click="goBindBot">
+              系统账号绑定到 TG Bot
+            </button>
           </div>
         </div>
 
@@ -48,7 +54,7 @@
           <div class="feature-card">
             <div class="feature-icon">🔐</div>
             <h3>Bot 注册激活</h3>
-            <p>关注管理 Bot 后即可完成注册、套餐激活和账号绑定</p>
+            <p>关注管理 Bot 后即可完成注册、Key 激活和账号绑定</p>
           </div>
           <div class="feature-card">
             <div class="feature-icon">👥</div>
@@ -90,10 +96,25 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
+import { createBotBindLink } from '@/api/login'
 
 const userStore = useUserStore()
 const isAuthenticated = computed(() => userStore.isAuthenticated)
+
+const goBindBot = async () => {
+  try {
+    const res = await createBotBindLink()
+    if (!res.data.bot_bind_url) {
+      ElMessage.warning('当前未配置 TG Bot 入口，请稍后重试')
+      return
+    }
+    window.location.href = res.data.bot_bind_url
+  } catch (err: any) {
+    ElMessage.error(err.message || '生成 Bot 绑定入口失败')
+  }
+}
 </script>
 
 <style scoped>
@@ -213,6 +234,17 @@ const isAuthenticated = computed(() => userStore.isAuthenticated)
 .btn-primary:hover {
   transform: translateY(-2px);
   box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
+
+.btn-secondary {
+  background: white;
+  color: #667eea;
+  border: 1px solid rgba(102, 126, 234, 0.35);
+}
+
+.btn-secondary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.18);
 }
 
 .features {

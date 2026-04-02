@@ -1,6 +1,5 @@
-"""Admin billing service package."""
+"""Admin license service package."""
 
-from backend.h5_backend.services.admin.service import AdminBillingService, get_admin_billing_service
+from backend.h5_backend.services.admin.service import AdminLicenseService, get_admin_license_service
 
-__all__ = ["AdminBillingService", "get_admin_billing_service"]
-
+__all__ = ["AdminLicenseService", "get_admin_license_service"]

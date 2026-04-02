@@ -26,6 +26,12 @@ CREATE TABLE IF NOT EXISTS users (
     -- 用户凭证
     username VARCHAR(50) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
+    bot_initial_password_encrypted VARCHAR(1024),
+    bot_initial_password_viewable BOOLEAN DEFAULT FALSE NOT NULL,
+    password_changed_after_bot_registration BOOLEAN DEFAULT FALSE NOT NULL,
+    bot_trial_eligible_at TIMESTAMP,
+    bot_trial_granted_at TIMESTAMP,
+    bot_trial_slot_id VARCHAR(36),
 
     -- 用户信息
     email VARCHAR(100),
@@ -49,11 +55,17 @@ WHERE email IS NOT NULL;
 COMMENT ON TABLE users IS '系统用户表';
 COMMENT ON COLUMN users.username IS '用户名（唯一）';
 COMMENT ON COLUMN users.password_hash IS '密码哈希（bcrypt）';
+COMMENT ON COLUMN users.bot_initial_password_encrypted IS 'Bot自动注册初始密码（加密）';
+COMMENT ON COLUMN users.bot_initial_password_viewable IS '是否允许在Bot中查看初始密码';
+COMMENT ON COLUMN users.password_changed_after_bot_registration IS 'Bot自动注册后是否已修改密码';
+COMMENT ON COLUMN users.bot_trial_eligible_at IS 'Bot首绑试用资格获得时间';
+COMMENT ON COLUMN users.bot_trial_granted_at IS 'Bot首绑试用套餐位发放时间';
+COMMENT ON COLUMN users.bot_trial_slot_id IS 'Bot首绑试用套餐位ID';
 COMMENT ON COLUMN users.email IS '电子邮箱';
 COMMENT ON COLUMN users.is_active IS '是否激活';
 
 -- ============================================
--- 表: 套餐配置表 (pricing_plans)
+-- 表: Key 规格表 (pricing_plans)
 -- ============================================
 CREATE TABLE IF NOT EXISTS pricing_plans (
     plan_code VARCHAR(32) PRIMARY KEY,
@@ -71,8 +83,8 @@ CREATE INDEX IF NOT EXISTS idx_pricing_plans_is_active ON pricing_plans(is_activ
 
 INSERT INTO pricing_plans (plan_code, display_name, billing_cycle, price_cents, duration_days, is_active, sort_order)
 VALUES
-    ('monthly', '月付套餐', 'monthly', 20000, 30, TRUE, 10),
-    ('yearly', '年付套餐', 'yearly', 110000, 365, TRUE, 20)
+    ('monthly', '月付Key', 'monthly', 20000, 30, TRUE, 10),
+    ('yearly', '年付Key', 'yearly', 110000, 365, TRUE, 20)
 ON CONFLICT (plan_code) DO UPDATE
 SET
     display_name = EXCLUDED.display_name,
@@ -82,28 +94,7 @@ SET
     is_active = EXCLUDED.is_active,
     sort_order = EXCLUDED.sort_order;
 
-COMMENT ON TABLE pricing_plans IS '收费套餐配置表';
-
--- ============================================
--- 表: 用户订阅表 (user_subscriptions)
--- ============================================
-CREATE TABLE IF NOT EXISTS user_subscriptions (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    plan_code VARCHAR(32) REFERENCES pricing_plans(plan_code) ON DELETE SET NULL,
-    source VARCHAR(20) DEFAULT 'card' NOT NULL,
-    card_code VARCHAR(64),
-    start_at TIMESTAMP NOT NULL,
-    end_at TIMESTAMP NOT NULL,
-    status VARCHAR(20) DEFAULT 'active' NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_user_subscriptions_user_status ON user_subscriptions(user_id, status);
-CREATE INDEX IF NOT EXISTS idx_user_subscriptions_end_at ON user_subscriptions(end_at);
-
-COMMENT ON TABLE user_subscriptions IS '用户订阅记录表';
+COMMENT ON TABLE pricing_plans IS 'Key规格配置表';
 
 -- ============================================
 -- 表: 卡密表 (activation_cards)
@@ -691,12 +682,6 @@ CREATE TRIGGER update_telegram_developer_apps_updated_at
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
-DROP TRIGGER IF EXISTS update_user_subscriptions_updated_at ON user_subscriptions;
-CREATE TRIGGER update_user_subscriptions_updated_at
-    BEFORE UPDATE ON user_subscriptions
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
 DROP TRIGGER IF EXISTS update_activation_cards_updated_at ON activation_cards;
 CREATE TRIGGER update_activation_cards_updated_at
     BEFORE UPDATE ON activation_cards
@@ -738,7 +723,6 @@ WHERE table_schema = 'public'
   AND table_name IN (
     'users',
     'pricing_plans',
-    'user_subscriptions',
     'activation_cards',
     'admin_audit_logs',
     'app_settings',

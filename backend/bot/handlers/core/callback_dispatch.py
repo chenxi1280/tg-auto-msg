@@ -9,9 +9,11 @@ from telethon import Button
 from backend.bot.state.fsm import FSMState, fsm_storage
 from backend.bot.handlers.core.auth_gate import require_db_user_id
 from backend.bot.handlers.account.management import (
+    bind_available_slot,
+    bind_specific_slot,
     confirm_unbind_account,
-    refresh_bind_code,
     relogin_account,
+    renew_account_slot,
     set_current_account,
     show_account_menu,
     show_accounts_list,
@@ -282,23 +284,53 @@ async def _handle_bot_reg_manual(event, user_id: int):
 
 
 async def _handle_bot_activate(event, user_id: int):
-    await get_onboarding_service().start_activation(event, user_id)
+    await get_onboarding_service().show_activation_menu(event, user_id)
+
+
+async def _handle_bot_activate_new(event, user_id: int):
+    await get_onboarding_service().start_activation_for_new_slot(event, user_id)
+
+
+async def _handle_bot_activate_renew(event, user_id: int):
+    await get_onboarding_service().start_activation_for_existing_slot(event, user_id)
 
 
 async def _handle_bot_purchase(event, user_id: int):
     await get_onboarding_service().show_purchase(event, user_id)
 
 
-async def _handle_bot_subscription(event, user_id: int):
-    await get_onboarding_service().show_subscription(event, user_id)
+async def _handle_bot_slots(event, user_id: int):
+    await get_onboarding_service().show_slot_overview(event, user_id)
 
 
-async def _handle_bot_bind_codes(event, user_id: int):
-    await get_onboarding_service().show_bind_codes(event, user_id)
+async def _handle_bot_help(event, user_id: int):
+    await get_onboarding_service().show_help(event, user_id)
+
+
+async def _handle_bot_show_initial_password(event, user_id: int):
+    await get_onboarding_service().show_initial_password(event, user_id)
 
 
 async def _handle_bot_login_account(event, user_id: int):
     await get_onboarding_service().start_account_login(event, user_id)
+
+
+async def _handle_bot_login_qr(event, user_id: int, parts: list[str]):
+    existing_tg_user_id = int(parts[1]) if len(parts) > 1 and parts[1] else None
+    await get_onboarding_service().start_phone_account_login(
+        event,
+        user_id,
+        existing_tg_user_id=existing_tg_user_id,
+    )
+
+
+async def _handle_bot_login_phone(event, user_id: int, parts: list[str]):
+    existing_tg_user_id = int(parts[1]) if len(parts) > 1 and parts[1] else None
+    await get_onboarding_service().start_phone_account_login(
+        event,
+        user_id,
+        existing_tg_user_id=existing_tg_user_id,
+    )
 
 
 async def _handle_bot_cancel_login(event, user_id: int, parts: list[str]):
@@ -338,13 +370,6 @@ async def _handle_acc_relogin_callback(event, user_id: int, parts: list[str]):
     await relogin_account(event, user_id, parts[1])
 
 
-async def _handle_acc_bindcode_callback(event, user_id: int, parts: list[str]):
-    if len(parts) < 2:
-        await event.answer("参数错误", alert=True)
-        return
-    await refresh_bind_code(event, user_id, parts[1])
-
-
 async def _handle_acc_unbind_callback(event, user_id: int, parts: list[str]):
     if len(parts) < 2:
         await event.answer("参数错误", alert=True)
@@ -366,6 +391,34 @@ async def _handle_acc_add_task_callback(event, user_id: int, parts: list[str]):
     await create_new_task_for_account(event, user_id, parts[1])
 
 
+async def _handle_acc_bind_slot_callback(event, user_id: int, parts: list[str]):
+    if len(parts) < 2:
+        await event.answer("参数错误", alert=True)
+        return
+    await bind_available_slot(event, user_id, parts[1])
+
+
+async def _handle_acc_renew_slot_callback(event, user_id: int, parts: list[str]):
+    if len(parts) < 2:
+        await event.answer("参数错误", alert=True)
+        return
+    await renew_account_slot(event, user_id, parts[1])
+
+
+async def _handle_slot_renew_callback(event, user_id: int, parts: list[str]):
+    if len(parts) < 2:
+        await event.answer("参数错误", alert=True)
+        return
+    await get_onboarding_service().start_activation(event, user_id, slot_id=parts[1])
+
+
+async def _handle_acc_bind_slot_pick_callback(event, user_id: int, parts: list[str]):
+    if len(parts) < 3:
+        await event.answer("参数错误", alert=True)
+        return
+    await bind_specific_slot(event, user_id, parts[1], parts[2])
+
+
 _SIMPLE_ACTION_HANDLERS = {
     "accounts_list": show_accounts_list,
     "show_login_help": _handle_show_login_help,
@@ -381,15 +434,19 @@ _SIMPLE_ACTION_HANDLERS = {
 
 _PREAUTH_SIMPLE_ACTION_HANDLERS = {
     "bot_home": _handle_bot_home,
+    "bot_help": _handle_bot_help,
     "bot_reg_auto": _handle_bot_reg_auto,
     "bot_reg_manual": _handle_bot_reg_manual,
 }
 
 _BOT_ACTION_HANDLERS = {
+    "bot_help": _handle_bot_help,
     "bot_activate": _handle_bot_activate,
+    "bot_activate_new": _handle_bot_activate_new,
+    "bot_activate_renew": _handle_bot_activate_renew,
     "bot_purchase": _handle_bot_purchase,
-    "bot_subscription": _handle_bot_subscription,
-    "bot_bind_codes": _handle_bot_bind_codes,
+    "bot_slots": _handle_bot_slots,
+    "bot_show_initial_password": _handle_bot_show_initial_password,
     "bot_login_account": _handle_bot_login_account,
 }
 
@@ -436,10 +493,15 @@ _CUSTOM_ACTION_HANDLERS = {
     "acc_set_active": _handle_acc_set_active_callback,
     "acc_sync": _handle_acc_sync_callback,
     "acc_relogin": _handle_acc_relogin_callback,
-    "acc_bindcode": _handle_acc_bindcode_callback,
     "acc_unbind": _handle_acc_unbind_callback,
     "acc_unbind_confirm": _handle_acc_unbind_confirm_callback,
     "acc_add_task": _handle_acc_add_task_callback,
+    "acc_bind_slot": _handle_acc_bind_slot_callback,
+    "acc_bind_slot_pick": _handle_acc_bind_slot_pick_callback,
+    "acc_renew_slot": _handle_acc_renew_slot_callback,
+    "slot_renew": _handle_slot_renew_callback,
+    "bot_login_qr": _handle_bot_login_qr,
+    "bot_login_phone": _handle_bot_login_phone,
     "bot_cancel_login": _handle_bot_cancel_login,
 }
 

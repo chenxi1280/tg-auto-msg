@@ -23,8 +23,9 @@ from backend.bot.handlers.task.selector_context import (
     set_selector_context as _set_selector_context,
 )
 from backend.bot.handlers.task.queries import (
+    USER_MODE_ACCOUNT_SCOPED,
     get_user_task as _get_user_task,
-    resolve_db_user_id as _resolve_db_user_id,
+    resolve_actor_access_context as _resolve_actor_access_context,
 )
 from backend.bot.handlers.task.selector_ui import (
     TARGET_PAGE_SIZE,
@@ -33,6 +34,8 @@ from backend.bot.handlers.task.selector_ui import (
 )
 from backend.database.schema.models import Account, Resource, ScheduledMessageTask
 from backend.database.runtime.session import get_async_session
+from backend.h5_backend.services.licensing.service import require_account_task_permission
+from fastapi import HTTPException
 
 
 def _should_edit_event(event) -> bool:
@@ -58,12 +61,13 @@ async def start_select_task_account(event, user_id: int, task_id: str):
     draft_mode = bool(ctx.get("draft_mode"))
 
     async with get_async_session() as session:
-        db_user_id = await _resolve_db_user_id(session, user_id)
+        access_ctx = await _resolve_actor_access_context(session, user_id)
+        db_user_id = access_ctx.system_user_id
         if db_user_id is None:
             await event.answer("未找到系统用户，请先发送 /start 完成注册", alert=True)
             return
 
-        result = await session.execute(
+        stmt = (
             select(Account)
             .where(
                 Account.user_id == db_user_id,
@@ -71,6 +75,9 @@ async def start_select_task_account(event, user_id: int, task_id: str):
             )
             .order_by(Account.created_at.desc())
         )
+        if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED and access_ctx.scoped_account_id:
+            stmt = stmt.where(Account.account_id == str(access_ctx.scoped_account_id))
+        result = await session.execute(stmt)
         accounts = result.scalars().all()
 
         task = None if draft_mode else await _get_user_task(session, task_id, user_id)
@@ -125,6 +132,7 @@ async def start_select_task_targets(event, user_id: int, task_id: str, page: int
     search_query = str(ctx.get("search") or "").strip()
 
     async with get_async_session() as session:
+        access_ctx = await _resolve_actor_access_context(session, user_id)
         task = None if draft_mode else await _get_user_task(session, task_id, user_id)
         if not draft_mode and not task:
             logger.warning("edit selector context missing: user_id={}, task_id={}", user_id, task_id)
@@ -132,6 +140,14 @@ async def start_select_task_targets(event, user_id: int, task_id: str, page: int
             return
 
         account_id = str(ctx.get("account_id") or "") or ("" if task is None else str(task.account_id or ""))
+        if (
+            access_ctx.mode == USER_MODE_ACCOUNT_SCOPED
+            and access_ctx.scoped_account_id
+            and account_id
+            and str(account_id) != str(access_ctx.scoped_account_id)
+        ):
+            await event.answer("受限模式下仅可操作自己的账号目标。", alert=True)
+            return
         if not account_id:
             await event.answer("请先选择执行账号", alert=True)
             await start_select_task_account(event, user_id, task_id)
@@ -206,7 +222,8 @@ async def _handle_pick_account(event, user_id: int, account_id: str):
     task_id = str(ctx["task_id"])
     draft_mode = bool(ctx.get("draft_mode"))
     async with get_async_session() as session:
-        db_user_id = await _resolve_db_user_id(session, user_id)
+        access_ctx = await _resolve_actor_access_context(session, user_id)
+        db_user_id = access_ctx.system_user_id
         task = None if draft_mode else await _get_user_task(session, task_id, user_id)
         if (not draft_mode and not task) or db_user_id is None:
             logger.warning(
@@ -219,6 +236,14 @@ async def _handle_pick_account(event, user_id: int, account_id: str):
                 _selector_expired_message(True if draft_mode else False),
                 alert=True,
             )
+            return
+
+        if (
+            access_ctx.mode == USER_MODE_ACCOUNT_SCOPED
+            and access_ctx.scoped_account_id
+            and str(account_id) != str(access_ctx.scoped_account_id)
+        ):
+            await event.answer("受限模式下仅可选择自己的账号。", alert=True)
             return
 
         account_result = await session.execute(
@@ -379,9 +404,26 @@ async def _handle_pick_done(event, user_id: int):
             return
 
         async with get_async_session() as session:
-            db_user_id = await _resolve_db_user_id(session, user_id)
+            access_ctx = await _resolve_actor_access_context(session, user_id)
+            db_user_id = access_ctx.system_user_id
             if db_user_id is None:
-                await event.answer("当前 Telegram 账号还未完成系统注册，请先发送 /start。", alert=True)
+                await event.answer("当前 Telegram 账号还未绑定系统账号，请先发送 /start，或回到 Web 首页点击“系统账号绑定到 TG Bot”。", alert=True)
+                return
+            if (
+                access_ctx.mode == USER_MODE_ACCOUNT_SCOPED
+                and access_ctx.scoped_account_id
+                and str(account_id) != str(access_ctx.scoped_account_id)
+            ):
+                await event.answer("受限模式下仅可为自己的账号创建任务。", alert=True)
+                return
+            try:
+                await require_account_task_permission(
+                    account_id,
+                    session=session,
+                    action_text="创建自动发送任务",
+                )
+            except HTTPException as exc:
+                await event.answer(str(exc.detail), alert=True)
                 return
 
             task = ScheduledMessageTask(
@@ -408,10 +450,27 @@ async def _handle_pick_done(event, user_id: int):
 
     account_id = str(ctx.get("account_id") or "")
     async with get_async_session() as session:
+        access_ctx = await _resolve_actor_access_context(session, user_id)
         task = await _get_user_task(session, task_id, user_id)
         if not task:
             logger.warning("edit selector context missing: action=pick_done_commit, user_id={}, task_id={}", user_id, task_id)
             await event.answer(_selector_expired_message(False), alert=True)
+            return
+        if (
+            access_ctx.mode == USER_MODE_ACCOUNT_SCOPED
+            and access_ctx.scoped_account_id
+            and str(account_id or task.account_id or "") != str(access_ctx.scoped_account_id)
+        ):
+            await event.answer("受限模式下仅可编辑自己的账号任务。", alert=True)
+            return
+        try:
+            await require_account_task_permission(
+                account_id or task.account_id,
+                session=session,
+                action_text="保存自动发送任务",
+            )
+        except HTTPException as exc:
+            await event.answer(str(exc.detail), alert=True)
             return
         task.account_id = account_id or task.account_id
         _apply_task_targets(task, targets)

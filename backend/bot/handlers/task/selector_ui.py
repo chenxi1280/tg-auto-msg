@@ -30,7 +30,10 @@ def build_account_picker_keyboard(
         label = f"{checked} {truncate_text(display_name, 24)}"
         buttons.append([Button.inline(label, data=f"pick_acc:{account.account_id}")])
 
-    buttons.append([Button.inline("⬅️ 返回任务页", data=back_callback or f"settings:{task_id}")])
+    buttons.append([
+        Button.inline("⬅️ 返回上一页", data=back_callback or f"settings:{task_id}"),
+        Button.inline("🏠 返回主菜单", data="bot_home"),
+    ])
     return buttons
 
 
@@ -105,5 +108,8 @@ def build_target_picker_keyboard(
             Button.inline("🔄 清空目标", data="pick_clear"),
         ]
     )
-    buttons.append([Button.inline("⬅️ 返回任务页", data=back_callback or f"settings:{task_id}")])
+    buttons.append([
+        Button.inline("⬅️ 返回上一页", data=back_callback or f"settings:{task_id}"),
+        Button.inline("🏠 返回主菜单", data="bot_home"),
+    ])
     return buttons, page, total_pages

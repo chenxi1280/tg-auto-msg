@@ -9,47 +9,28 @@ from backend.bot.handlers.core.user_link import (
     get_active_account_id as _get_active_account_id,
     set_active_account_id as _set_active_account_id,
 )
-from backend.bot.handlers.task.queries import resolve_db_user_id as _resolve_db_user_id
+from backend.bot.handlers.task.queries import (
+    USER_MODE_ACCOUNT_SCOPED,
+    resolve_actor_access_context as _resolve_actor_access_context,
+)
 from backend.bot.ui.messages import *
 from backend.database.schema.models import Account
 from backend.database.runtime.session import get_async_session
+from backend.h5_backend.services.licensing.service import (
+    bind_slot_to_account,
+    get_account_authorization_summary,
+    list_user_slots,
+)
 
 
-async def bind_account(event, user_id: int, bind_code: str, actor_tg_user_id: Optional[int] = None):
-    """绑定账号"""
-    from backend.bot.account.manager import get_account_manager
-    from backend.bot.account.binding_service import BindRateLimitError
-    from backend.h5_backend.services.me.account_limit import TgAccountLimitExceededError
-    account_manager = get_account_manager()
-
-    # actor_tg_user_id: 实际 Telegram 发送者，用于 AccountManager 校验合法绑定来源
-    actor_id = int(actor_tg_user_id or user_id)
-    try:
-        account = await account_manager.bind_account(
-            user_id=user_id,
-            bind_code=bind_code,
-            ip_address="",
-            actor_tg_user_id=actor_id,
-        )
-    except BindRateLimitError as exc:
-        await event.respond(f"⚠️ 绑定失败次数过多，请 {exc.retry_after_seconds} 秒后再试。\n下一步：稍后重新获取绑定码再试。")
-        return
-    except TgAccountLimitExceededError as exc:
-        await event.respond(f"⚠️ {exc}\n\n下一步：可删除闲置账号、升级套餐或联系管理员调整。")
-        return
-    except RuntimeError:
-        await event.respond("⚠️ 绑定失败，当前绑定码可能已失效或不属于当前用户。\n下一步：请重新获取最新绑定码后再试。")
-        return
-
-    if account:
-        text = BIND_SUCCESS.format(
-            username=account.username or "Unknown",
-            account_id=account.account_id
-        )
-        await event.respond(text, parse_mode='markdown')
-        await show_accounts_list(event, user_id)
-    else:
-        await event.respond(ERROR_INVALID_BIND_CODE)
+async def _send_or_reply(event, text: str, *, buttons=None):
+    if hasattr(event, "edit"):
+        try:
+            await event.edit(text, buttons=buttons, parse_mode="markdown")
+            return
+        except Exception:
+            pass
+    await event.respond(text, buttons=buttons, parse_mode="markdown")
 
 
 async def show_accounts_list(event, user_id: int):
@@ -57,27 +38,33 @@ async def show_accounts_list(event, user_id: int):
     from backend.bot.onboarding import get_onboarding_service
     from backend.bot.account.manager import get_account_manager
 
-    if await get_onboarding_service().ensure_active_subscription(event, user_id) is None:
+    if await get_onboarding_service().ensure_registered_user(event, user_id) is None:
         return
 
     account_manager = get_account_manager()
     async with get_async_session() as session:
-        db_user_id = await _resolve_db_user_id(session, user_id)
+        access_ctx = await _resolve_actor_access_context(session, user_id)
+        db_user_id = access_ctx.system_user_id
         active_account_id = (
             await _get_active_account_id(session, user_id, db_user_id)
             if db_user_id is not None
             else None
         )
     accounts = await account_manager.get_accounts(db_user_id, is_active=False) if db_user_id else []
+    if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED and access_ctx.scoped_account_id:
+        accounts = [item for item in accounts if str(item.account_id) == str(access_ctx.scoped_account_id)]
+    slot_items = await list_user_slots(db_user_id) if db_user_id else []
+    unbound_active_slot_count = len([slot for slot in slot_items if slot.status == "active" and not slot.account_id])
 
     if not accounts:
         text = (
             "⚠️ 你还没有可用的 Telegram 账号\n\n"
-            "请先点击下方“登录账号”，直接在 Bot 内完成 Telegram 扫码登录。"
+            f"当前空余套餐位：{unbound_active_slot_count}\n\n"
+            "请先点击下方“绑定账号”，直接在 Bot 内完成 Telegram 手机号绑定。"
         )
         keyboard = [
-            [Button.inline("🔐 登录账号", data="bot_login_account")],
-            [Button.inline("💳 查看订阅", data="bot_subscription"), Button.inline("💳 立即购买", data="bot_purchase")],
+            [Button.inline("📱 绑定账号", data="bot_login_account")],
+            [Button.inline("🧾 查看套餐位", data="bot_slots"), Button.inline("🛒 立即购买", data="bot_purchase")],
             [Button.inline("⬅️ 返回主菜单", data="bot_home")],
         ]
         await event.respond(text, buttons=keyboard, parse_mode='markdown')
@@ -86,6 +73,7 @@ async def show_accounts_list(event, user_id: int):
     # 构建账号列表文本
     account_lines = []
     for i, acc in enumerate(accounts, 1):
+        auth_summary = await get_account_authorization_summary(acc.account_id)
         if not acc.is_active:
             status = "⚪️"
         elif str(acc.health_status) == "online":
@@ -99,29 +87,42 @@ async def show_accounts_list(event, user_id: int):
             f"@{acc.username}" if acc.username
             else (acc.phone or f"ID:{acc.tg_user_id}" if acc.tg_user_id else acc.account_id[:8])
         )
+        slot_status = "已绑定" if auth_summary.slot_id else "未绑定"
+        slot_expiry = (
+            f" / 到期 {auth_summary.license_end_at.strftime('%Y-%m-%d %H:%M')}"
+            if auth_summary.license_end_at
+            else ""
+        )
 
         account_lines.append(
             f"{i}. {status} {display_name}\n"
             f"   账号ID: `{acc.account_id}`\n"
             f"   代理: {proxy}\n"
-            f"   状态: {current} {flooding}".rstrip()
+            f"   状态: {current} {flooding}\n"
+            f"   自动发送: {'已授权' if auth_summary.can_create_tasks else ('已到期' if auth_summary.license_status == 'expired' else '未授权')}\n"
+            f"   套餐位: {slot_status}{slot_expiry}"
         )
 
-    text = ACCOUNTS_LIST.format(
-        count=len(accounts),
-        accounts_text="\n\n".join(account_lines)
+    text = (
+        f"👥 **账号列表**（{len(accounts)}）\n\n"
+        f"空余套餐位：{unbound_active_slot_count}\n\n"
+        f"{chr(10).join(account_lines)}\n\n"
+        "下一步：请选择要查看的账号，或使用下方快捷操作。"
     )
 
     # 按钮
-    keyboard = [[Button.inline("📋 查看任务", data="task_list"), Button.inline("📋 新建任务", data="add_task")]]
-    keyboard.append([Button.inline("🔄 同步全部资源", data="sync_all"), Button.inline("🔐 登录账号", data="bot_login_account")])
+    if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED:
+        keyboard = [[Button.inline("🔄 同步全部资源", data="sync_all")]]
+    else:
+        keyboard = [[Button.inline("📱 绑定账号", data="bot_login_account"), Button.inline("🔄 同步全部资源", data="sync_all")]]
+    keyboard.append([Button.inline("🗂️ 查看任务", data="task_list"), Button.inline("➕ 新建任务", data="add_task")])
 
     for idx, acc in enumerate(accounts[:8], 1):
         display = acc.username or acc.phone or (f"ID:{acc.tg_user_id}" if acc.tg_user_id else acc.account_id[:8])
         prefix = "⭐" if active_account_id and str(acc.account_id) == str(active_account_id) else "▫️"
         keyboard.append([Button.inline(f"{prefix} 账号{idx}: {display[:22]}", data=f"acc_menu:{acc.account_id}")])
 
-    keyboard.append([Button.inline("🧷 查看绑定码", data="bot_bind_codes"), Button.inline("⬅️ 返回主菜单", data="bot_home")])
+    keyboard.append([Button.inline("🧾 查看套餐位", data="bot_slots"), Button.inline("⬅️ 返回主菜单", data="bot_home")])
 
     # 避免 callback 编辑失败（同内容触发 MessageNotModified）
     if hasattr(event, "edit"):
@@ -141,15 +142,18 @@ async def sync_account_resources(event, user_id: int, account_id: Optional[str])
     from backend.bot.account.manager import get_account_manager
     account_manager = get_account_manager()
 
-    if await get_onboarding_service().ensure_active_subscription(event, user_id) is None:
+    if await get_onboarding_service().ensure_registered_user(event, user_id) is None:
         return
 
     async with get_async_session() as session:
-        db_user_id = await _resolve_db_user_id(session, user_id)
+        access_ctx = await _resolve_actor_access_context(session, user_id)
+        db_user_id = access_ctx.system_user_id
     accounts = await account_manager.get_accounts(db_user_id, is_active=True) if db_user_id else []
+    if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED and access_ctx.scoped_account_id:
+        accounts = [acc for acc in accounts if str(acc.account_id) == str(access_ctx.scoped_account_id)]
 
     if not accounts:
-        await event.respond("⚠️ 当前没有可用账号。\n下一步：请先点击「🔐 登录账号」登录至少一个 Telegram 账号。")
+        await event.respond("⚠️ 当前没有可用账号。\n下一步：请先点击「📱 绑定账号」绑定至少一个 Telegram 账号。")
         return
 
     allowed_account_ids = {acc.account_id for acc in accounts}
@@ -191,9 +195,16 @@ async def sync_account_resources(event, user_id: int, account_id: Optional[str])
 
 async def _get_owned_account(user_id: int, account_id: str) -> tuple[Optional[int], Optional[Account]]:
     async with get_async_session() as session:
-        db_user_id = await _resolve_db_user_id(session, user_id)
+        access_ctx = await _resolve_actor_access_context(session, user_id)
+        db_user_id = access_ctx.system_user_id
         if db_user_id is None:
             return None, None
+        if (
+            access_ctx.mode == USER_MODE_ACCOUNT_SCOPED
+            and access_ctx.scoped_account_id
+            and str(account_id) != str(access_ctx.scoped_account_id)
+        ):
+            return db_user_id, None
         result = await session.execute(
             Account.__table__.select().where(
                 Account.account_id == account_id,
@@ -211,7 +222,7 @@ async def show_account_menu(event, user_id: int, account_id: str):
     """显示单账号操作菜单。"""
     db_user_id, account = await _get_owned_account(user_id, account_id)
     if db_user_id is None:
-        await event.answer("当前 Telegram 账号还未完成系统注册，请先发送 /start。", alert=True)
+        await event.answer("当前 Telegram 账号还未绑定系统账号，请先发送 /start，或回到 Web 首页点击“系统账号绑定到 TG Bot”。", alert=True)
         return
     if not account:
         await event.answer("账号不存在或无权限", alert=True)
@@ -219,6 +230,8 @@ async def show_account_menu(event, user_id: int, account_id: str):
 
     async with get_async_session() as session:
         active_account_id = await _get_active_account_id(session, user_id, db_user_id)
+    auth_summary = await get_account_authorization_summary(account.account_id)
+    auth_text = "已授权" if auth_summary.can_create_tasks else ("已到期" if auth_summary.license_status == "expired" else "未授权")
 
     status_text = (
         "在线" if str(account.health_status) == "online"
@@ -230,28 +243,105 @@ async def show_account_menu(event, user_id: int, account_id: str):
         f"状态：{status_text}\n"
         f"当前账号：{'是' if str(active_account_id or '') == str(account.account_id) else '否'}\n"
         f"已发送：{account.messages_sent}\n"
+        f"自动发送：{auth_text}\n"
+        f"到期时间：{auth_summary.license_end_at.strftime('%Y-%m-%d %H:%M') if auth_summary.license_end_at else '-'}\n"
         f"账号ID：`{account.account_id}`\n\n"
         "下一步：请选择下方操作继续管理该账号。"
     )
     keyboard = [
         [Button.inline("⚙️ 设为当前账号", data=f"acc_set_active:{account_id}")],
-        [Button.inline("🔄 同步资源", data=f"acc_sync:{account_id}"), Button.inline("🔐 重新登录", data=f"acc_relogin:{account_id}")],
-        [Button.inline("🧷 查看绑定码", data=f"acc_bindcode:{account_id}"), Button.inline("📋 新建任务", data=f"acc_add_task:{account_id}")],
+        [Button.inline("🔄 同步资源", data=f"acc_sync:{account_id}"), Button.inline("📱 重新绑定", data=f"acc_relogin:{account_id}")],
+        [Button.inline("➕ 新建任务", data=f"acc_add_task:{account_id}"), Button.inline("⏳ 续费Key", data=f"acc_renew_slot:{account_id}")],
         [Button.inline("解绑账号", data=f"acc_unbind:{account_id}")],
-        [Button.inline("⬅️ 返回账号页", data="accounts_list")],
+        [Button.inline("⬅️ 返回账号页", data="accounts_list"), Button.inline("🏠 返回主菜单", data="bot_home")],
     ]
+    if not auth_summary.can_create_tasks:
+        keyboard.insert(3, [Button.inline("🔗 绑定待用套餐位", data=f"acc_bind_slot:{account_id}")])
     if hasattr(event, "edit"):
         await event.edit(text, buttons=keyboard, parse_mode="markdown")
     else:
         await event.respond(text, buttons=keyboard, parse_mode="markdown")
 
 
+async def bind_available_slot(event, user_id: int, account_id: str):
+    db_user_id, account = await _get_owned_account(user_id, account_id)
+    if db_user_id is None:
+        await event.answer("当前 Telegram 账号还未绑定系统账号，请先发送 /start，或回到 Web 首页点击“系统账号绑定到 TG Bot”。", alert=True)
+        return
+    if not account:
+        await event.answer("账号不存在或无权限", alert=True)
+        return
+
+    auth_summary = await get_account_authorization_summary(account_id)
+    if auth_summary.can_create_tasks:
+        await event.answer("当前账号已经绑定有效套餐位", alert=True)
+        return
+
+    slot_items = await list_user_slots(db_user_id)
+    unbound_slots = [slot for slot in slot_items if slot.status == "active" and not slot.account_id]
+    if not unbound_slots:
+        await event.answer("当前没有可绑定的待用套餐位，请先激活新的 Key。", alert=True)
+        return
+    if len(unbound_slots) == 1:
+        await _perform_bind_slot(event, db_user_id, account_id, unbound_slots[0].slot_id)
+        return
+
+    text = (
+        "💳 **选择待绑定套餐位**\n\n"
+        "当前存在多个待绑定套餐位，请选择一个分配给该 TG 账号。\n\n"
+        "下一步：点击下方任意套餐位即可完成绑定。"
+    )
+    buttons = [
+        [
+            Button.inline(
+                f"套餐位{idx}: 到期 {slot.end_at.strftime('%m-%d %H:%M') if slot.end_at else '-'}",
+                data=f"acc_bind_slot_pick:{account_id}:{slot.slot_id}",
+            )
+        ]
+        for idx, slot in enumerate(unbound_slots[:8], 1)
+    ]
+    buttons.append([Button.inline("⬅️ 返回账号详情", data=f"acc_menu:{account_id}"), Button.inline("🏠 返回主菜单", data="bot_home")])
+    await _send_or_reply(event, text, buttons=buttons)
+
+
+async def _perform_bind_slot(event, db_user_id: int, account_id: str, slot_id: str):
+    slot = await bind_slot_to_account(user_id=db_user_id, slot_id=slot_id, account_id=account_id)
+    await event.answer("✅ 已绑定套餐位")
+    await event.respond(
+        "✅ 当前 TG 账号已绑定套餐位\n\n"
+        f"套餐位：`{slot.slot_id}`\n"
+        f"到期时间：{slot.end_at.strftime('%Y-%m-%d %H:%M') if slot.end_at else '-'}\n\n"
+        "下一步：现在可以继续为该账号创建自动发送任务。",
+        parse_mode="markdown",
+        buttons=[[Button.inline("⬅️ 返回账号详情", data=f"acc_menu:{account_id}"), Button.inline("🏠 返回主菜单", data="bot_home")]],
+    )
+
+
+async def bind_specific_slot(event, user_id: int, account_id: str, slot_id: str):
+    db_user_id, account = await _get_owned_account(user_id, account_id)
+    if db_user_id is None:
+        await event.answer("当前 Telegram 账号还未绑定系统账号，请先发送 /start，或回到 Web 首页点击“系统账号绑定到 TG Bot”。", alert=True)
+        return
+    if not account:
+        await event.answer("账号不存在或无权限", alert=True)
+        return
+    await _perform_bind_slot(event, db_user_id, account_id, slot_id)
+
+
 async def set_current_account(event, user_id: int, account_id: str):
     """设置当前账号，供 Bot 快捷操作使用。"""
     async with get_async_session() as session:
-        db_user_id = await _resolve_db_user_id(session, user_id)
+        access_ctx = await _resolve_actor_access_context(session, user_id)
+        db_user_id = access_ctx.system_user_id
         if db_user_id is None:
-            await event.answer("当前 Telegram 账号还未完成系统注册，请先发送 /start。", alert=True)
+            await event.answer("当前 Telegram 账号还未绑定系统账号，请先发送 /start，或回到 Web 首页点击“系统账号绑定到 TG Bot”。", alert=True)
+            return
+        if (
+            access_ctx.mode == USER_MODE_ACCOUNT_SCOPED
+            and access_ctx.scoped_account_id
+            and str(account_id) != str(access_ctx.scoped_account_id)
+        ):
+            await event.answer("受限模式下仅可操作自己的账号。", alert=True)
             return
         account = await session.get(Account, account_id)
         if not account or int(account.user_id) != int(db_user_id):
@@ -268,45 +358,37 @@ async def sync_single_account(event, user_id: int, account_id: str):
 
 
 async def relogin_account(event, user_id: int, account_id: str):
-    """给出重登入口。"""
+    """给出重新绑定入口。"""
     db_user_id, account = await _get_owned_account(user_id, account_id)
     if db_user_id is None or not account:
         await event.answer("账号不存在或无权限", alert=True)
         return
     from backend.bot.onboarding import get_onboarding_service
 
-    await event.answer("已进入重新登录流程，请查看最新消息。")
-    await get_onboarding_service().start_account_login(event, user_id)
-
-
-async def refresh_bind_code(event, user_id: int, account_id: str):
-    """刷新账号绑定码，便于 /bind 快捷操作。"""
-    from backend.bot.account.manager import get_account_manager
-
-    async with get_async_session() as session:
-        db_user_id = await _resolve_db_user_id(session, user_id)
-        if db_user_id is None:
-            await event.answer("当前 Telegram 账号还未完成系统注册，请先发送 /start。", alert=True)
-            return
-        account = await session.get(Account, account_id)
-        if not account or int(account.user_id) != int(db_user_id):
-            await event.answer("账号不存在或无权限", alert=True)
-            return
-
-    manager = get_account_manager()
-    issued = await manager.issue_bind_code(account_id, refresh=True)
-    if not issued:
-        await event.answer("绑定码生成失败，请稍后重试。", alert=True)
-        return
-    code = issued["bind_code"]
-    await event.respond(
-        f"✅ **绑定码已刷新**\n\n"
-        f"绑定码：`{code}`\n"
-        f"手动命令：`/bind {code}`\n\n"
-        "下一步：如需手动绑定，请复制上面的命令发送给 Bot。",
-        parse_mode="markdown",
+    await event.answer("已进入重新绑定流程，请查看最新消息。")
+    await get_onboarding_service().start_account_login(
+        event,
+        user_id,
+        existing_tg_user_id=int(account.tg_user_id) if account.tg_user_id else None,
     )
-    await event.answer("✅ 绑定码已刷新")
+
+
+async def renew_account_slot(event, user_id: int, account_id: str):
+    db_user_id, account = await _get_owned_account(user_id, account_id)
+    if db_user_id is None:
+        await event.answer("当前 Telegram 账号还未绑定系统账号，请先发送 /start，或回到 Web 首页点击“系统账号绑定到 TG Bot”。", alert=True)
+        return
+    if not account:
+        await event.answer("账号不存在或无权限", alert=True)
+        return
+    from backend.bot.onboarding import get_onboarding_service
+
+    auth_summary = await get_account_authorization_summary(account.account_id)
+    if not auth_summary.slot_id:
+        await event.answer("该账号当前没有可续费的套餐位，请先新开套餐位或绑定待用套餐位。", alert=True)
+        return
+    await event.answer("请输入新的续费 Key")
+    await get_onboarding_service().start_activation(event, user_id, slot_id=str(auth_summary.slot_id))
 
 
 async def confirm_unbind_account(event, user_id: int, account_id: str):
@@ -323,7 +405,7 @@ async def confirm_unbind_account(event, user_id: int, account_id: str):
     )
     keyboard = [
         [Button.inline("确认解绑", data=f"acc_unbind_confirm:{account_id}")],
-        [Button.inline("⬅️ 返回账号详情", data=f"acc_menu:{account_id}")],
+        [Button.inline("⬅️ 返回账号详情", data=f"acc_menu:{account_id}"), Button.inline("🏠 返回主菜单", data="bot_home")],
     ]
     await event.edit(text, buttons=keyboard, parse_mode="markdown")
 
@@ -333,9 +415,17 @@ async def unbind_account(event, user_id: int, account_id: str):
     from backend.bot.account.manager import get_account_manager
 
     async with get_async_session() as session:
-        db_user_id = await _resolve_db_user_id(session, user_id)
+        access_ctx = await _resolve_actor_access_context(session, user_id)
+        db_user_id = access_ctx.system_user_id
         if db_user_id is None:
-            await event.answer("当前 Telegram 账号还未完成系统注册，请先发送 /start。", alert=True)
+            await event.answer("当前 Telegram 账号还未绑定系统账号，请先发送 /start，或回到 Web 首页点击“系统账号绑定到 TG Bot”。", alert=True)
+            return
+        if (
+            access_ctx.mode == USER_MODE_ACCOUNT_SCOPED
+            and access_ctx.scoped_account_id
+            and str(account_id) != str(access_ctx.scoped_account_id)
+        ):
+            await event.answer("受限模式下仅可解绑自己的账号。", alert=True)
             return
         account = await session.get(Account, account_id)
         if not account or int(account.user_id) != int(db_user_id):
@@ -380,6 +470,6 @@ async def show_proxy_management(event, user_id: int):
 • 健康代理会自动分配给新绑定的账号
 • 系统会定期检查代理健康状态"""
 
-        keyboard = [[Button.inline("📋 查看任务", data="task_list")]]
+        keyboard = [[Button.inline("🗂️ 查看任务", data="task_list")]]
 
     await event.respond(text, buttons=keyboard, parse_mode='markdown')

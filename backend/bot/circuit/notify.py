@@ -54,7 +54,7 @@ async def notify_session_invalid(account_manager, account_id: str) -> None:
         f"可能原因：\n"
         f"• 您在手机端登出了账号\n"
         f"• Session 已过期\n\n"
-        f"请重新扫码登录该账号。"
+        f"请重新在 Bot 中绑定该账号。"
     )
     await send_notification(account.user_id, message)
 

@@ -20,6 +20,8 @@ class FSMState(str, Enum):
     WAIT_REGISTER_PASSWORD = "wait_register_password"  # 等待输入注册密码
     WAIT_REGISTER_EMAIL = "wait_register_email"  # 等待输入注册邮箱
     WAIT_ACTIVATION_CODE = "wait_activation_code"  # 等待输入卡密
+    WAIT_LOGIN_PHONE = "wait_login_phone"  # 等待输入手机号
+    WAIT_LOGIN_CODE = "wait_login_code"  # 等待输入验证码
     WAIT_LOGIN_PASSWORD = "wait_login_password"  # 等待输入 Telegram 二步密码
 
 

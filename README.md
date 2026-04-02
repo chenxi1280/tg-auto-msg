@@ -162,12 +162,21 @@ cp .env.docker.example .env
 # POSTGRES_PASSWORD REDIS_PASSWORD
 
 # 2) 启动（包含 frontend + app + postgres + redis）
-docker compose up -d --build
+bash deploy/compose-up.sh
 
 # 3) 查看服务状态
-docker compose ps
+bash deploy/compose-up.sh
 docker compose logs -f frontend
 docker compose logs -f app
+```
+
+线上推荐额外启用前端自愈巡检：
+```bash
+sudo cp deploy/systemd/tgmsg-frontend-watchdog.service /etc/systemd/system/
+sudo cp deploy/systemd/tgmsg-frontend-watchdog.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now tgmsg-frontend-watchdog.timer
+systemctl list-timers | grep tgmsg-frontend-watchdog
 ```
 
 生产结构说明：
@@ -186,6 +195,22 @@ docker compose logs -f app
 访问入口：
 - `http://your-host/`：前端首页
 - `http://your-host/api/...`：通过 Nginx 反代到后端 API
+
+常用命令：
+```bash
+# 完整部署
+bash deploy/compose-up.sh
+
+# 仅重启后端
+docker compose up -d --build app
+
+# 仅重启前端
+docker compose up -d --build frontend
+
+# 查看前端状态
+docker ps --format '{{.Names}}|{{.Status}}' | grep tgmsg-frontend
+tail -f /data/tgmsg/logs/frontend-watchdog.log
+```
 
 说明：
 - 生产环境建议设置 `SERVE_FRONTEND=false`，由 Nginx 提供前端。

@@ -175,7 +175,7 @@ nano .env
 
 ### 2. 启动服务
 ```bash
-docker compose up -d --build
+bash deploy/compose-up.sh
 ```
 
 ### 3. 查看日志
@@ -198,6 +198,31 @@ docker compose exec app bash
 - `redis_data`：Redis 持久化目录
 - `app_logs`：应用日志目录
 - `app_uploads`：上传目录
+
+### 7. 前端自愈巡检
+```bash
+sudo cp deploy/systemd/tgmsg-frontend-watchdog.service /etc/systemd/system/
+sudo cp deploy/systemd/tgmsg-frontend-watchdog.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now tgmsg-frontend-watchdog.timer
+systemctl status tgmsg-frontend-watchdog.timer
+tail -f /data/tgmsg/logs/frontend-watchdog.log
+```
+
+### 8. 线上常用命令
+```bash
+# 完整部署（固定入口）
+bash deploy/compose-up.sh
+
+# 仅重启后端
+docker compose up -d --build app
+
+# 仅重启前端
+docker compose up -d --build frontend
+
+# 查看前端状态
+docker ps --format '{{.Names}}|{{.Status}}' | grep tgmsg-frontend
+```
 
 ## 🌐 Nginx 反向代理（H5）
 

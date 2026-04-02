@@ -86,14 +86,14 @@ async def start_qr_login(
                     "phone": me.phone or "",
                 },
             )
-            bind_code = await redis_manager.save_string_session(
+            await redis_manager.save_string_session(
                 login_id=login_id,
                 string_session=string_session_encrypted,
                 tg_user_id=me.id,
                 username=me.username or me.first_name or "",
                 phone=me.phone or "",
             )
-            logger.info(f"Userbot 已登录: {me.first_name}, bind_code={bind_code}")
+            logger.info(f"Userbot 已登录: {me.first_name}")
             return True
 
         logger.info(f"开始二维码登录流程: {login_id}")
@@ -243,7 +243,7 @@ async def wait_for_qr_login(
                 string_session = StringSession.save(active_client.session)
                 string_session_encrypted = encrypt_string_session(string_session)
 
-                bind_code = await redis_manager.save_string_session(
+                await redis_manager.save_string_session(
                     login_id=login_id,
                     string_session=string_session_encrypted,
                     tg_user_id=me.id,
@@ -268,7 +268,7 @@ async def wait_for_qr_login(
                         },
                     )
 
-                logger.info(f"二维码登录成功: {me.first_name} (@{me.username}), bind_code: {bind_code}")
+                logger.info(f"二维码登录成功: {me.first_name} (@{me.username})")
                 return
 
             await redis_manager.update_status(login_id, LoginStatus.ERROR, error="登录被取消")

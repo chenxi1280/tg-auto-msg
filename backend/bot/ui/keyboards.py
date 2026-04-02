@@ -51,11 +51,11 @@ def get_task_list_keyboard(
 
     # 底部按钮
     buttons.append([
-        Button.inline("📋 新建任务", data="add_task"),
+        Button.inline("➕ 新建任务", data="add_task"),
         Button.inline("🔄 刷新列表", data="refresh"),
     ])
     buttons.append([
-        Button.inline("⬅️ 返回主菜单", data="bot_home"),
+        Button.inline("🏠 返回主菜单", data="bot_home"),
     ])
 
     return buttons
@@ -151,6 +151,7 @@ def get_task_settings_keyboard(task: ScheduledMessageTask) -> list:
     # 返回按钮
     buttons.append([
         Button.inline("⬅️ 返回任务页", data="back_to_list"),
+        Button.inline("🏠 返回主菜单", data="bot_home"),
     ])
 
     return buttons
@@ -188,6 +189,7 @@ def get_interval_keyboard(task_id: str) -> list:
     # 返回按钮
     buttons.append([
         Button.inline("⬅️ 返回任务设置", data=f"settings:{task_id}"),
+        Button.inline("🏠 返回主菜单", data="bot_home"),
     ])
 
     return buttons
@@ -224,6 +226,7 @@ def get_hour_select_keyboard(task_id: str, for_start: bool = True) -> list:
     # 返回按钮
     buttons.append([
         Button.inline("⬅️ 返回任务设置", data=f"settings:{task_id}"),
+        Button.inline("🏠 返回主菜单", data="bot_home"),
     ])
 
     return buttons
@@ -246,6 +249,8 @@ def get_confirm_delete_keyboard(task_id: str) -> list:
             Button.inline("确认删除", data=f"confirm_delete:{task_id}"),
             Button.inline("⬅️ 返回任务页", data="back_to_list"),
         ]
+        ,
+        [Button.inline("🏠 返回主菜单", data="bot_home")]
     ]
 
 
@@ -264,6 +269,7 @@ def get_cancel_keyboard(task_id: str) -> list:
     return [
         [
             Button.inline("⬅️ 返回任务设置", data=f"settings:{task_id}"),
+            Button.inline("🏠 返回主菜单", data="bot_home"),
         ]
     ]
 
@@ -280,6 +286,7 @@ def get_start_time_keyboard(
     return [
         [
             Button.inline("⬅️ 返回任务设置", data=f"settings:{task_id}"),
+            Button.inline("🏠 返回主菜单", data="bot_home"),
         ],
     ]
 
@@ -296,6 +303,7 @@ def get_end_time_keyboard(
     return [
         [
             Button.inline("⬅️ 返回任务设置", data=f"settings:{task_id}"),
+            Button.inline("🏠 返回主菜单", data="bot_home"),
         ],
     ]
 

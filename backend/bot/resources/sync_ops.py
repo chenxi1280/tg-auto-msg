@@ -29,7 +29,7 @@ async def diagnose_client_unavailable(account_manager, account_id: str) -> str:
     try:
         decrypt_string_session(account.string_session_encrypted)
     except Exception:
-        return "StringSession 解密失败，请重新扫码绑定该账号"
+        return "StringSession 解密失败，请重新在 Bot 中绑定该账号"
     return "无法获取客户端，请确认账号仍在线并检查代理配置"
 
 

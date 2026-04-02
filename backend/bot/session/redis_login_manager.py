@@ -19,6 +19,8 @@ class LoginStatus(str, Enum):
     """登录状态枚举"""
     PENDING = "pending"       # 等待扫码
     SCANNING = "scanning"     # 已扫描，等待确认
+    PHONE_INPUT_REQUIRED = "phone_input_required"  # 等待输入手机号
+    CODE_INPUT_REQUIRED = "code_input_required"  # 等待输入验证码
     PASSWORD_REQUIRED = "password_required"  # 需要二步密码
     CONFIRMED = "confirmed"   # 已确认，登录成功
     EXPIRED = "expired"       # 已过期
@@ -33,11 +35,17 @@ class LoginSession:
     created_at: str
     expires_at: str
     qr_url: str = ""  # TG 二维码登录 URL (tg://login?token=xxx)
+    login_mode: str = "qr"
+    phone_number: str = ""
+    phone_code_hash: str = ""
+    code_sent_at: str = ""
+    code_attempts: str = "0"
     tg_user_id: str = ""
     username: str = ""
     phone: str = ""
     error: str = ""
     bind_code: str = ""
+    confirmed_session_encrypted: str = ""
     password_hint: str = ""
     pending_session_encrypted: str = ""
     account_id: str = ""
@@ -59,10 +67,12 @@ class RedisLoginManager:
     SESSION_KEY_PREFIX = "login:session:"
     BIND_KEY_PREFIX = "login:bind:"
     USER_KEY_PREFIX = "login:user:"
+    SYSTEM_BIND_KEY_PREFIX = "login:system-bind:"
 
     # 会话过期时间（秒）
     SESSION_TTL = 300      # 5 分钟
     BIND_CODE_TTL = 600    # 10 分钟
+    SYSTEM_BIND_TTL = 600  # 10 分钟
 
     def __init__(self, redis_url: str | None = None):
         """
@@ -117,11 +127,17 @@ class RedisLoginManager:
             "status": LoginStatus.PENDING.value,
             "created_at": now.isoformat(),
             "expires_at": expires_at.isoformat(),
+            "login_mode": "qr",
+            "phone_number": "",
+            "phone_code_hash": "",
+            "code_sent_at": "",
+            "code_attempts": "0",
             "tg_user_id": "",
             "username": "",
             "phone": "",
             "error": "",
             "bind_code": "",
+            "confirmed_session_encrypted": "",
             "password_hint": "",
             "pending_session_encrypted": "",
             "account_id": "",
@@ -265,9 +281,9 @@ class RedisLoginManager:
         tg_user_id: int,
         username: str,
         phone: str
-    ) -> str:
+    ) -> None:
         """
-        保存加密的 StringSession 并生成绑定码
+        保存加密的 StringSession 到登录会话
 
         Args:
             login_id: 登录会话 ID
@@ -276,21 +292,7 @@ class RedisLoginManager:
             username: 用户名
             phone: 手机号
 
-        Returns:
-            6 位绑定码
         """
-        from backend.utils.security.crypto import generate_bind_code
-
-        r = await self._get_redis()
-
-        # 生成绑定码
-        bind_code = generate_bind_code()
-
-        # 读取会话中的系统用户归属（由 H5 登录态写入）
-        session = await self.get_session(login_id)
-        system_user_id = session.system_user_id if session else ""
-        developer_app_id = session.developer_app_id if session else ""
-
         # 更新登录会话
         await self.update_status(
             login_id,
@@ -298,29 +300,12 @@ class RedisLoginManager:
             tg_user_id=tg_user_id,
             username=username,
             phone=phone,
-            bind_code=bind_code,
+            confirmed_session_encrypted=string_session,
             error="",
             password_hint="",
             pending_session_encrypted="",
         )
-
-        # 存储绑定码映射
-        bind_key = self.BIND_KEY_PREFIX + bind_code
-        bind_data = {
-            "login_id": login_id,
-            "string_session_encrypted": string_session,
-            "tg_user_id": str(tg_user_id),
-            "username": username,
-            "phone": phone,
-            "system_user_id": str(system_user_id or ""),
-            "developer_app_id": str(developer_app_id or ""),
-        }
-
-        await r.hset(bind_key, mapping=bind_data)
-        await r.expire(bind_key, self.BIND_CODE_TTL)
-
-        logger.info(f"生成绑定码: {bind_code} for login_id={login_id}")
-        return bind_code
+        logger.info(f"保存确认后的登录会话: {login_id}, tg_user_id={tg_user_id}")
 
     async def update_qr_url(self, login_id: str, qr_url: str) -> bool:
         """
@@ -391,6 +376,40 @@ class RedisLoginManager:
         })
         logger.info(f"更新用户信息: {login_id} -> {username}")
         return True
+
+    async def create_system_bind_token(self, system_user_id: int) -> str:
+        """Create one-time short token for linking Bot user to system account."""
+        import secrets
+        import string
+
+        r = await self._get_redis()
+        alphabet = string.ascii_letters + string.digits
+
+        token = ""
+        for _ in range(10):
+            candidate = "".join(secrets.choice(alphabet) for _ in range(12))
+            key = self.SYSTEM_BIND_KEY_PREFIX + candidate
+            if not await r.exists(key):
+                token = candidate
+                await r.set(key, str(int(system_user_id)), ex=self.SYSTEM_BIND_TTL)
+                break
+
+        if not token:
+            raise RuntimeError("生成 Bot 绑定凭证失败，请稍后重试")
+        return token
+
+    async def consume_system_bind_token(self, token: str) -> Optional[int]:
+        """Consume one-time token and return system user id."""
+        r = await self._get_redis()
+        key = self.SYSTEM_BIND_KEY_PREFIX + str(token).strip()
+        value = await r.get(key)
+        if not value:
+            return None
+        await r.delete(key)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     async def get_account_by_bind_code(self, bind_code: str) -> Optional[Dict[str, Any]]:
         """

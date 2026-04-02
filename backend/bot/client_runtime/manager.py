@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+from telethon.tl.functions.bots import SetBotCommandsRequest
+from telethon.tl.types import BotCommand, BotCommandScopeDefault
 from loguru import logger
 
 from backend.bot.client_runtime.qr_login import (
@@ -30,6 +32,13 @@ _LEGACY_SESSION_FILES = (
     "userbot_session.session-journal",
 )
 
+_BOT_COMMANDS = [
+    BotCommand("start", "开始使用"),
+    BotCommand("help", "帮助"),
+    BotCommand("login", "绑定账号"),
+    BotCommand("newtask", "创建任务"),
+]
+
 bot_client = TelegramClient(
     StringSession(),
     api_id=settings.api_id,
@@ -51,6 +60,31 @@ async def _resolve_system_developer_app_id() -> int | None:
     except Exception as e:
         logger.warning(f"初始化系统开发者凭证失败，回退环境配置: {e}")
         return None
+
+
+async def _configure_bot_commands() -> None:
+    """Register Telegram bot command menu."""
+    try:
+        await bot_client(
+            SetBotCommandsRequest(
+                scope=BotCommandScopeDefault(),
+                lang_code="",
+                commands=_BOT_COMMANDS,
+            )
+        )
+        try:
+            await bot_client(
+                SetBotCommandsRequest(
+                    scope=BotCommandScopeDefault(),
+                    lang_code="zh-hans",
+                    commands=_BOT_COMMANDS,
+                )
+            )
+        except Exception:
+            pass
+        logger.info("Bot 原生命令菜单已更新")
+    except Exception as e:
+        logger.warning(f"注册 Bot 原生命令菜单失败: {e}")
 
 
 async def start_manager_bot(bot_token: str):
@@ -85,6 +119,7 @@ async def start_manager_bot(bot_token: str):
         await bot_client.connect()
 
     await bot_client.start(bot_token=bot_token)
+    await _configure_bot_commands()
     me = await bot_client.get_me()
     developer_app_id = await _resolve_system_developer_app_id()
     await persist_client_session(
@@ -120,7 +155,7 @@ async def init_userbot() -> bool:
         logger.info(f"Userbot 已登录: {me.first_name} (@{me.username})")
         return True
 
-    logger.info("Userbot 未登录，请通过 Bot 或 H5 发起扫码登录")
+    logger.info("Userbot 未登录，请通过 Bot 手机号绑定或 H5 登录")
     return False
 
 

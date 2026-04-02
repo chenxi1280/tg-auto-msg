@@ -13,6 +13,11 @@ class Settings(BaseSettings):
     api_id: int = Field(alias="TG_API_ID", description="Telegram API ID")
     api_hash: str = Field(alias="TG_API_HASH", description="Telegram API Hash")
     bot_token: str = Field(alias="BOT_TOKEN", description="Bot Token")
+    bot_username: Optional[str] = Field(
+        None,
+        alias="BOT_USERNAME",
+        description="Manager Bot 用户名（不带 @），用于生成 deep link",
+    )
     userbot_phone: Optional[str] = Field(None, alias="USERBOT_PHONE", description="Userbot 手机号")
 
     # 数据库配置

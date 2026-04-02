@@ -20,6 +20,40 @@ async def create_login_session(
     return {"success": True, "data": data}
 
 
+@router.post("/api/login/phone/create")
+async def create_phone_login_session(current_user: User = Depends(get_current_user)):
+    """创建手机号登录会话。"""
+    service = get_login_service()
+    data = await service.create_phone_login_session(current_user.id)
+    return {"success": True, "data": data}
+
+
+@router.post("/api/login/phone/send-code")
+async def send_phone_login_code(request: Request, current_user: User = Depends(get_current_user)):
+    """提交手机号并发送 Telegram 验证码。"""
+    payload = await request.json()
+    service = get_login_service()
+    data = await service.submit_phone_number_data(
+        login_id=(payload.get("login_id") or "").strip(),
+        user_id=current_user.id,
+        phone_number=payload.get("phone_number") or "",
+    )
+    return {"success": True, "data": data}
+
+
+@router.post("/api/login/phone/code")
+async def submit_phone_login_code(request: Request, current_user: User = Depends(get_current_user)):
+    """提交 Telegram 验证码完成登录。"""
+    payload = await request.json()
+    service = get_login_service()
+    data = await service.submit_phone_code_data(
+        login_id=(payload.get("login_id") or "").strip(),
+        user_id=current_user.id,
+        code=payload.get("code") or "",
+    )
+    return {"success": True, "data": data}
+
+
 @router.get("/api/login/status")
 async def get_login_status(login_id: str, current_user: User = Depends(get_current_user)):
     """获取登录状态（从 Redis 查询）"""
@@ -37,10 +71,18 @@ async def check_login_status(current_user: User = Depends(get_current_user)):
 
 @router.post("/api/login/bind")
 async def bind_account(request: Request, current_user: User = Depends(get_current_user)):
-    """绑定 Telegram 账号到当前系统用户"""
+    """[已弃用] 账号级绑定 Telegram 账号到当前系统用户。"""
     service = get_login_service()
     data = await service.bind_account(request, current_user.id)
     return {"success": True, "message": "绑定成功", "data": data}
+
+
+@router.post("/api/login/bot-bind-link")
+async def create_bot_bind_link(current_user: User = Depends(get_current_user)):
+    """生成系统账号到 TG Bot 的一次性绑定链接。"""
+    service = get_login_service()
+    data = await service.create_system_bind_link(current_user.id)
+    return {"success": True, "data": data}
 
 
 @router.post("/api/login/password")

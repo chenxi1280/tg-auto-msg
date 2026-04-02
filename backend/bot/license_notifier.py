@@ -1,4 +1,4 @@
-"""Subscription expiry reminders delivered by manager bot."""
+"""Slot expiry reminders delivered by manager bot."""
 from __future__ import annotations
 
 import asyncio
@@ -15,10 +15,10 @@ from backend.bot.handlers.core.helpers import is_valid_button_url
 from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import (
     AppSetting,
-    PricingPlan,
-    SubscriptionNoticeLog,
-    UserSubscription,
+    SlotNoticeLog,
+    UserLicenseSlot,
 )
+from backend.h5_backend.services.licensing.service import list_due_slot_reminders
 from backend.h5_backend.services.me.service import get_me_service
 
 NOTICE_DAYS = (7, 3, 1)
@@ -26,19 +26,19 @@ USER_LINK_KEY_PREFIX = "tg_user_link:"
 
 
 @dataclass
-class SubscriptionReminderItem:
-    """Pending subscription reminder payload."""
+class LicenseReminderItem:
+    """Pending license-slot reminder payload."""
 
-    subscription_id: int
+    slot_id: str
     user_id: int
     tg_user_id: int
     days_before: int
     end_at: datetime
-    plan_name: str
+    account_id: Optional[str]
 
 
-class SubscriptionNotifier:
-    """Background reminder task for expiring subscriptions."""
+class LicenseSlotNotifier:
+    """Background reminder task for expiring license slots."""
 
     CHECK_INTERVAL_SECONDS = 3600
 
@@ -47,17 +47,17 @@ class SubscriptionNotifier:
 
     async def start(self) -> None:
         self.running = True
-        logger.info("订阅到期提醒任务已启动")
+        logger.info("套餐位到期提醒任务已启动")
         while self.running:
             try:
                 await self.scan_once()
             except Exception as exc:
-                logger.exception(f"订阅提醒扫描失败: {type(exc).__name__}: {exc!r}")
+                logger.exception(f"套餐位提醒扫描失败: {type(exc).__name__}: {exc!r}")
             await asyncio.sleep(self.CHECK_INTERVAL_SECONDS)
 
     async def stop(self) -> None:
         self.running = False
-        logger.info("订阅到期提醒任务已停止")
+        logger.info("套餐位到期提醒任务已停止")
 
     async def scan_once(self) -> int:
         now = datetime.now()
@@ -72,11 +72,11 @@ class SubscriptionNotifier:
         for item in reminder_items:
             try:
                 text = (
-                    "⏰ **订阅即将到期提醒**\n\n"
-                    f"套餐：{item.plan_name}\n"
+                    "⏰ **自动发送套餐位即将到期**\n\n"
+                    f"TG账号：{item.account_id or '待绑定'}\n"
                     f"剩余天数：{item.days_before}\n"
                     f"到期时间：{item.end_at.strftime('%Y-%m-%d %H:%M')}\n\n"
-                    "请提前续费，避免账号功能中断。"
+                    "请提前续费，避免该 TG 账号的自动发送任务中断。"
                 )
                 buttons = None
                 purchase_url = (purchase.get("url") or "").strip()
@@ -93,7 +93,7 @@ class SubscriptionNotifier:
                 sent_count += 1
             except Exception as exc:
                 logger.error(
-                    "发送订阅到期提醒失败: user_id={}, tg_user_id={}, days_before={}, error={}",
+                    "发送套餐位到期提醒失败: user_id={}, tg_user_id={}, days_before={}, error={}",
                     item.user_id,
                     item.tg_user_id,
                     item.days_before,
@@ -101,10 +101,10 @@ class SubscriptionNotifier:
                 )
 
         if sent_count:
-            logger.info("订阅到期提醒发送完成: {} 条", sent_count)
+            logger.info("套餐位到期提醒发送完成: {} 条", sent_count)
         return sent_count
 
-    async def _collect_due_reminders(self, now: datetime) -> list[SubscriptionReminderItem]:
+    async def _collect_due_reminders(self, now: datetime) -> list[LicenseReminderItem]:
         async with get_async_session() as session:
             user_link_rows = (
                 await session.execute(
@@ -123,60 +123,30 @@ class SubscriptionNotifier:
             if not user_to_tg:
                 return []
 
-            upper_bound = now + timedelta(days=max(NOTICE_DAYS) + 1)
-            result = await session.execute(
-                select(
-                    UserSubscription.id,
-                    UserSubscription.user_id,
-                    UserSubscription.end_at,
-                    PricingPlan.display_name,
-                    UserSubscription.plan_code,
-                )
-                .outerjoin(PricingPlan, PricingPlan.plan_code == UserSubscription.plan_code)
-                .where(
-                    and_(
-                        UserSubscription.status == "active",
-                        UserSubscription.user_id.in_(list(user_to_tg.keys())),
-                        UserSubscription.end_at > now,
-                        UserSubscription.end_at <= upper_bound,
-                    )
-                )
+            notice_items: list[LicenseReminderItem] = []
+            rows = await list_due_slot_reminders(
+                user_id_to_tg=user_to_tg,
+                session=session,
+                notice_days=NOTICE_DAYS,
             )
-            rows = result.all()
-
-            notice_items: list[SubscriptionReminderItem] = []
-            for subscription_id, user_id, end_at, display_name, plan_code in rows:
-                days_before = (end_at.date() - now.date()).days
-                if days_before not in NOTICE_DAYS:
-                    continue
-                existed = await session.execute(
-                    select(SubscriptionNoticeLog.id).where(
-                        SubscriptionNoticeLog.subscription_id == int(subscription_id),
-                        SubscriptionNoticeLog.days_before == int(days_before),
-                    )
-                )
-                if existed.scalar_one_or_none() is not None:
-                    continue
-                tg_user_id = user_to_tg.get(int(user_id))
-                if tg_user_id is None:
-                    continue
+            for row in rows:
                 notice_items.append(
-                    SubscriptionReminderItem(
-                        subscription_id=int(subscription_id),
-                        user_id=int(user_id),
-                        tg_user_id=int(tg_user_id),
-                        days_before=int(days_before),
-                        end_at=end_at,
-                        plan_name=display_name or plan_code or "未命名套餐",
+                LicenseReminderItem(
+                        slot_id=str(row["slot_id"]),
+                        user_id=int(row["user_id"]),
+                        tg_user_id=int(row["tg_user_id"]),
+                        days_before=int(row["days_before"]),
+                        end_at=row["end_at"],
+                        account_id=row.get("account_id"),
                     )
                 )
             return notice_items
 
-    async def _record_notice(self, item: SubscriptionReminderItem) -> None:
+    async def _record_notice(self, item: LicenseReminderItem) -> None:
         async with get_async_session() as session:
             session.add(
-                SubscriptionNoticeLog(
-                    subscription_id=item.subscription_id,
+                SlotNoticeLog(
+                    slot_id=item.slot_id,
                     user_id=item.user_id,
                     days_before=item.days_before,
                 )
@@ -184,4 +154,4 @@ class SubscriptionNotifier:
             await session.commit()
 
 
-subscription_notifier = SubscriptionNotifier()
+license_slot_notifier = LicenseSlotNotifier()

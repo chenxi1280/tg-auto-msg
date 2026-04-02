@@ -8,7 +8,7 @@
       </div>
 
       <div class="bot-tip">
-        推荐先在 Telegram Bot 内完成注册、激活和账号登录，Web 端用于补充管理任务、账号和订阅信息。
+        推荐先在 Telegram Bot 内完成注册、激活和账号登录；登录 Web 后，也可以从首页点击“系统账号绑定到 TG Bot”，把当前系统账号直接绑定到 TG Bot 中使用。Web 端用于补充管理任务、账号和套餐位信息。
       </div>
 
       <el-form

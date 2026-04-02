@@ -6,8 +6,8 @@
         <div class="brand-line">
           <img class="brand-logo" src="/quanqiu.png" alt="全球通" />
           <div>
-            <h1>全球通套餐购买</h1>
-            <p class="sub-title">开通全球通套餐后才可添加 Telegram 账号</p>
+            <h1>全球通 Key 购买</h1>
+            <p class="sub-title">每个生效套餐位可绑定 1 个 TG 账号执行自动发送；如需新增可执行账号，请购买并激活新的 Key</p>
           </div>
         </div>
       </div>
@@ -15,25 +15,25 @@
 
     <main class="container content" v-loading="loading">
       <el-alert
-        v-if="subscription?.is_active"
+        v-if="licenseStatus?.is_active"
         type="success"
         :closable="false"
-        title="当前账号已开通服务，无需重复购买"
+        title="当前已有可用套餐位，如需增加可执行账号数量，可继续购买新的 Key"
       />
 
       <el-alert
         v-else
         type="warning"
         :closable="false"
-        title="当前未开通服务，请先购买套餐或激活卡密"
+        title="当前还没有可用套餐位，请先购买 Key 或输入卡密激活"
       />
 
       <el-card shadow="hover" class="mt16">
         <template #header>
-          <div class="card-title">可选套餐</div>
+          <div class="card-title">可选 Key 规格</div>
         </template>
 
-        <el-empty v-if="plans.length === 0" description="暂无可购买套餐" />
+        <el-empty v-if="plans.length === 0" description="暂无可购买 Key 规格" />
 
         <div v-else class="plan-grid">
           <div v-for="plan in plans" :key="plan.plan_code" class="plan-card">
@@ -51,7 +51,7 @@
         <template #header>
           <div class="card-title">购买方式</div>
         </template>
-        <p class="helper-text">点击下方按钮跳转 Telegram 联系购买全球通套餐，购买后在“我的”页面输入卡密激活。</p>
+        <p class="helper-text">点击下方按钮跳转 Telegram 购买全球通 Key。购买后可在“我的”页面输入卡密激活，生成新的套餐位。</p>
         <div class="actions">
           <el-button type="primary" size="large" @click="goTelegramPurchase">
             {{ purchase.button_text || '去 TG 购买' }}
@@ -67,13 +67,13 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import type { PricingPlan, SubscriptionStatus } from '@/api/me'
-import { getSubscription } from '@/api/me'
+import type { PricingPlan, LicenseStatus } from '@/api/me'
+import { getLicenseStatus } from '@/api/me'
 
 const router = useRouter()
 const loading = ref(false)
 const plans = ref<PricingPlan[]>([])
-const subscription = ref<SubscriptionStatus | null>(null)
+const licenseStatus = ref<LicenseStatus | null>(null)
 const purchase = ref({
   url: '',
   button_text: '去 TG 购买',
@@ -82,8 +82,8 @@ const purchase = ref({
 const loadData = async () => {
   loading.value = true
   try {
-    const res = await getSubscription()
-    subscription.value = res.data
+    const res = await getLicenseStatus()
+    licenseStatus.value = res.data
     plans.value = res.data.plans || []
     purchase.value = res.data.purchase || purchase.value
   } finally {

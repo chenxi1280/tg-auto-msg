@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from backend.h5_backend.app.lifespan import app_lifespan
 from backend.h5_backend.app.static_site import mount_spa
 from backend.h5_backend.routers.accounts import router as accounts_router
-from backend.h5_backend.routers.admin_billing import router as admin_billing_router
+from backend.h5_backend.routers.admin_licenses import router as admin_licenses_router
 from backend.h5_backend.routers.auth import router as auth_router
 from backend.h5_backend.routers.login import router as login_router
 from backend.h5_backend.routers.me import router as me_router
@@ -25,7 +25,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(login_router)
     app.include_router(accounts_router)
-    app.include_router(admin_billing_router)
+    app.include_router(admin_licenses_router)
     app.include_router(tasks_router)
     app.include_router(proxies_router)
     app.include_router(me_router)

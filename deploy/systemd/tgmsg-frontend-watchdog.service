@@ -1,0 +1,9 @@
+[Unit]
+Description=tgmsg frontend watchdog
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/data/tgmsg/app
+ExecStart=/data/tgmsg/app/deploy/check-frontend.sh

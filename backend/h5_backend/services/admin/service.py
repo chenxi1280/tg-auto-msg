@@ -1,15 +1,20 @@
-"""Admin-side billing and card management service."""
+"""Admin-side key-spec, card and license-slot management service."""
 from __future__ import annotations
 
 import secrets
 import string
+from io import BytesIO
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
+from loguru import logger
 from sqlalchemy import Select, and_, func, select
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import selectinload
+from openpyxl import Workbook
+from openpyxl.styles import Font
 
 from backend.bot.developer_apps import get_developer_app_service
 from backend.bot.proxy.pool import get_proxy_pool
@@ -23,18 +28,23 @@ from backend.database.schema.models import (
     Proxy,
     TelegramDeveloperApp,
     User,
-    UserSubscription,
+    UserLicenseSlot,
+    UserLicenseSlotCard,
 )
 from backend.h5_backend.services.auth.service import get_auth_service
-from backend.h5_backend.services.me.account_limit import get_tg_account_limit_snapshot
+from backend.h5_backend.services.licensing.service import (
+    get_account_authorization_summary,
+    get_license_overview,
+    list_user_slots,
+)
 
 
 CARD_ALPHABET = string.ascii_uppercase + string.digits
 AUDIT_ACTION_LABELS = {
-    "admin.update_plan": "更新套餐配置",
+    "admin.update_plan": "更新Key规格配置",
+    "admin.delete_plan": "删除Key规格",
     "admin.generate_cards": "批量生成卡密",
     "admin.set_card_active": "修改卡密状态",
-    "admin.update_user_subscription": "更新用户订阅",
     "admin.reset_user_password": "重置用户密码",
     "admin.delete_account": "删除账号",
     "admin.add_proxy": "新增代理",
@@ -47,12 +57,15 @@ AUDIT_ACTION_LABELS = {
     "admin.update_developer_app": "更新开发者应用",
     "admin.set_default_developer_app": "设置默认开发者应用",
     "admin.set_user_developer_app": "设置用户开发者应用",
-    "admin.update_user_tg_account_limit": "更新用户TG账号上限",
+    "admin.update_developer_app_settings": "更新开发者应用策略",
+    "admin.check_developer_app_health": "手动检测开发者应用",
+    "system.developer_app_health_changed": "开发者应用健康状态变更",
+    "system.developer_app_health_recovered": "开发者应用健康恢复",
 }
 AUDIT_TARGET_TYPE_LABELS = {
     "user": "用户",
     "account": "账号",
-    "plan": "套餐",
+    "plan": "Key规格",
     "card": "卡密",
     "proxy": "代理",
     "settings": "配置",
@@ -61,10 +74,11 @@ AUDIT_TARGET_TYPE_LABELS = {
 
 DEFAULT_PURCHASE_URL = "https://t.me/"
 DEFAULT_PURCHASE_BUTTON_TEXT = "联系 Telegram 购买"
+MAX_CARD_EXPORT_ROWS = 5000
 
 
-class AdminBillingService:
-    """Admin-only operations for plans and activation cards."""
+class AdminLicenseService:
+    """Admin-only operations for key specs, activation cards and slot authorization."""
 
     @staticmethod
     def _to_price_yuan(price_cents: int) -> str:
@@ -77,9 +91,8 @@ class AdminBillingService:
             "display_name": plan.display_name,
             "billing_cycle": plan.billing_cycle,
             "price_cents": plan.price_cents,
-            "price_yuan": AdminBillingService._to_price_yuan(plan.price_cents),
+            "price_yuan": AdminLicenseService._to_price_yuan(plan.price_cents),
             "duration_days": plan.duration_days,
-            "max_tg_accounts": int(plan.max_tg_accounts or 0),
             "is_active": plan.is_active,
             "sort_order": plan.sort_order,
             "created_at": plan.created_at.isoformat() if plan.created_at else None,
@@ -88,6 +101,20 @@ class AdminBillingService:
 
     @staticmethod
     def _serialize_card(card: ActivationCard) -> Dict[str, Any]:
+        loaded_slot_usages = card.__dict__.get("slot_usages") or []
+        first_usage = loaded_slot_usages[0] if loaded_slot_usages else None
+        loaded_used_user = card.__dict__.get("used_by_user")
+        bound_account = None
+        if first_usage and first_usage.__dict__.get("slot") is not None:
+            bound_account = first_usage.slot.__dict__.get("current_account")
+        bound_account_name = None
+        if bound_account is not None:
+            bound_account_name = (
+                bound_account.username
+                or bound_account.phone
+                or bound_account.first_name
+                or (str(bound_account.tg_user_id) if bound_account.tg_user_id is not None else None)
+            )
         return {
             "id": card.id,
             "card_code": card.card_code,
@@ -97,7 +124,20 @@ class AdminBillingService:
             "is_used": card.is_used,
             "expires_at": card.expires_at.isoformat() if card.expires_at else None,
             "used_by_user_id": card.used_by_user_id,
+            "used_by_username": loaded_used_user.username if loaded_used_user else None,
             "used_at": card.used_at.isoformat() if card.used_at else None,
+            "slot_id": first_usage.slot_id if first_usage else None,
+            "bound_account_id": (
+                first_usage.slot.current_account_id
+                if first_usage and first_usage.__dict__.get("slot") is not None
+                else None
+            ),
+            "bound_account_name": bound_account_name,
+            "slot_end_at": (
+                first_usage.slot.end_at.isoformat()
+                if first_usage and first_usage.__dict__.get("slot") is not None and first_usage.slot.end_at
+                else None
+            ),
             "created_at": card.created_at.isoformat() if card.created_at else None,
             "updated_at": card.updated_at.isoformat() if card.updated_at else None,
         }
@@ -169,99 +209,6 @@ class AdminBillingService:
             plans = result.scalars().all()
         return [self._serialize_plan(plan) for plan in plans]
 
-    async def _get_latest_active_subscription(
-        self,
-        user_id: int,
-        session: Any,
-    ) -> Optional[UserSubscription]:
-        result = await session.execute(
-            select(UserSubscription)
-            .where(
-                and_(
-                    UserSubscription.user_id == user_id,
-                    UserSubscription.status == "active",
-                )
-            )
-            .order_by(UserSubscription.end_at.desc())
-            .limit(1)
-        )
-        sub = result.scalar_one_or_none()
-        if sub and sub.end_at <= datetime.now():
-            sub.status = "expired"
-            await session.flush()
-            return None
-        return sub
-
-    @staticmethod
-    def _build_limit_summary(
-        *,
-        account_count: int,
-        plan_limit: Optional[int],
-        override_limit: Optional[int],
-    ) -> Dict[str, Any]:
-        effective_limit = (
-            int(override_limit)
-            if override_limit is not None
-            else int(plan_limit or 0)
-        )
-        remaining_slots = None if effective_limit == 0 else max(0, effective_limit - int(account_count))
-        return {
-            "account_count": int(account_count),
-            "plan_limit": plan_limit,
-            "override_limit": override_limit,
-            "effective_limit": effective_limit,
-            "remaining_slots": remaining_slots,
-            "is_over_limit": effective_limit > 0 and int(account_count) > effective_limit,
-        }
-
-    async def _solidify_over_limit_users_for_plan(
-        self,
-        session: Any,
-        *,
-        plan_code: str,
-        new_limit: int,
-    ) -> int:
-        if new_limit <= 0:
-            return 0
-
-        now = datetime.now()
-        rows = (
-            await session.execute(
-                select(
-                    User.id,
-                    func.count(Account.account_id).label("account_count"),
-                )
-                .join(
-                    UserSubscription,
-                    and_(
-                        UserSubscription.user_id == User.id,
-                        UserSubscription.plan_code == plan_code,
-                        UserSubscription.status == "active",
-                        UserSubscription.end_at > now,
-                    ),
-                )
-                .outerjoin(
-                    Account,
-                    and_(
-                        Account.user_id == User.id,
-                        Account.is_active.is_(True),
-                    ),
-                )
-                .where(User.max_tg_accounts_override.is_(None))
-                .group_by(User.id)
-                .having(func.count(Account.account_id) > new_limit)
-            )
-        ).all()
-
-        updated = 0
-        for row in rows:
-            user = await session.get(User, int(row.id))
-            if user is None:
-                continue
-            user.max_tg_accounts_override = int(row.account_count or 0)
-            updated += 1
-        return updated
-
     async def list_users(self, search: Optional[str] = None, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
         limit = max(1, min(500, int(limit)))
         offset = max(0, int(offset))
@@ -292,23 +239,6 @@ class AdminBillingService:
             rows = (await session.execute(stmt)).all()
             user_ids = [row.id for row in rows]
 
-            sub_map: Dict[int, UserSubscription] = {}
-            if user_ids:
-                sub_rows = await session.execute(
-                    select(UserSubscription)
-                    .options(selectinload(UserSubscription.plan))
-                    .where(
-                        and_(
-                            UserSubscription.user_id.in_(user_ids),
-                            UserSubscription.status == "active",
-                        )
-                    )
-                    .order_by(UserSubscription.user_id.asc(), UserSubscription.end_at.desc())
-                )
-                for sub in sub_rows.scalars().all():
-                    if sub.user_id not in sub_map and sub.end_at > datetime.now():
-                        sub_map[sub.user_id] = sub
-
             user_app_map: Dict[int, Optional[int]] = {}
             if user_ids:
                 keys = [f"user_dev_app:{uid}" for uid in user_ids]
@@ -327,7 +257,13 @@ class AdminBillingService:
 
             data: List[Dict[str, Any]] = []
             for row in rows:
-                sub = sub_map.get(row.id)
+                overview = await get_license_overview(int(row.id), session=session)
+                slots = await list_user_slots(int(row.id), session=session)
+                current = min(
+                    (slot for slot in slots if slot.status == "active"),
+                    key=lambda item: item.end_at,
+                    default=None,
+                )
                 data.append(
                     {
                         "id": row.id,
@@ -336,41 +272,17 @@ class AdminBillingService:
                         "is_active": row.is_active,
                         "created_at": row.created_at.isoformat() if row.created_at else None,
                         "account_count": int(row.account_count or 0),
-                        "plan_max_tg_accounts": (
-                            int(getattr(sub.plan, "max_tg_accounts", 0) or 0)
-                            if sub and getattr(sub, "plan", None) is not None
-                            else None
-                        ),
-                        "max_tg_accounts_override": None,
-                        "effective_max_tg_accounts": 0,
-                        "remaining_tg_account_slots": None,
-                        "is_over_limit": False,
+                        "license_slot_count": overview.slot_count,
+                        "active_license_slot_count": overview.active_slot_count,
+                        "unbound_active_slot_count": overview.unbound_active_slot_count,
                         "developer_app_id": user_app_map.get(row.id),
-                        "subscription": {
-                            "plan_code": sub.plan_code if sub else None,
-                            "start_at": sub.start_at.isoformat() if sub else None,
-                            "end_at": sub.end_at.isoformat() if sub else None,
-                            "status": sub.status if sub else None,
+                        "current_license": {
+                            "start_at": current.start_at.isoformat() if current else None,
+                            "end_at": current.end_at.isoformat() if current else None,
+                            "status": current.status if current else None,
                         },
                     }
                 )
-            for item in data:
-                user = await session.get(User, int(item["id"]))
-                override_limit = (
-                    int(user.max_tg_accounts_override)
-                    if user and user.max_tg_accounts_override is not None
-                    else None
-                )
-                plan_limit = item["plan_max_tg_accounts"]
-                limit_summary = self._build_limit_summary(
-                    account_count=int(item["account_count"]),
-                    plan_limit=plan_limit,
-                    override_limit=override_limit,
-                )
-                item["max_tg_accounts_override"] = override_limit
-                item["effective_max_tg_accounts"] = limit_summary["effective_limit"]
-                item["remaining_tg_account_slots"] = limit_summary["remaining_slots"]
-                item["is_over_limit"] = limit_summary["is_over_limit"]
             return data
 
     async def list_account_options(self, search: Optional[str] = None, limit: int = 300) -> List[Dict[str, Any]]:
@@ -478,7 +390,8 @@ class AdminBillingService:
     async def list_developer_apps(self) -> Dict[str, Any]:
         service = get_developer_app_service()
         apps = await service.list_apps()
-        return {"apps": apps}
+        settings_data = await service.get_assignment_settings()
+        return {"apps": apps, "settings": settings_data}
 
     async def create_developer_app(
         self,
@@ -488,6 +401,7 @@ class AdminBillingService:
         api_hash: str,
         is_active: bool = True,
         max_accounts: int = 0,
+        selection_weight: int = 100,
         notes: Optional[str] = None,
         actor: str = "admin",
         ip_address: Optional[str] = None,
@@ -499,6 +413,7 @@ class AdminBillingService:
             api_hash=api_hash,
             is_active=is_active,
             max_accounts=max_accounts,
+            selection_weight=selection_weight,
             notes=notes,
         )
         async with get_async_session() as session:
@@ -516,14 +431,17 @@ class AdminBillingService:
                     "api_id": data["api_id"],
                     "is_active": data["is_active"],
                     "max_accounts": data["max_accounts"],
+                    "selection_weight": data["selection_weight"],
                     "credentials_version": data.get("credentials_version"),
                     "last_rotated_at": data.get("last_rotated_at"),
+                    "health_status": data.get("health_status"),
                 },
                 detail={
                     "app_name": data["app_name"],
                     "api_id": data["api_id"],
                     "is_active": data["is_active"],
                     "max_accounts": data["max_accounts"],
+                    "selection_weight": data["selection_weight"],
                 },
                 ip_address=ip_address,
             )
@@ -538,6 +456,7 @@ class AdminBillingService:
         api_hash: Optional[str] = None,
         is_active: Optional[bool] = None,
         max_accounts: Optional[int] = None,
+        selection_weight: Optional[int] = None,
         notes: Optional[str] = None,
         actor: str = "admin",
         ip_address: Optional[str] = None,
@@ -549,6 +468,7 @@ class AdminBillingService:
             api_hash=api_hash,
             is_active=is_active,
             max_accounts=max_accounts,
+            selection_weight=selection_weight,
             notes=notes,
         )
         async with get_async_session() as session:
@@ -566,6 +486,7 @@ class AdminBillingService:
                     "api_hash_updated": api_hash is not None,
                     "is_active": is_active,
                     "max_accounts": max_accounts,
+                    "selection_weight": selection_weight,
                     "notes": notes,
                     "rotated_accounts": data.get("rotated_accounts", 0),
                 },
@@ -573,6 +494,63 @@ class AdminBillingService:
             )
             await session.commit()
         return data
+
+    async def update_developer_app_settings(
+        self,
+        *,
+        assignment_mode: str,
+        alert_tg_user_ids: str,
+        actor: str = "admin",
+        ip_address: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        service = get_developer_app_service()
+        result = await service.update_assignment_settings(
+            assignment_mode=assignment_mode,
+            alert_tg_user_ids=alert_tg_user_ids,
+        )
+        async with get_async_session() as session:
+            await self._append_audit(
+                session,
+                actor=actor,
+                action="admin.update_developer_app_settings",
+                target_type="settings",
+                target_id="developer_app_assignment",
+                old_value={
+                    "assignment_mode": result["old_assignment_mode"],
+                    "alert_tg_user_ids_text": result["old_alert_tg_user_ids_text"],
+                },
+                new_value={
+                    "assignment_mode": result["new_assignment_mode"],
+                    "alert_tg_user_ids_text": result["new_alert_tg_user_ids_text"],
+                },
+                detail={
+                    "assignment_mode": result["new_assignment_mode"],
+                    "alert_tg_user_ids": result["alert_tg_user_ids"],
+                },
+                ip_address=ip_address,
+            )
+            await session.commit()
+        return {
+            "assignment_mode": result["new_assignment_mode"],
+            "alert_tg_user_ids": result["alert_tg_user_ids"],
+            "alert_tg_user_ids_text": result["new_alert_tg_user_ids_text"],
+        }
+
+    async def check_developer_app_health(
+        self,
+        app_id: int,
+        *,
+        actor: str = "admin",
+        ip_address: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        service = get_developer_app_service()
+        return await service.check_app_health(
+            app_id,
+            actor=self._mask_actor(actor),
+            ip_address=ip_address,
+            notify_admins=True,
+            force_audit=True,
+        )
 
     async def set_default_developer_app(
         self,
@@ -814,6 +792,7 @@ class AdminBillingService:
                     "is_flooding": a.is_flooding,
                     "messages_sent": a.messages_sent,
                     "created_at": a.created_at.isoformat() if a.created_at else None,
+                    **(await get_account_authorization_summary(a.account_id, session=session)).to_dict(),
                 }
                 for a in accounts
             ]
@@ -863,6 +842,8 @@ class AdminBillingService:
             if not user:
                 raise HTTPException(status_code=404, detail="用户不存在")
             user.password_hash = auth_service.get_password_hash(new_password)
+            user.bot_initial_password_viewable = False
+            user.password_changed_after_bot_registration = True
             await self._append_audit(
                 session,
                 actor=actor,
@@ -874,154 +855,13 @@ class AdminBillingService:
             )
             await session.commit()
 
-    async def update_user_subscription(
-        self,
-        user_id: int,
-        plan_code: Optional[str] = None,
-        end_at: Optional[datetime] = None,
-        extend_days: Optional[int] = None,
-        set_inactive: bool = False,
-        *,
-        actor: str = "admin",
-        ip_address: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        if extend_days is not None and extend_days == 0:
-            raise HTTPException(status_code=400, detail="extend_days 不能为 0")
-        if end_at and end_at <= datetime.now():
-            raise HTTPException(status_code=400, detail="end_at 必须是未来时间")
-
-        async with get_async_session() as session:
-            user = (
-                await session.execute(select(User).where(User.id == user_id).limit(1))
-            ).scalar_one_or_none()
-            if not user:
-                raise HTTPException(status_code=404, detail="用户不存在")
-
-            plan = None
-            if plan_code:
-                plan = (
-                    await session.execute(
-                        select(PricingPlan).where(PricingPlan.plan_code == plan_code).limit(1)
-                    )
-                ).scalar_one_or_none()
-                if not plan:
-                    raise HTTPException(status_code=404, detail="套餐不存在")
-
-            sub = await self._get_latest_active_subscription(user_id, session)
-            now = datetime.now()
-
-            if set_inactive:
-                if sub:
-                    sub.status = "cancelled"
-                    await self._append_audit(
-                        session,
-                        actor=actor,
-                        action="admin.update_user_subscription",
-                        target_type="user",
-                        target_id=str(user_id),
-                        detail={
-                            "set_inactive": True,
-                            "previous_end_at": sub.end_at.isoformat() if sub.end_at else None,
-                        },
-                        ip_address=ip_address,
-                    )
-                    await session.commit()
-                return {"user_id": user_id, "subscription": None}
-
-            if sub is None:
-                resolved_end_at = end_at
-                if resolved_end_at is None:
-                    if extend_days:
-                        resolved_end_at = now + timedelta(days=extend_days)
-                    elif plan:
-                        resolved_end_at = now + timedelta(days=plan.duration_days)
-                if resolved_end_at is None:
-                    raise HTTPException(status_code=400, detail="需要提供 end_at 或 extend_days 或 plan_code")
-
-                new_sub = UserSubscription(
-                    user_id=user_id,
-                    plan_code=plan_code,
-                    source="admin",
-                    card_code=None,
-                    start_at=now,
-                    end_at=resolved_end_at,
-                    status="active",
-                )
-                session.add(new_sub)
-                await self._append_audit(
-                    session,
-                    actor=actor,
-                    action="admin.update_user_subscription",
-                    target_type="user",
-                    target_id=str(user_id),
-                    detail={
-                        "created": True,
-                        "plan_code": plan_code,
-                        "end_at": resolved_end_at.isoformat() if resolved_end_at else None,
-                        "extend_days": extend_days,
-                    },
-                    ip_address=ip_address,
-                )
-                await session.commit()
-                await session.refresh(new_sub)
-                return {
-                    "user_id": user_id,
-                    "subscription": {
-                        "id": new_sub.id,
-                        "plan_code": new_sub.plan_code,
-                        "start_at": new_sub.start_at.isoformat(),
-                        "end_at": new_sub.end_at.isoformat(),
-                        "status": new_sub.status,
-                    },
-                }
-
-            if plan_code:
-                sub.plan_code = plan_code
-            if end_at:
-                sub.end_at = end_at
-            elif extend_days:
-                sub.end_at = sub.end_at + timedelta(days=extend_days)
-            elif plan:
-                sub.end_at = sub.end_at + timedelta(days=plan.duration_days)
-
-            sub.source = "admin"
-            sub.card_code = None
-            if sub.end_at <= now:
-                sub.status = "expired"
-
-            await self._append_audit(
-                session,
-                actor=actor,
-                action="admin.update_user_subscription",
-                target_type="user",
-                target_id=str(user_id),
-                detail={
-                    "plan_code": sub.plan_code,
-                    "end_at": sub.end_at.isoformat() if sub.end_at else None,
-                    "extend_days": extend_days,
-                },
-                ip_address=ip_address,
-            )
-            await session.commit()
-            await session.refresh(sub)
-            return {
-                "user_id": user_id,
-                "subscription": {
-                    "id": sub.id,
-                    "plan_code": sub.plan_code,
-                    "start_at": sub.start_at.isoformat() if sub.start_at else None,
-                    "end_at": sub.end_at.isoformat() if sub.end_at else None,
-                    "status": sub.status,
-                },
-            }
-
     async def update_plan(
         self,
         plan_code: str,
         display_name: Optional[str] = None,
+        billing_cycle: Optional[str] = None,
         price_cents: Optional[int] = None,
         duration_days: Optional[int] = None,
-        max_tg_accounts: Optional[int] = None,
         is_active: Optional[bool] = None,
         sort_order: Optional[int] = None,
         *,
@@ -1038,16 +878,16 @@ class AdminBillingService:
 
             old_value = {
                 "display_name": plan.display_name,
+                "billing_cycle": plan.billing_cycle,
                 "price_cents": plan.price_cents,
                 "duration_days": plan.duration_days,
-                "max_tg_accounts": int(plan.max_tg_accounts or 0),
                 "is_active": plan.is_active,
                 "sort_order": plan.sort_order,
             }
-            previous_limit = int(plan.max_tg_accounts or 0)
-
             if display_name is not None:
                 plan.display_name = display_name.strip() or plan.display_name
+            if billing_cycle is not None:
+                plan.billing_cycle = billing_cycle.strip() or plan.billing_cycle
             if price_cents is not None:
                 if price_cents <= 0:
                     raise HTTPException(status_code=400, detail="price_cents 必须大于 0")
@@ -1056,28 +896,10 @@ class AdminBillingService:
                 if duration_days <= 0:
                     raise HTTPException(status_code=400, detail="duration_days 必须大于 0")
                 plan.duration_days = duration_days
-            if max_tg_accounts is not None:
-                if max_tg_accounts < 0:
-                    raise HTTPException(status_code=400, detail="max_tg_accounts 不能小于 0")
-                plan.max_tg_accounts = int(max_tg_accounts)
             if is_active is not None:
                 plan.is_active = is_active
             if sort_order is not None:
                 plan.sort_order = sort_order
-
-            solidified_users = 0
-            new_limit = int(plan.max_tg_accounts or 0)
-            limit_lowered = (
-                max_tg_accounts is not None
-                and new_limit > 0
-                and (previous_limit == 0 or new_limit < previous_limit)
-            )
-            if limit_lowered:
-                solidified_users = await self._solidify_over_limit_users_for_plan(
-                    session,
-                    plan_code=plan_code,
-                    new_limit=new_limit,
-                )
 
             await self._append_audit(
                 session,
@@ -1088,20 +910,19 @@ class AdminBillingService:
                 old_value=old_value,
                 new_value={
                     "display_name": plan.display_name,
+                    "billing_cycle": plan.billing_cycle,
                     "price_cents": plan.price_cents,
                     "duration_days": plan.duration_days,
-                    "max_tg_accounts": int(plan.max_tg_accounts or 0),
                     "is_active": plan.is_active,
                     "sort_order": plan.sort_order,
                 },
                 detail={
                     "display_name": display_name,
+                    "billing_cycle": billing_cycle,
                     "price_cents": price_cents,
                     "duration_days": duration_days,
-                    "max_tg_accounts": max_tg_accounts,
                     "is_active": is_active,
                     "sort_order": sort_order,
-                    "solidified_users": solidified_users,
                 },
                 ip_address=ip_address,
             )
@@ -1109,80 +930,66 @@ class AdminBillingService:
             await session.refresh(plan)
             return self._serialize_plan(plan)
 
-    async def update_user_tg_account_limit(
+    async def create_plan(
         self,
-        user_id: int,
         *,
-        use_plan_default: bool,
-        max_tg_accounts_override: Optional[int],
+        plan_code: str,
+        display_name: str,
+        billing_cycle: str,
+        price_cents: int,
+        duration_days: int,
+        is_active: bool = True,
+        sort_order: int = 0,
         actor: str = "admin",
         ip_address: Optional[str] = None,
     ) -> Dict[str, Any]:
+        normalized_code = (plan_code or "").strip()
+        if not normalized_code:
+            raise HTTPException(status_code=400, detail="plan_code 不能为空")
+        if not (display_name or "").strip():
+            raise HTTPException(status_code=400, detail="display_name 不能为空")
+        if price_cents <= 0:
+            raise HTTPException(status_code=400, detail="price_cents 必须大于 0")
+        if duration_days <= 0:
+            raise HTTPException(status_code=400, detail="duration_days 必须大于 0")
+
         async with get_async_session() as session:
-            user = await session.get(User, int(user_id))
-            if user is None:
-                raise HTTPException(status_code=404, detail="用户不存在")
-
-            old_snapshot = await get_tg_account_limit_snapshot(int(user_id), session)
-            old_override = (
-                int(user.max_tg_accounts_override)
-                if user.max_tg_accounts_override is not None
-                else None
+            exists = (
+                await session.execute(
+                    select(PricingPlan).where(PricingPlan.plan_code == normalized_code).limit(1)
+                )
+            ).scalar_one_or_none()
+            if exists:
+                raise HTTPException(status_code=409, detail="Key规格编码已存在")
+            plan = PricingPlan(
+                plan_code=normalized_code,
+                display_name=display_name.strip(),
+                billing_cycle=(billing_cycle or "custom").strip(),
+                price_cents=int(price_cents),
+                duration_days=int(duration_days),
+                is_active=bool(is_active),
+                sort_order=int(sort_order),
             )
-
-            if use_plan_default:
-                user.max_tg_accounts_override = None
-            else:
-                if max_tg_accounts_override is None or int(max_tg_accounts_override) < 0:
-                    raise HTTPException(status_code=400, detail="用户 TG 账号上限不能小于 0")
-                user.max_tg_accounts_override = int(max_tg_accounts_override)
-
-            await session.flush()
-            new_snapshot = await get_tg_account_limit_snapshot(int(user_id), session)
+            session.add(plan)
             await self._append_audit(
                 session,
                 actor=actor,
-                action="admin.update_user_tg_account_limit",
-                target_type="user",
-                target_id=str(user_id),
-                old_value={
-                    "override_limit": old_override,
-                    "effective_limit": old_snapshot.effective_limit,
-                    "account_count": old_snapshot.account_count,
-                },
-                new_value={
-                    "override_limit": (
-                        int(user.max_tg_accounts_override)
-                        if user.max_tg_accounts_override is not None
-                        else None
-                    ),
-                    "effective_limit": new_snapshot.effective_limit,
-                    "account_count": new_snapshot.account_count,
-                },
-                detail={
-                    "use_plan_default": bool(use_plan_default),
-                    "plan_limit": new_snapshot.plan_limit,
-                    "is_over_limit": new_snapshot.is_over_limit,
-                },
+                action="admin.update_plan",
+                target_type="plan",
+                target_id=normalized_code,
+                old_value=None,
+                new_value=self._serialize_plan(plan),
+                detail={"created": True},
                 ip_address=ip_address,
             )
             await session.commit()
-
-            return {
-                "user_id": int(user_id),
-                "plan_limit": new_snapshot.plan_limit,
-                "override_limit": new_snapshot.override_limit,
-                "effective_limit": new_snapshot.effective_limit,
-                "account_count": new_snapshot.account_count,
-                "remaining_slots": new_snapshot.remaining_slots,
-                "is_over_limit": new_snapshot.is_over_limit,
-            }
+            await session.refresh(plan)
+            return self._serialize_plan(plan)
 
     async def generate_cards(
         self,
         plan_code: str,
         quantity: int,
-        duration_days: Optional[int] = None,
         expires_at: Optional[datetime] = None,
         prefix: str = "",
         *,
@@ -1195,19 +1002,31 @@ class AdminBillingService:
         if expires_at and expires_at <= datetime.now():
             raise HTTPException(status_code=400, detail="expires_at 必须是未来时间")
 
+        normalized_prefix = (prefix or "").strip().upper()
+        if len(normalized_prefix) > 20:
+            raise HTTPException(status_code=400, detail="prefix 最长 20 位")
+        if normalized_prefix and not all(ch in CARD_ALPHABET for ch in normalized_prefix):
+            raise HTTPException(status_code=400, detail="prefix 仅支持大写字母和数字")
         async with get_async_session() as session:
-            plan_result = await session.execute(
-                select(PricingPlan).where(PricingPlan.plan_code == plan_code).limit(1)
-            )
-            plan = plan_result.scalar_one_or_none()
+            try:
+                plan_result = await session.execute(
+                    select(PricingPlan).where(PricingPlan.plan_code == plan_code).limit(1)
+                )
+                plan = plan_result.scalar_one_or_none()
+            except SQLAlchemyError as exc:
+                logger.exception("查询套餐失败: plan_code={}, error={}", plan_code, exc)
+                raise HTTPException(status_code=500, detail="查询套餐失败，请稍后重试") from exc
             if not plan:
                 raise HTTPException(status_code=404, detail="套餐不存在")
+            resolved_duration_days = int(plan.duration_days)
+            if resolved_duration_days <= 0:
+                raise HTTPException(status_code=400, detail="套餐时长无效，请检查 Key 规格配置")
             generated_codes: set[str] = set()
             max_attempts = quantity * 20
             attempts = 0
             while len(generated_codes) < quantity and attempts < max_attempts:
                 attempts += 1
-                generated_codes.add(self._generate_card_code(prefix=prefix))
+                generated_codes.add(self._generate_card_code(prefix=normalized_prefix))
 
             if len(generated_codes) < quantity:
                 raise HTTPException(status_code=500, detail="生成卡密失败，请重试")
@@ -1222,13 +1041,13 @@ class AdminBillingService:
                     break
                 generated_codes -= existing_codes
                 while len(generated_codes) < quantity:
-                    generated_codes.add(self._generate_card_code(prefix=prefix))
+                    generated_codes.add(self._generate_card_code(prefix=normalized_prefix))
 
             created_cards: List[ActivationCard] = [
                 ActivationCard(
                     card_code=code,
                     plan_code=plan_code,
-                    duration_days=duration_days,
+                    duration_days=resolved_duration_days,
                     is_active=True,
                     is_used=False,
                     expires_at=expires_at,
@@ -1244,14 +1063,35 @@ class AdminBillingService:
                 target_id=plan_code,
                 detail={
                     "quantity": quantity,
-                    "duration_days": duration_days,
+                    "duration_days": resolved_duration_days,
                     "expires_at": expires_at.isoformat() if expires_at else None,
-                    "prefix": prefix,
+                    "prefix": normalized_prefix,
                     "sample_card": created_cards[0].card_code if created_cards else None,
                 },
                 ip_address=ip_address,
             )
-            await session.commit()
+            try:
+                await session.commit()
+            except IntegrityError as exc:
+                await session.rollback()
+                logger.warning(
+                    "生成卡密写入冲突: plan_code={}, quantity={}, prefix={}, error={}",
+                    plan_code,
+                    quantity,
+                    normalized_prefix,
+                    exc,
+                )
+                raise HTTPException(status_code=409, detail="生成卡密冲突，请稍后重试") from exc
+            except SQLAlchemyError as exc:
+                await session.rollback()
+                logger.exception(
+                    "生成卡密数据库异常: plan_code={}, quantity={}, prefix={}, error={}",
+                    plan_code,
+                    quantity,
+                    normalized_prefix,
+                    exc,
+                )
+                raise HTTPException(status_code=500, detail="生成卡密失败，请稍后重试") from exc
             for card in created_cards:
                 await session.refresh(card)
 
@@ -1262,13 +1102,21 @@ class AdminBillingService:
         plan_code: Optional[str] = None,
         is_used: Optional[bool] = None,
         is_active: Optional[bool] = None,
+        sort_by: str = "created_at",
+        sort_order: str = "desc",
         limit: int = 50,
         offset: int = 0,
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         limit = max(1, min(500, int(limit)))
         offset = max(0, int(offset))
 
-        stmt: Select[Any] = select(ActivationCard)
+        stmt: Select[Any] = select(ActivationCard).options(
+            selectinload(ActivationCard.slot_usages)
+            .selectinload(UserLicenseSlotCard.slot)
+            .selectinload(UserLicenseSlot.current_account),
+            selectinload(ActivationCard.used_by_user),
+        )
+        count_stmt: Select[Any] = select(func.count(ActivationCard.id))
         conditions = []
         if plan_code:
             conditions.append(ActivationCard.plan_code == plan_code)
@@ -1278,14 +1126,224 @@ class AdminBillingService:
             conditions.append(ActivationCard.is_active.is_(is_active))
         if conditions:
             stmt = stmt.where(and_(*conditions))
+            count_stmt = count_stmt.where(and_(*conditions))
 
-        stmt = stmt.order_by(ActivationCard.id.desc()).limit(limit).offset(offset)
+        sortable_fields = {
+            "created_at": ActivationCard.created_at,
+            "used_at": ActivationCard.used_at,
+            "expires_at": ActivationCard.expires_at,
+        }
+        sort_column = sortable_fields.get((sort_by or "").strip(), ActivationCard.created_at)
+        sort_mode = (sort_order or "desc").strip().lower()
+        if sort_mode == "asc":
+            stmt = stmt.order_by(sort_column.asc().nullslast(), ActivationCard.id.desc())
+        else:
+            stmt = stmt.order_by(sort_column.desc().nullslast(), ActivationCard.id.desc())
+        stmt = stmt.limit(limit).offset(offset)
 
         async with get_async_session() as session:
+            total = int((await session.execute(count_stmt)).scalar_one() or 0)
+            used_count_stmt: Select[Any] = select(func.count(ActivationCard.id))
+            unused_count_stmt: Select[Any] = select(func.count(ActivationCard.id))
+            used_conditions = list(conditions) + [ActivationCard.is_used.is_(True)]
+            unused_conditions = list(conditions) + [ActivationCard.is_used.is_(False)]
+            used_count_stmt = used_count_stmt.where(and_(*used_conditions))
+            unused_count_stmt = unused_count_stmt.where(and_(*unused_conditions))
+            used_total = int((await session.execute(used_count_stmt)).scalar_one() or 0)
+            unused_total = int((await session.execute(unused_count_stmt)).scalar_one() or 0)
             result = await session.execute(stmt)
             cards = result.scalars().all()
 
-        return [self._serialize_card(card) for card in cards]
+        return {
+            "items": [self._serialize_card(card) for card in cards],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "stats": {
+                "total": total,
+                "used": used_total,
+                "unused": unused_total,
+            },
+        }
+
+    async def delete_plan(
+        self,
+        plan_code: str,
+        *,
+        actor: str = "admin",
+        ip_address: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        normalized_code = (plan_code or "").strip()
+        if not normalized_code:
+            raise HTTPException(status_code=400, detail="plan_code 不能为空")
+
+        async with get_async_session() as session:
+            plan = await session.get(PricingPlan, normalized_code)
+            if plan is None:
+                raise HTTPException(status_code=404, detail="Key规格不存在")
+
+            unused_stmt = select(func.count(ActivationCard.id)).where(
+                ActivationCard.plan_code == normalized_code,
+                ActivationCard.is_used.is_(False),
+            )
+            used_stmt = select(func.count(ActivationCard.id)).where(
+                ActivationCard.plan_code == normalized_code,
+                ActivationCard.is_used.is_(True),
+            )
+            disabled_unused_cards = int((await session.execute(unused_stmt)).scalar_one() or 0)
+            used_cards_kept = int((await session.execute(used_stmt)).scalar_one() or 0)
+
+            if disabled_unused_cards:
+                await session.execute(
+                    ActivationCard.__table__.update()
+                    .where(
+                        ActivationCard.plan_code == normalized_code,
+                        ActivationCard.is_used.is_(False),
+                    )
+                    .values(is_active=False)
+                )
+
+            plan_snapshot = self._serialize_plan(plan)
+            await session.delete(plan)
+            await self._append_audit(
+                session,
+                actor=actor,
+                action="admin.delete_plan",
+                target_type="plan",
+                target_id=normalized_code,
+                old_value=plan_snapshot,
+                detail={
+                    "disabled_unused_cards": disabled_unused_cards,
+                    "used_cards_kept": used_cards_kept,
+                },
+                ip_address=ip_address,
+            )
+            try:
+                await session.commit()
+            except IntegrityError as exc:
+                await session.rollback()
+                logger.warning("删除Key规格冲突: plan_code={}, error={}", normalized_code, exc)
+                raise HTTPException(status_code=409, detail="删除Key规格失败，请稍后重试") from exc
+            except SQLAlchemyError as exc:
+                await session.rollback()
+                logger.exception("删除Key规格异常: plan_code={}, error={}", normalized_code, exc)
+                raise HTTPException(status_code=500, detail="删除Key规格失败，请稍后重试") from exc
+
+        return {
+            "plan_code": normalized_code,
+            "disabled_unused_cards": disabled_unused_cards,
+            "used_cards_kept": used_cards_kept,
+        }
+
+    async def export_cards_xlsx(
+        self,
+        *,
+        plan_code: Optional[str] = None,
+        is_used: Optional[bool] = None,
+        is_active: Optional[bool] = None,
+        max_rows: int = MAX_CARD_EXPORT_ROWS,
+    ) -> Tuple[bytes, int]:
+        page_data = await self.list_cards(
+            plan_code=plan_code,
+            is_used=is_used,
+            is_active=is_active,
+            limit=max_rows + 1,
+            offset=0,
+        )
+        rows = page_data["items"]
+        if len(rows) > max_rows:
+            raise HTTPException(
+                status_code=400,
+                detail=f"导出数量超过限制（最多 {max_rows} 条），请缩小筛选范围后重试",
+            )
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "卡密列表"
+
+        headers = ["卡密", "套餐", "时长(天)", "状态", "激活用户", "激活时间", "创建时间", "失效时间"]
+        sheet.append(headers)
+        for cell in sheet[1]:
+            cell.font = Font(bold=True)
+
+        for row in rows:
+            status = "已失效"
+            if row.get("is_active"):
+                status = "已使用" if row.get("is_used") else "可用"
+            used_user = row.get("used_by_username") or (
+                f"用户ID:{row['used_by_user_id']}" if row.get("used_by_user_id") is not None else ""
+            )
+            sheet.append(
+                [
+                    row.get("card_code") or "",
+                    row.get("plan_code") or "",
+                    row.get("duration_days") or "",
+                    status,
+                    used_user,
+                    row.get("used_at") or "",
+                    row.get("created_at") or "",
+                    row.get("expires_at") or "",
+                ]
+            )
+
+        sheet.column_dimensions["A"].width = 28
+        sheet.column_dimensions["B"].width = 14
+        sheet.column_dimensions["C"].width = 10
+        sheet.column_dimensions["D"].width = 10
+        sheet.column_dimensions["E"].width = 18
+        sheet.column_dimensions["F"].width = 20
+        sheet.column_dimensions["G"].width = 20
+        sheet.column_dimensions["H"].width = 20
+
+        buffer = BytesIO()
+        workbook.save(buffer)
+        workbook.close()
+        return buffer.getvalue(), len(rows)
+
+    async def list_license_slots(
+        self,
+        *,
+        status: Optional[str] = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        limit = max(1, min(500, int(limit)))
+        offset = max(0, int(offset))
+
+        stmt: Select[Any] = (
+            select(UserLicenseSlot, User.username, Account.username, Account.phone, Account.tg_user_id)
+            .join(User, User.id == UserLicenseSlot.user_id)
+            .outerjoin(Account, Account.account_id == UserLicenseSlot.current_account_id)
+            .order_by(UserLicenseSlot.end_at.asc(), UserLicenseSlot.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        if status:
+            stmt = stmt.where(UserLicenseSlot.status == status)
+
+        async with get_async_session() as session:
+            rows = (await session.execute(stmt)).all()
+
+        data: List[Dict[str, Any]] = []
+        for slot, owner_username, account_username, account_phone, account_tg_user_id in rows:
+            data.append(
+                {
+                    "slot_id": slot.slot_id,
+                    "user_id": slot.user_id,
+                    "owner_username": owner_username,
+                    "status": slot.status,
+                    "current_account_id": slot.current_account_id,
+                    "current_account_username": account_username,
+                    "current_account_phone": account_phone,
+                    "current_account_tg_user_id": account_tg_user_id,
+                    "total_duration_days": slot.total_duration_days,
+                    "start_at": slot.start_at.isoformat() if slot.start_at else None,
+                    "end_at": slot.end_at.isoformat() if slot.end_at else None,
+                    "created_at": slot.created_at.isoformat() if slot.created_at else None,
+                    "updated_at": slot.updated_at.isoformat() if slot.updated_at else None,
+                }
+            )
+        return data
 
     async def set_card_active(
         self,
@@ -1327,7 +1385,6 @@ class AdminBillingService:
     async def create_single_card(
         self,
         plan_code: str,
-        duration_days: Optional[int] = None,
         valid_days: Optional[int] = None,
         prefix: str = "",
         *,
@@ -1343,7 +1400,6 @@ class AdminBillingService:
         cards = await self.generate_cards(
             plan_code=plan_code,
             quantity=1,
-            duration_days=duration_days,
             expires_at=expires_at,
             prefix=prefix,
             actor=actor,
@@ -1404,12 +1460,12 @@ class AdminBillingService:
         ]
 
 
-_admin_billing_service: Optional[AdminBillingService] = None
+_admin_license_service: Optional[AdminLicenseService] = None
 
 
-def get_admin_billing_service() -> AdminBillingService:
-    """Get singleton admin billing service."""
-    global _admin_billing_service
-    if _admin_billing_service is None:
-        _admin_billing_service = AdminBillingService()
-    return _admin_billing_service
+def get_admin_license_service() -> AdminLicenseService:
+    """Get singleton admin license service."""
+    global _admin_license_service
+    if _admin_license_service is None:
+        _admin_license_service = AdminLicenseService()
+    return _admin_license_service

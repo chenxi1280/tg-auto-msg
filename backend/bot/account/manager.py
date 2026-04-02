@@ -327,6 +327,13 @@ class AccountManager:
                     delete(AccountBindLog).where(AccountBindLog.account_id == account_id)
                 )
 
+                from backend.h5_backend.services.licensing.service import release_slots_for_account
+                await release_slots_for_account(
+                    account_id=account_id,
+                    session=session,
+                    reason="account_deleted",
+                )
+
                 from backend.bot.handlers.core.user_link import cleanup_active_account_refs
                 await cleanup_active_account_refs(session, account_id)
 

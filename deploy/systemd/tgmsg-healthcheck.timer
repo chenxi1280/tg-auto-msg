@@ -1,0 +1,11 @@
+[Unit]
+Description=Run tgmsg full service healthcheck every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=tgmsg-healthcheck.service
+
+[Install]
+WantedBy=timers.target

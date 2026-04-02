@@ -25,8 +25,17 @@ export interface Account {
   messages_sent: number
   last_used_at: string | null
   created_at: string | null
-  bind_code: string | null
-  bind_code_expires_at: string | null
+  license_status?: 'licensed' | 'unlicensed' | 'expired'
+  can_create_tasks?: boolean
+  license_end_at?: string | null
+  license_key_count?: number
+  slot_id?: string | null
+  has_active_slot?: boolean
+  slot_end_at?: string | null
+  slot_grant_source?: string | null
+  slot_grant_source_label?: string | null
+  slot_remaining_days?: number | null
+  can_renew_slot?: boolean
 }
 
 /**
@@ -49,6 +58,14 @@ export const syncAccountResources = (
   wait = false
 ): Promise<ApiResponse<{ message: string; data?: Record<string, any> }>> => {
   return request.post(`/accounts/${accountId}/sync`, null, {
+    params: { wait }
+  })
+}
+
+export const syncAllAccountResources = (
+  wait = false
+): Promise<(ApiResponse<{ data?: Record<string, any> }> & { already_running?: boolean })> => {
+  return request.post('/accounts/sync-all', null, {
     params: { wait }
   })
 }
@@ -88,17 +105,33 @@ export const deleteAccount = (accountId: string): Promise<ApiResponse<{ message:
   return request.delete(`/accounts/${accountId}`)
 }
 
-export interface AccountBindCode {
-  bind_code: string
-  expires_at: string | null
-  ttl_seconds: number
+export interface BindSlotResponse {
+  slot_id: string
+  account_id: string | null
+  status: string
+  end_at: string | null
+  license_status: string
+  can_create_tasks: boolean
 }
 
-export const refreshAccountBindCode = (
+export const bindAccountSlot = (
   accountId: string,
-  refresh = true
-): Promise<ApiResponse<AccountBindCode>> => {
-  return request.post(`/accounts/${accountId}/bind-code`, null, {
-    params: { refresh }
+  slotId: string,
+): Promise<ApiResponse<BindSlotResponse>> => {
+  return request.post(`/accounts/${accountId}/bind-slot`, {
+    slot_id: slotId,
+  })
+}
+
+export interface RenewSlotResponse extends BindSlotResponse {
+  license_key_count: number
+}
+
+export const renewAccountSlot = (
+  accountId: string,
+  cardCode: string,
+): Promise<ApiResponse<RenewSlotResponse>> => {
+  return request.post(`/accounts/${accountId}/renew-slot`, {
+    card_code: cardCode,
   })
 }

@@ -1,4 +1,4 @@
-"""My page API routes: profile, billing and password."""
+"""My page API routes: profile, license slots and password."""
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -14,6 +14,8 @@ class ActivateCardRequest(BaseModel):
     """Card activation request."""
 
     card_code: str = Field(..., min_length=4, max_length=64, description="卡密")
+    account_id: str | None = Field(default=None, min_length=8, max_length=64, description="可选，按 TG 账号定位现有套餐位进行续费")
+    slot_id: str | None = Field(default=None, min_length=8, max_length=64, description="可选，指定套餐位续费")
 
 
 class ChangePasswordRequest(BaseModel):
@@ -31,23 +33,23 @@ class UpdateProfileRequest(BaseModel):
 
 @router.get("/api/me")
 async def get_me(current_user: User = Depends(get_current_user)):
-    """获取我的信息（基础信息+订阅+套餐）"""
+    """获取我的信息（基础信息 + 套餐位概览 + Key规格）"""
     service = get_me_service()
     data = await service.get_profile(current_user.id)
     return {"success": True, "data": data}
 
 
-@router.get("/api/me/subscription")
-async def get_subscription(current_user: User = Depends(get_current_user)):
-    """获取订阅状态"""
+@router.get("/api/me/license-status")
+async def get_license_status(current_user: User = Depends(get_current_user)):
+    """获取套餐位状态"""
     service = get_me_service()
-    data = await service.get_subscription_status(current_user.id)
+    data = await service.get_license_status(current_user.id)
     return {"success": True, "data": data}
 
 
 @router.get("/api/me/plans")
 async def get_plans(active_only: bool = True, current_user: User = Depends(get_current_user)):
-    """获取套餐列表（当前实现仅返回启用套餐）。"""
+    """获取可购买的 Key 规格列表。"""
     service = get_me_service()
     if active_only:
         data = await service.list_active_plans()
@@ -61,7 +63,7 @@ async def get_plans(active_only: bool = True, current_user: User = Depends(get_c
 async def activate_card(payload: ActivateCardRequest, current_user: User = Depends(get_current_user)):
     """激活卡密"""
     service = get_me_service()
-    data = await service.activate_card(current_user.id, payload.card_code)
+    data = await service.activate_card(current_user.id, payload.card_code, payload.account_id, payload.slot_id)
     return {"success": True, "message": "卡密激活成功", "data": data}
 
 

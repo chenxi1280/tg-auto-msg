@@ -90,7 +90,7 @@ async def get_client(manager, account_id: str) -> Optional[TelegramClient]:
     except Exception as e:
         logger.error(
             f"解密 StringSession 失败: {e} | account_id={account_id}。"
-            "可能是 ENCRYPTION_KEY 变更或历史会话使用了旧密钥，请重新扫码绑定。"
+            "可能是 ENCRYPTION_KEY 变更或历史会话使用了旧密钥，请重新在 Bot 中绑定该账号。"
         )
         try:
             await manager.update_health_status(account_id, HealthStatus.OFFLINE)

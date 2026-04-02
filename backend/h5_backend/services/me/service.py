@@ -1,4 +1,4 @@
-"""Profile, subscription and card activation service."""
+"""Profile, license-slot overview and card activation service."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -9,13 +9,23 @@ from fastapi import HTTPException, status
 from sqlalchemy import and_, func, select
 from sqlalchemy.exc import IntegrityError
 
+from backend.config.core.settings import settings
 from backend.database.runtime.session import get_async_session
-from backend.database.schema.models import ActivationCard, AppSetting, PricingPlan, User, UserSubscription
+from backend.database.schema.models import (
+    ActivationCard,
+    AppSetting,
+    PricingPlan,
+    SystemSession,
+    User,
+)
 from backend.h5_backend.services.auth.service import get_auth_service
-from backend.h5_backend.services.me.account_limit import (
-    TgAccountLimitSnapshot,
+from backend.utils.security.crypto import get_crypto_manager
+from backend.h5_backend.services.licensing.service import (
+    activate_card_for_user,
     ensure_can_add_tg_account,
-    get_tg_account_limit_snapshot,
+    get_account_authorization_summary,
+    get_license_overview,
+    list_user_slots,
 )
 
 DEFAULT_PURCHASE_URL = "https://t.me/"
@@ -38,58 +48,54 @@ class MeService:
             "price_cents": plan.price_cents,
             "price_yuan": MeService._to_price_yuan(plan.price_cents),
             "duration_days": plan.duration_days,
-            "max_tg_accounts": int(plan.max_tg_accounts or 0),
             "is_active": plan.is_active,
             "sort_order": plan.sort_order,
         }
 
     @staticmethod
-    def _serialize_tg_account_limit(snapshot: TgAccountLimitSnapshot) -> Dict[str, Any]:
-        return snapshot.to_dict()
+    async def _resolve_bot_username() -> str:
+        username = (settings.bot_username or "").strip().lstrip("@")
+        if username:
+            return username
 
-    @staticmethod
-    def _serialize_subscription(subscription: Optional[UserSubscription]) -> Optional[Dict[str, Any]]:
-        if subscription is None:
-            return None
+        async with get_async_session() as session:
+            row = await session.get(SystemSession, "manager_bot")
+            if not row or not isinstance(row.session_meta, dict):
+                return ""
+            return str(row.session_meta.get("username") or "").strip().lstrip("@")
+
+    @classmethod
+    async def _serialize_bot_entry(cls) -> Dict[str, str]:
+        username = await cls._resolve_bot_username()
         return {
-            "id": subscription.id,
-            "plan_code": subscription.plan_code,
-            "source": subscription.source,
-            "card_code": subscription.card_code,
-            "start_at": subscription.start_at.isoformat() if subscription.start_at else None,
-            "end_at": subscription.end_at.isoformat() if subscription.end_at else None,
-            "status": subscription.status,
+            "username": username,
+            "bind_deep_link_base": (
+                f"https://t.me/{username}" if username else ""
+            ),
         }
 
-    async def get_active_subscription(self, user_id: int) -> Optional[UserSubscription]:
-        now = datetime.now()
-        async with get_async_session() as session:
-            # 先把过期的 active 状态修正，避免页面状态漂移
-            await session.execute(
-                UserSubscription.__table__.update()
-                .where(
-                    and_(
-                        UserSubscription.user_id == user_id,
-                        UserSubscription.status == "active",
-                        UserSubscription.end_at <= now,
-                    )
-                )
-                .values(status="expired")
-            )
+    @staticmethod
+    def _serialize_license_status(overview: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "is_active": bool(overview.get("active_slot_count", 0) > 0),
+            "current": overview.get("current"),
+            "remain_days": overview.get("remain_days"),
+        }
 
-            result = await session.execute(
-                select(UserSubscription)
-                .where(
-                    and_(
-                        UserSubscription.user_id == user_id,
-                        UserSubscription.status == "active",
-                        UserSubscription.end_at > now,
-                    )
-                )
-                .order_by(UserSubscription.end_at.desc())
-                .limit(1)
-            )
-            return result.scalar_one_or_none()
+    async def get_current_license_slot(self, user_id: int) -> Optional[Dict[str, Any]]:
+        status = await self.get_license_status(user_id)
+        return status.get("current")
+
+    async def get_bot_initial_password(self, user_id: int) -> Optional[str]:
+        async with get_async_session() as session:
+            user = (
+                await session.execute(select(User).where(User.id == user_id).limit(1))
+            ).scalar_one_or_none()
+            if not user:
+                raise HTTPException(status_code=404, detail="用户不存在")
+            if not user.bot_initial_password_viewable or not user.bot_initial_password_encrypted:
+                return None
+            return get_crypto_manager().decrypt(user.bot_initial_password_encrypted)
 
     async def list_active_plans(self) -> List[Dict[str, Any]]:
         async with get_async_session() as session:
@@ -115,10 +121,11 @@ class MeService:
             }
 
     async def get_profile(self, user_id: int) -> Dict[str, Any]:
-        active_subscription = await self.get_active_subscription(user_id)
         plans = await self.list_active_plans()
         purchase = await self.get_purchase_entry()
-        tg_account_limit = await get_tg_account_limit_snapshot(user_id)
+        slot_items = await list_user_slots(user_id)
+        license_overview = await get_license_overview(user_id)
+        license_status = await self.get_license_status(user_id)
 
         async with get_async_session() as session:
             user_result = await session.execute(select(User).where(User.id == user_id))
@@ -126,145 +133,117 @@ class MeService:
             if not user:
                 raise HTTPException(status_code=404, detail="用户不存在")
 
-        now = datetime.now()
-        remain_days = None
-        if active_subscription and active_subscription.end_at:
-            remain_days = max(0, int((active_subscription.end_at - now).total_seconds() // 86400))
-
         return {
             "user": {
                 "id": user.id,
                 "username": user.username,
                 "email": user.email,
                 "is_active": user.is_active,
+                "bot_initial_password_viewable": bool(user.bot_initial_password_viewable and user.bot_initial_password_encrypted),
+                "bot_trial_eligible_at": user.bot_trial_eligible_at.isoformat() if user.bot_trial_eligible_at else None,
+                "bot_trial_granted_at": user.bot_trial_granted_at.isoformat() if user.bot_trial_granted_at else None,
+                "bot_trial_slot_id": user.bot_trial_slot_id,
                 "created_at": user.created_at.isoformat() if user.created_at else None,
             },
-            "subscription": {
-                "is_active": active_subscription is not None,
-                "current": self._serialize_subscription(active_subscription),
-                "remain_days": remain_days,
-            },
-            "tg_account_limit": self._serialize_tg_account_limit(tg_account_limit),
+            "license_status": license_status["license_status"],
+            "license_overview": license_overview.to_dict(),
+            "license_slots": [item.to_dict() for item in slot_items],
+            "bot": await self._serialize_bot_entry(),
             "plans": plans,
             "purchase": purchase,
         }
 
-    async def get_subscription_status(self, user_id: int) -> Dict[str, Any]:
-        active_subscription = await self.get_active_subscription(user_id)
+    async def get_license_status(self, user_id: int) -> Dict[str, Any]:
         plans = await self.list_active_plans()
         purchase = await self.get_purchase_entry()
-        tg_account_limit = await get_tg_account_limit_snapshot(user_id)
-        now = datetime.now()
+        slot_items = await list_user_slots(user_id)
+        license_overview = await get_license_overview(user_id)
+        active_slots = [item for item in slot_items if item.status == "active"]
+        current = None
         remain_days = None
-        if active_subscription and active_subscription.end_at:
-            remain_days = max(0, int((active_subscription.end_at - now).total_seconds() // 86400))
+        if active_slots:
+            slot = min(active_slots, key=lambda item: item.end_at)
+            current = {
+                "slot_id": slot.slot_id,
+                "account_id": slot.account_id,
+                "account_name": slot.account_name,
+                "end_at": slot.end_at.isoformat() if slot.end_at else None,
+                "duration_days": slot.duration_days,
+                "card_count": slot.card_count,
+                "status": slot.status,
+                "grant_source": slot.grant_source,
+                "grant_source_label": slot.to_dict().get("grant_source_label"),
+            }
+            remain_days = slot.remaining_days
         return {
-            "is_active": active_subscription is not None,
-            "current": self._serialize_subscription(active_subscription),
+            "is_active": bool(active_slots),
+            "current": current,
             "remain_days": remain_days,
-            "tg_account_limit": self._serialize_tg_account_limit(tg_account_limit),
+            "license_status": {
+                "is_active": bool(active_slots),
+                "current": current,
+                "remain_days": remain_days,
+            },
+            "license_overview": license_overview.to_dict(),
+            "license_slots": [item.to_dict() for item in slot_items],
+            "bot": await self._serialize_bot_entry(),
             "plans": plans,
             "purchase": purchase,
         }
 
-    async def get_tg_account_limit(self, user_id: int) -> Dict[str, Any]:
-        snapshot = await get_tg_account_limit_snapshot(user_id)
-        return self._serialize_tg_account_limit(snapshot)
-
     async def ensure_can_add_tg_account(self, user_id: int, *, existing_tg_user_id: Optional[int] = None) -> Dict[str, Any]:
-        snapshot = await ensure_can_add_tg_account(user_id, existing_tg_user_id=existing_tg_user_id)
-        return self._serialize_tg_account_limit(snapshot)
+        overview = await ensure_can_add_tg_account(user_id, existing_tg_user_id=existing_tg_user_id)
+        return overview.to_dict()
 
-    async def require_active_subscription(self, user_id: int) -> None:
-        status_data = await self.get_subscription_status(user_id)
+    async def require_active_license(self, user_id: int) -> None:
+        status_data = await self.get_license_status(user_id)
         if status_data["is_active"]:
             return
-
-        plan_text = "；".join(
-            [f"{plan['display_name']} {plan['price_yuan']}元" for plan in status_data["plans"]]
-        )
-        detail = "当前账号未开通付费服务，请前往“我的”页面激活卡密后再添加账号。"
-        if plan_text:
-            detail = f"{detail} 当前套餐：{plan_text}"
+        detail = "当前系统账号还没有可用于自动发送的套餐位，请先激活卡密。"
         purchase_url = ((status_data.get("purchase") or {}).get("url") or "").strip()
         if purchase_url:
             detail = f"{detail} 购买入口：{purchase_url}"
         raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=detail)
 
-    async def activate_card(self, user_id: int, card_code: str) -> Dict[str, Any]:
-        normalized_code = (card_code or "").strip().upper()
-        if not normalized_code:
-            raise HTTPException(status_code=400, detail="卡密不能为空")
-
-        now = datetime.now()
+    async def activate_card(
+        self,
+        user_id: int,
+        card_code: str,
+        account_id: Optional[str] = None,
+        slot_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         async with get_async_session() as session:
-            result = await session.execute(
-                select(ActivationCard)
-                .where(func.upper(ActivationCard.card_code) == normalized_code)
-                .limit(1)
+            slot, _card = await activate_card_for_user(
+                user_id=user_id,
+                card_code=card_code,
+                account_id=account_id,
+                slot_id=slot_id,
+                session=session,
             )
-            card = result.scalar_one_or_none()
-            if not card:
-                raise HTTPException(status_code=404, detail="卡密不存在")
-            if not card.is_active:
-                raise HTTPException(status_code=400, detail="卡密已失效")
-            if card.is_used:
-                raise HTTPException(status_code=400, detail="卡密已被使用")
-            if card.expires_at and card.expires_at <= now:
-                raise HTTPException(status_code=400, detail="卡密已过期")
-
-            plan = None
-            if card.plan_code:
-                plan_result = await session.execute(
-                    select(PricingPlan).where(PricingPlan.plan_code == card.plan_code).limit(1)
-                )
-                plan = plan_result.scalar_one_or_none()
-
-            duration_days = card.duration_days or (plan.duration_days if plan else 0)
-            if duration_days <= 0:
-                raise HTTPException(status_code=400, detail="卡密配置异常：时长无效")
-
-            sub_result = await session.execute(
-                select(UserSubscription)
-                .where(
-                    and_(
-                        UserSubscription.user_id == user_id,
-                        UserSubscription.status == "active",
-                    )
-                )
-                .order_by(UserSubscription.end_at.desc())
-                .limit(1)
-            )
-            active_sub = sub_result.scalar_one_or_none()
-            if active_sub and active_sub.end_at <= now:
-                active_sub.status = "expired"
-                active_sub = None
-
-            if active_sub is None:
-                new_subscription = UserSubscription(
-                    user_id=user_id,
-                    plan_code=card.plan_code,
-                    source="card",
-                    card_code=card.card_code,
-                    start_at=now,
-                    end_at=now + timedelta(days=duration_days),
-                    status="active",
-                )
-                session.add(new_subscription)
+            if slot.current_account_id:
+                summary = await get_account_authorization_summary(slot.current_account_id, session=session)
             else:
-                active_sub.end_at = active_sub.end_at + timedelta(days=duration_days)
-                if card.plan_code:
-                    active_sub.plan_code = card.plan_code
-                active_sub.source = "card"
-                active_sub.card_code = card.card_code
-
-            card.is_used = True
-            card.used_by_user_id = user_id
-            card.used_at = now
-
+                summary = None
             await session.commit()
-
-        return await self.get_subscription_status(user_id)
+        status_data = await self.get_license_status(user_id)
+        status_data["activated_slot"] = {
+            "slot_id": slot.slot_id,
+            "account_id": slot.current_account_id,
+            "end_at": slot.end_at.isoformat() if slot.end_at else None,
+            "status": slot.status,
+            "account_name": next(
+                (
+                    item.get("account_name")
+                    for item in status_data.get("license_slots") or []
+                    if item.get("slot_id") == slot.slot_id
+                ),
+                None,
+            ),
+        }
+        if summary is not None:
+            status_data["activated_slot"]["license_status"] = summary.license_status
+            status_data["activated_slot"]["license_key_count"] = summary.license_key_count
+        return status_data
 
     async def change_password(self, user_id: int, old_password: str, new_password: str) -> None:
         auth_service = get_auth_service()
@@ -278,6 +257,8 @@ class MeService:
                 raise HTTPException(status_code=400, detail="原密码错误")
 
             user.password_hash = auth_service.get_password_hash(new_password)
+            user.bot_initial_password_viewable = False
+            user.password_changed_after_bot_registration = True
             await session.commit()
 
     async def update_profile(self, user_id: int, email: Optional[str]) -> Dict[str, Any]:

@@ -10,6 +10,8 @@ import type { ApiResponse } from './request'
 export enum LoginStatus {
   PENDING = 'pending',
   SCANNING = 'scanning',
+  PHONE_INPUT_REQUIRED = 'phone_input_required',
+  CODE_INPUT_REQUIRED = 'code_input_required',
   PASSWORD_REQUIRED = 'password_required',
   CONFIRMED = 'confirmed',
   EXPIRED = 'expired',
@@ -31,11 +33,20 @@ export interface LoginSession {
 export interface LoginStatusResponse {
   status: LoginStatus
   qr_url?: string
-  bind_code?: string
+  phone_number?: string
   tg_user_id?: number
   username?: string
+  bot_bind_url?: string
+  bot_username?: string
   password_hint?: string
   error?: string
+  trial_slot?: LoginTrialSlot | null
+}
+
+export interface LoginTrialSlot {
+  slot_id: string
+  end_at: string | null
+  grant_source?: string | null
 }
 
 /**
@@ -45,11 +56,52 @@ export const createLoginSession = (): Promise<ApiResponse<LoginSession>> => {
   return request.post('/login/create')
 }
 
+export interface PhoneLoginSession {
+  login_id: string
+  expires_at: string
+  status: LoginStatus
+}
+
+export const createPhoneLoginSession = (): Promise<ApiResponse<PhoneLoginSession>> => {
+  return request.post('/login/phone/create')
+}
+
 /**
  * 获取登录状态
  */
 export const getLoginStatus = (loginId: string): Promise<ApiResponse<LoginStatusResponse>> => {
   return request.get('/login/status', { params: { login_id: loginId } })
+}
+
+export interface PhoneSendCodeResponse {
+  login_id: string
+  status: LoginStatus
+  phone_number: string
+}
+
+export const sendPhoneLoginCode = (
+  loginId: string,
+  phoneNumber: string
+): Promise<ApiResponse<PhoneSendCodeResponse>> => {
+  return request.post('/login/phone/send-code', {
+    login_id: loginId,
+    phone_number: phoneNumber
+  })
+}
+
+export interface PhoneSubmitCodeResponse extends SubmitPasswordResponse {
+  status: LoginStatus
+  password_hint?: string
+}
+
+export const submitPhoneLoginCode = (
+  loginId: string,
+  code: string
+): Promise<ApiResponse<PhoneSubmitCodeResponse>> => {
+  return request.post('/login/phone/code', {
+    login_id: loginId,
+    code
+  })
 }
 
 /**
@@ -62,23 +114,12 @@ export const checkLoginStatus = (): Promise<ApiResponse<{ is_logged_in: boolean 
 /**
  * 绑定账号响应接口
  */
-export interface BindAccountResponse {
-  token: string
-  user_id: number
-  username: string
-}
-
 export interface SubmitPasswordResponse {
-  bind_code: string
   tg_user_id: number
   username: string
-}
-
-/**
- * 验证绑定码并获取 token
- */
-export const bindAccount = (bindCode: string): Promise<ApiResponse<BindAccountResponse>> => {
-  return request.post('/login/bind', { bind_code: bindCode })
+  bot_bind_url: string
+  bot_username: string
+  trial_slot?: LoginTrialSlot | null
 }
 
 export const submitLoginPassword = (
@@ -94,6 +135,21 @@ export const submitLoginPassword = (
 /**
  * 获取已登录 userbot 的 token
  */
-export const getExistingToken = (): Promise<ApiResponse<BindAccountResponse>> => {
+export const getExistingToken = (): Promise<ApiResponse<DeprecatedLoginTokenResponse>> => {
   return request.get('/login/get-token')
+}
+
+export interface BotBindLinkResponse {
+  bot_username: string
+  bind_token: string
+  bot_bind_url: string
+}
+
+export const createBotBindLink = (): Promise<ApiResponse<BotBindLinkResponse>> => {
+  return request.post('/login/bot-bind-link')
+}
+export interface DeprecatedLoginTokenResponse {
+  token: string
+  user_id: number
+  username: string
 }

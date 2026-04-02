@@ -14,6 +14,7 @@ from backend.bot.onboarding import get_onboarding_service
 
 _SENSITIVE_INPUT_STATES = {
     FSMState.WAIT_REGISTER_PASSWORD,
+    FSMState.WAIT_LOGIN_CODE,
     FSMState.WAIT_LOGIN_PASSWORD,
 }
 
@@ -46,6 +47,12 @@ async def dispatch_message_by_state(event, user_id: int, state: FSMState, task_i
         return
     if state == FSMState.WAIT_ACTIVATION_CODE:
         await onboarding_service.handle_activation_code(event, user_id, event.message.message or "")
+        return
+    if state == FSMState.WAIT_LOGIN_PHONE:
+        await onboarding_service.handle_login_phone(event, user_id, event.message.message or "")
+        return
+    if state == FSMState.WAIT_LOGIN_CODE:
+        await onboarding_service.handle_login_code(event, user_id, event.message.message or "")
         return
     if state == FSMState.WAIT_LOGIN_PASSWORD:
         await onboarding_service.handle_login_password(event, user_id, event.message.message or "")

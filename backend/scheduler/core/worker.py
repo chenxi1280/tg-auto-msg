@@ -11,6 +11,10 @@ from backend.bot.account.manager import get_account_manager
 from backend.config.core.settings import settings
 from backend.database.schema.models import ScheduledMessageTask
 from backend.database.runtime.session import get_async_session
+from backend.h5_backend.services.licensing.service import (
+    disable_tasks_for_account_if_unlicensed,
+    get_account_authorization_summary,
+)
 from backend.bot.circuit.breaker import get_circuit_breaker, FloodWaitAction
 from backend.bot.resources.manager import get_resource_manager
 from backend.scheduler.core.queue_ops import (
@@ -20,6 +24,7 @@ from backend.scheduler.core.queue_ops import (
 )
 from backend.scheduler.core.task_execution import (
     collect_task_targets as _collect_task_targets,
+    get_target_last_message_id as _get_target_last_message_id,
     resolve_send_target as _resolve_send_target,
     send_with_protections as _send_with_protections,
 )
@@ -256,6 +261,20 @@ class TaskScheduler:
                     logger.debug(f"任务 {task_id} 不存在或已禁用")
                     return
 
+                if task.account_id:
+                    auth_summary = await get_account_authorization_summary(task.account_id, session=session)
+                    if not auth_summary.can_create_tasks:
+                        disabled_count = await disable_tasks_for_account_if_unlicensed(
+                            account_id=task.account_id,
+                            session=session,
+                        )
+                        logger.warning(
+                            "任务 {} 对应账号已无有效套餐位，已停用该账号下任务 {} 条",
+                            task_id,
+                            disabled_count,
+                        )
+                        return
+
                 if task.next_run_at is None:
                     start_at_ts = int(task.start_at or 0)
                     task.next_run_at = max(now, start_at_ts) if start_at_ts > 0 else now
@@ -332,12 +351,17 @@ class TaskScheduler:
                 try:
                     last_message_id: Optional[int] = None
                     send_errors: list[str] = []
-                    skip_delete_previous = len(target_specs) > 1
+                    target_message_ids: dict[tuple[str, int], int] = {}
 
                     for spec in target_specs:
                         target_peer_id = int(spec["peer_id"])
                         target_peer_type = spec.get("peer_type")
                         target_access_hash = spec.get("access_hash")
+                        previous_message_id = _get_target_last_message_id(
+                            task,
+                            target_peer_id=target_peer_id,
+                            target_peer_type=target_peer_type,
+                        )
 
                         try:
                             # 解析发送目标，优先使用资源表中的 peer_type/access_hash，避免误判为 PeerUser
@@ -356,7 +380,7 @@ class TaskScheduler:
                                 send_target=send_target,
                                 lock_peer_id=target_peer_id,
                                 account_id=account_id_str,
-                                skip_delete_previous=skip_delete_previous,
+                                previous_message_id=previous_message_id,
                                 media_ref_prefix=self.TELEGRAM_MEDIA_REF_PREFIX,
                             )
                         except (FloodWaitError, PeerFloodError):
@@ -373,6 +397,8 @@ class TaskScheduler:
 
                         if message_id:
                             last_message_id = message_id
+                            key = (str(target_peer_type or task.target_peer_type or "").strip().lower(), target_peer_id)
+                            target_message_ids[key] = message_id
                         else:
                             send_errors.append(f"peer={target_peer_id}: send_message returned empty")
 
@@ -381,6 +407,7 @@ class TaskScheduler:
                             session=session,
                             task=task,
                             message_id=last_message_id,
+                            target_message_ids=target_message_ids,
                             now=now,
                             account_manager=self._account_manager,
                         )

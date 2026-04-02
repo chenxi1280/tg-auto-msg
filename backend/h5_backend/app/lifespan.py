@@ -13,9 +13,11 @@ from backend.bot.client_runtime.manager import (
     userbot_client,
 )
 from backend.bot.developer_apps import get_developer_app_service
-from backend.bot.subscription_notifier import subscription_notifier
+from backend.bot.developer_apps.health_runtime import developer_app_health_runtime
+from backend.bot.license_notifier import license_slot_notifier
 from backend.config.core.settings import settings
 from backend.database.runtime.session import init_database
+from backend.h5_backend.services.account import account_auto_sync_runtime
 from backend.scheduler.core.worker import scheduler
 
 # Register Bot command/callback handlers (import side effect)
@@ -63,7 +65,7 @@ async def app_lifespan(app: FastAPI):
     logger.info("初始化 Userbot...")
     userbot_logged_in = await init_userbot()
     if not userbot_logged_in:
-        logger.warning("⚠️ Userbot 未登录，请通过 Bot 或 H5 发起扫码登录")
+        logger.warning("⚠️ Userbot 未登录，请通过 Bot 手机号绑定或 H5 登录")
     logger.info("✅ Userbot 初始化完成")
 
     logger.info("初始化调度器...")
@@ -73,8 +75,14 @@ async def app_lifespan(app: FastAPI):
     scheduler_task = asyncio.create_task(scheduler.start())
     logger.info("✅ 任务调度器已启动")
 
-    notifier_task = asyncio.create_task(subscription_notifier.start())
+    notifier_task = asyncio.create_task(license_slot_notifier.start())
     logger.info("✅ 订阅提醒任务已启动")
+
+    auto_sync_task = asyncio.create_task(account_auto_sync_runtime.start())
+    logger.info("✅ 账号资源自动同步任务已启动")
+
+    developer_app_health_task = asyncio.create_task(developer_app_health_runtime.start())
+    logger.info("✅ 开发者应用健康检查任务已启动")
 
     logger.info("🤖 启动 Bot（后台连接）...")
     expected_bot_id = str(settings.bot_token).split(":", 1)[0] if settings.bot_token else "unknown"
@@ -94,10 +102,24 @@ async def app_lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
 
-    await subscription_notifier.stop()
+    await license_slot_notifier.stop()
     notifier_task.cancel()
     try:
         await notifier_task
+    except asyncio.CancelledError:
+        pass
+
+    await account_auto_sync_runtime.stop()
+    auto_sync_task.cancel()
+    try:
+        await auto_sync_task
+    except asyncio.CancelledError:
+        pass
+
+    await developer_app_health_runtime.stop()
+    developer_app_health_task.cancel()
+    try:
+        await developer_app_health_task
     except asyncio.CancelledError:
         pass
 

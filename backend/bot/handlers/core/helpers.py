@@ -58,12 +58,12 @@ def is_valid_button_url(url: str) -> bool:
     return True
 
 
-def build_login_buttons(label: str = "🔐 扫码登录"):
+def build_login_buttons(label: str = "📱 绑定账号"):
     """Build login button keyboard."""
     login_url = build_h5_login_url()
     if is_valid_button_url(login_url):
         return [[Button.url(label, login_url)]]
-    return [[Button.inline("🔐 登录指引", data="show_login_help")]]
+    return [[Button.inline("📱 绑定指引", data="show_login_help")]]
 
 
 def login_help_text() -> str:

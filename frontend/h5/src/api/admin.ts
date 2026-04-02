@@ -36,7 +36,6 @@ export interface AdminPlan {
   price_cents: number
   price_yuan: string
   duration_days: number
-  max_tg_accounts: number
   is_active: boolean
   sort_order: number
 }
@@ -51,7 +50,39 @@ export interface AdminCard {
   expires_at: string | null
   used_by_user_id: number | null
   used_at: string | null
+  slot_id?: string | null
+  bound_account_id?: string | null
+  bound_account_name?: string | null
+  slot_end_at?: string | null
   created_at: string | null
+}
+
+export interface AdminCardsPage {
+  items: AdminCard[]
+  total: number
+  limit: number
+  offset: number
+  stats: {
+    total: number
+    used: number
+    unused: number
+  }
+}
+
+export interface AdminLicenseSlot {
+  slot_id: string
+  user_id: number
+  owner_username: string
+  status: string
+  current_account_id: string | null
+  current_account_username: string | null
+  current_account_phone: string | null
+  current_account_tg_user_id: number | null
+  total_duration_days: number
+  start_at: string | null
+  end_at: string | null
+  created_at: string | null
+  updated_at: string | null
 }
 
 export interface AdminUserSummary {
@@ -61,18 +92,15 @@ export interface AdminUserSummary {
   is_active: boolean
   created_at: string | null
   account_count: number
-  plan_max_tg_accounts?: number | null
-  max_tg_accounts_override?: number | null
-  effective_max_tg_accounts: number
-  remaining_tg_account_slots?: number | null
-  is_over_limit: boolean
   developer_app_id?: number | null
-  subscription: {
-    plan_code: string | null
+  current_license: {
     start_at: string | null
     end_at: string | null
     status: string | null
   }
+  license_slot_count?: number
+  active_license_slot_count?: number
+  unbound_active_slot_count?: number
 }
 
 export interface AdminAccount {
@@ -137,6 +165,12 @@ export interface AdminDeveloperApp {
   api_id: number
   is_active: boolean
   max_accounts: number
+  selection_weight: number
+  health_status: string
+  last_health_check_at: string | null
+  last_health_error: string | null
+  last_health_latency_ms: number | null
+  health_fail_count: number
   credentials_version: number
   last_rotated_at: string | null
   notes: string | null
@@ -144,6 +178,12 @@ export interface AdminDeveloperApp {
   account_usage: number
   created_at: string | null
   updated_at: string | null
+}
+
+export interface AdminDeveloperAppSettings {
+  assignment_mode: 'round_robin' | 'weight'
+  alert_tg_user_ids: number[]
+  alert_tg_user_ids_text: string
 }
 
 export interface AdminPurchaseSettings {
@@ -163,12 +203,30 @@ export const adminUpdatePurchaseSettings = (
 
 export const adminUpdatePlan = (
   planCode: string,
-  payload: Partial<Pick<AdminPlan, 'display_name' | 'price_cents' | 'duration_days' | 'max_tg_accounts' | 'is_active' | 'sort_order'>>,
+  payload: Partial<Pick<AdminPlan, 'display_name' | 'billing_cycle' | 'price_cents' | 'duration_days' | 'is_active' | 'sort_order'>>,
 ): Promise<{ success: boolean; data: AdminPlan }> =>
   adminApi.put(`/admin/plans/${planCode}`, payload)
 
-export const adminListDeveloperApps = (): Promise<{ success: boolean; data: { apps: AdminDeveloperApp[] } }> =>
+export const adminCreatePlan = (payload: {
+  plan_code: string
+  display_name: string
+  billing_cycle: string
+  price_cents: number
+  duration_days: number
+  is_active?: boolean
+  sort_order?: number
+}): Promise<{ success: boolean; data: AdminPlan }> => adminApi.post('/admin/plans', payload)
+
+export const adminDeletePlan = (
+  planCode: string,
+): Promise<{ success: boolean; data: { plan_code: string; disabled_unused_cards: number; used_cards_kept: number } }> =>
+  adminApi.delete(`/admin/plans/${encodeURIComponent(planCode)}`)
+
+export const adminListDeveloperApps = (): Promise<{ success: boolean; data: { apps: AdminDeveloperApp[]; settings: AdminDeveloperAppSettings } }> =>
   adminApi.get('/admin/developer-apps')
+
+export const adminGetDeveloperAppSettings = (): Promise<{ success: boolean; data: AdminDeveloperAppSettings }> =>
+  adminApi.get('/admin/settings/developer-apps')
 
 export const adminCreateDeveloperApp = (payload: {
   app_name: string
@@ -176,6 +234,7 @@ export const adminCreateDeveloperApp = (payload: {
   api_hash: string
   is_active?: boolean
   max_accounts?: number
+  selection_weight?: number
   notes?: string
 }): Promise<{ success: boolean; data: AdminDeveloperApp }> => adminApi.post('/admin/developer-apps', payload)
 
@@ -186,18 +245,42 @@ export const adminUpdateDeveloperApp = (
     api_hash?: string
     is_active?: boolean
     max_accounts?: number
+    selection_weight?: number
     notes?: string
   },
 ): Promise<{ success: boolean; data: AdminDeveloperApp & { rotated_accounts?: number } }> =>
   adminApi.put(`/admin/developer-apps/${appId}`, payload)
 
+export const adminUpdateDeveloperAppSettings = (payload: {
+  assignment_mode: 'round_robin' | 'weight'
+  alert_tg_user_ids: string
+}): Promise<{ success: boolean; data: AdminDeveloperAppSettings }> =>
+  adminApi.put('/admin/settings/developer-apps', payload)
+
 export const adminSetDefaultDeveloperApp = (appId: number): Promise<{ success: boolean }> =>
   adminApi.post(`/admin/developer-apps/${appId}/set-default`)
+
+export const adminCheckDeveloperAppHealth = (
+  appId: number,
+): Promise<{
+  success: boolean
+  data: {
+    app_id: number
+    app_name: string
+    previous_status: string
+    current_status: string
+    checked_at: string
+    last_health_error: string | null
+    last_health_latency_ms: number | null
+    migrated_account_ids: string[]
+    stalled_account_ids: string[]
+    notified_recipients: number[]
+  }
+}> => adminApi.post(`/admin/developer-apps/${appId}/check`)
 
 export const adminGenerateCards = (payload: {
   plan_code: string
   quantity: number
-  duration_days?: number | null
   valid_days?: number | null
   prefix?: string
 }): Promise<{ success: boolean; data: AdminCard[] }> => adminApi.post('/admin/cards/generate', payload)
@@ -206,9 +289,17 @@ export const adminListCards = (params?: {
   plan_code?: string
   is_used?: boolean
   is_active?: boolean
+  sort_by?: 'created_at' | 'used_at' | 'expires_at'
+  sort_order?: 'asc' | 'desc'
   limit?: number
   offset?: number
-}): Promise<{ success: boolean; data: AdminCard[] }> => adminApi.get('/admin/cards', { params })
+}): Promise<{ success: boolean; data: AdminCardsPage }> => adminApi.get('/admin/cards', { params })
+
+export const adminExportCardsXlsx = (params?: {
+  plan_code?: string
+  is_used?: boolean
+  is_active?: boolean
+}): Promise<Blob> => adminApi.get('/admin/cards/export', { params, responseType: 'blob' })
 
 export const adminDisableCard = (cardCode: string): Promise<{ success: boolean }> =>
   adminApi.post(`/admin/cards/${encodeURIComponent(cardCode)}/disable`)
@@ -233,29 +324,11 @@ export const adminResetUserPassword = (
   newPassword: string,
 ): Promise<{ success: boolean }> => adminApi.post(`/admin/users/${userId}/reset-password`, { new_password: newPassword })
 
-export const adminUpdateUserSubscription = (
-  userId: number,
-  payload: {
-    plan_code?: string | null
-    end_at?: string | null
-    extend_days?: number | null
-    set_inactive?: boolean
-  },
-): Promise<{ success: boolean; data: any }> => adminApi.put(`/admin/users/${userId}/subscription`, payload)
-
 export const adminSetUserDeveloperApp = (
   userId: number,
   developerAppId?: number | null,
 ): Promise<{ success: boolean; data: any }> =>
   adminApi.put(`/admin/users/${userId}/developer-app`, { developer_app_id: developerAppId || null })
-
-export const adminUpdateUserTgAccountLimit = (
-  userId: number,
-  payload: {
-    use_plan_default: boolean
-    max_tg_accounts_override?: number | null
-  },
-): Promise<{ success: boolean; data: any }> => adminApi.put(`/admin/users/${userId}/tg-account-limit`, payload)
 
 export const adminListAccountOptions = (params?: {
   search?: string

@@ -67,6 +67,69 @@ def collect_task_targets(task: ScheduledMessageTask) -> list[dict]:
     return deduped
 
 
+def get_target_last_message_id(
+    task: ScheduledMessageTask,
+    *,
+    target_peer_id: int,
+    target_peer_type: Optional[str],
+) -> Optional[int]:
+    """Return the last sent message id for one specific target."""
+    peer_type = str(target_peer_type or task.target_peer_type or "").strip().lower()
+
+    raw_targets = getattr(task, "target_peers", None)
+    if isinstance(raw_targets, list):
+        for item in raw_targets:
+            if not isinstance(item, dict):
+                continue
+            try:
+                peer_id = int(item.get("peer_id"))
+            except Exception:
+                continue
+            item_peer_type = str(item.get("peer_type") or "").strip().lower()
+            if peer_id == int(target_peer_id) and item_peer_type == peer_type:
+                message_id = item.get("last_sent_message_id")
+                if message_id in (None, ""):
+                    return task.last_sent_message_id
+                try:
+                    return int(message_id)
+                except Exception:
+                    return task.last_sent_message_id
+
+    return task.last_sent_message_id
+
+
+def update_task_target_last_message_ids(
+    task: ScheduledMessageTask,
+    *,
+    target_message_ids: dict[tuple[str, int], int],
+) -> None:
+    """Persist last message ids back into task target metadata."""
+    raw_targets = getattr(task, "target_peers", None)
+    if isinstance(raw_targets, list) and raw_targets:
+        updated_targets: list[dict] = []
+        for item in raw_targets:
+            if not isinstance(item, dict):
+                updated_targets.append(item)
+                continue
+            updated_item = dict(item)
+            try:
+                peer_id = int(updated_item.get("peer_id"))
+            except Exception:
+                updated_targets.append(updated_item)
+                continue
+            peer_type = str(updated_item.get("peer_type") or "").strip().lower()
+            message_id = target_message_ids.get((peer_type, peer_id))
+            if message_id:
+                updated_item["last_sent_message_id"] = int(message_id)
+            updated_targets.append(updated_item)
+        task.target_peers = updated_targets
+
+    if len(target_message_ids) == 1:
+        task.last_sent_message_id = next(iter(target_message_ids.values()))
+    elif target_message_ids:
+        task.last_sent_message_id = next(reversed(list(target_message_ids.values())))
+
+
 async def resolve_send_target(
     *,
     client,
@@ -157,7 +220,7 @@ async def do_send_message(
     client,
     task: ScheduledMessageTask,
     send_target,
-    skip_delete_previous: bool,
+    previous_message_id: Optional[int],
     media_ref_prefix: str,
 ) -> Optional[int]:
     """Send one task message and return sent message id."""
@@ -216,11 +279,13 @@ async def do_send_message(
             parse_mode="html",
         )
 
-    if (not skip_delete_previous) and task.delete_previous and task.last_sent_message_id:
+    if task.delete_previous and previous_message_id:
         try:
-            await client.delete_messages(send_target, [task.last_sent_message_id])
+            await client.delete_messages(send_target, [previous_message_id])
         except Exception as e:
-            logger.warning(f"删除上一条消息失败 task={task.task_id}: {e}")
+            logger.warning(
+                f"删除上一条消息失败 task={task.task_id}, previous_message_id={previous_message_id}: {e}"
+            )
 
     try:
         msg = await _send_with_buttons(buttons)
@@ -247,7 +312,7 @@ async def send_with_protections(
     send_target,
     lock_peer_id: int,
     account_id: str,
-    skip_delete_previous: bool,
+    previous_message_id: Optional[int],
     media_ref_prefix: str,
 ) -> Optional[int]:
     """Apply rate-limit and circuit-breaker before actual send."""
@@ -261,7 +326,7 @@ async def send_with_protections(
             client=client,
             task=task,
             send_target=send_target,
-            skip_delete_previous=skip_delete_previous,
+            previous_message_id=previous_message_id,
             media_ref_prefix=media_ref_prefix,
         )
 
@@ -271,6 +336,6 @@ async def send_with_protections(
         client=client,
         task=task,
         send_target=send_target,
-        skip_delete_previous=skip_delete_previous,
+        previous_message_id=previous_message_id,
         media_ref_prefix=media_ref_prefix,
     )

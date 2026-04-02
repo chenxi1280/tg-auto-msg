@@ -7,6 +7,23 @@ from backend.database.schema.models import ScheduledMessageTask, TaskLog
 from backend.h5_backend.services.task.helpers import media_value
 
 
+def _serialize_public_target_peers(task: ScheduledMessageTask) -> List[Dict[str, Any]]:
+    """Expose only user-facing target fields."""
+    serialized: List[Dict[str, Any]] = []
+    raw_targets = task.target_peers or []
+    for item in raw_targets:
+        if not isinstance(item, dict):
+            continue
+        serialized.append(
+            {
+                "peer_id": item.get("peer_id"),
+                "peer_type": item.get("peer_type"),
+                "access_hash": item.get("access_hash"),
+            }
+        )
+    return serialized
+
+
 def serialize_task_list_item(task: ScheduledMessageTask) -> Dict[str, Any]:
     """Serialize one task for list endpoint."""
     return {
@@ -15,7 +32,7 @@ def serialize_task_list_item(task: ScheduledMessageTask) -> Dict[str, Any]:
         "chat_id": task.chat_id,
         "target_peer_id": task.target_peer_id,
         "target_peer_type": task.target_peer_type,
-        "target_peers": task.target_peers or [],
+        "target_peers": _serialize_public_target_peers(task),
         "title": task.title,
         "enabled": task.enabled,
         "priority": task.priority,
@@ -46,7 +63,7 @@ def serialize_task_detail(task: ScheduledMessageTask) -> Dict[str, Any]:
         "target_peer_id": task.target_peer_id,
         "target_peer_type": task.target_peer_type,
         "target_access_hash": task.target_access_hash,
-        "target_peers": task.target_peers or [],
+        "target_peers": _serialize_public_target_peers(task),
         "title": task.title,
         "enabled": task.enabled,
         "priority": task.priority,
