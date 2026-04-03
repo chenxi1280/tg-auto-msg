@@ -155,28 +155,20 @@ sudo supervisorctl start tg-auto-msg
 
 ### 方式三：使用 Docker Compose（推荐上线，前后端分离）
 ```bash
-# 1) 准备环境变量
-cp .env.docker.example .env
-# 编辑 .env，至少填写以下必填项：
+# 1) 首次准备 shared 环境文件
+cp .env.docker.example /data/tgmsg/shared/.env
+# 编辑 /data/tgmsg/shared/.env，至少填写以下必填项：
 # TG_API_ID TG_API_HASH BOT_TOKEN JWT_SECRET_KEY ADMIN_API_TOKEN
 # POSTGRES_PASSWORD REDIS_PASSWORD
 
-# 2) 启动（包含 frontend + app + postgres + redis）
-bash deploy/compose-up.sh
-
-# 3) 查看服务状态
-bash deploy/compose-up.sh
-docker compose logs -f frontend
-docker compose logs -f app
+# 2) 本地统一发版（推荐）
+bash deploy/release.sh --host 47.250.167.174
 ```
 
 线上推荐额外启用前端自愈巡检：
 ```bash
-sudo cp deploy/systemd/tgmsg-frontend-watchdog.service /etc/systemd/system/
-sudo cp deploy/systemd/tgmsg-frontend-watchdog.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now tgmsg-frontend-watchdog.timer
-systemctl list-timers | grep tgmsg-frontend-watchdog
+# 由 deploy/server-install-release.sh 自动安装
+systemctl list-timers | grep tgmsg
 ```
 
 生产结构说明：
@@ -185,12 +177,15 @@ systemctl list-timers | grep tgmsg-frontend-watchdog
 - `postgres`：PostgreSQL 容器
 - `redis`：Redis 容器
 
-宿主机持久化目录：
-- `/data/tgmsg/postgres`：PostgreSQL 数据文件
-- `/data/tgmsg/redis`：Redis AOF/RDB 数据
-- `/data/tgmsg/logs`：后端应用日志
-- `/data/tgmsg/uploads`：业务上传目录
-- `/data/tgmsg/nginx-logs`：Nginx 访问日志与错误日志
+标准目录结构：
+- `/data/tgmsg/releases/<release_id>`：每次发版的只读源码目录
+- `/data/tgmsg/current`：当前正在运行的版本软链
+- `/data/tgmsg/shared/.env`：线上环境变量
+- `/data/tgmsg/shared/postgres`：PostgreSQL 数据
+- `/data/tgmsg/shared/redis`：Redis 数据
+- `/data/tgmsg/shared/logs`：后端应用日志
+- `/data/tgmsg/shared/uploads`：业务上传目录
+- `/data/tgmsg/shared/nginx-logs`：Nginx 日志
 
 访问入口：
 - `http://your-host/`：前端首页
@@ -198,23 +193,21 @@ systemctl list-timers | grep tgmsg-frontend-watchdog
 
 常用命令：
 ```bash
-# 完整部署
-bash deploy/compose-up.sh
+# 查看线上容器状态
+ssh root@your-host "cd /data/tgmsg/current && docker compose --env-file /data/tgmsg/shared/.env ps"
 
-# 仅重启后端
-docker compose up -d --build app
+# 回滚到指定版本
+ssh root@your-host "bash /data/tgmsg/current/deploy/rollback.sh <release-id>"
 
-# 仅重启前端
-docker compose up -d --build frontend
-
-# 查看前端状态
-docker ps --format '{{.Names}}|{{.Status}}' | grep tgmsg-frontend
-tail -f /data/tgmsg/logs/frontend-watchdog.log
+# 查看巡检日志
+ssh root@your-host "tail -f /data/tgmsg/shared/logs/service-health.log"
 ```
 
 说明：
 - 生产环境建议设置 `SERVE_FRONTEND=false`，由 Nginx 提供前端。
 - 本地开发仍可设置 `SERVE_FRONTEND=true`，继续由 FastAPI 挂载前端构建产物。
+- 标准发版脚本使用 `git archive`，不会再把 `.DS_Store`、`._*` 等本地垃圾文件带到线上。
+- 推荐尽快把默认发布分支统一到 `main`。详细规范见 [docs/BRANCHING_AND_RELEASES.md](/Users/xida/PycharmProjects/tg-auto-msg/docs/BRANCHING_AND_RELEASES.md)。
 
 ## 📊 数据库结构
 

@@ -165,63 +165,69 @@ sudo systemctl status tg-auto-msg
 sudo journalctl -u tg-auto-msg -f
 ```
 
-## 🐳 Docker 部署
+## 🐳 Docker 部署（推荐）
 
-### 1. 配置环境变量
+### 1. 服务器目录规范
 ```bash
-cp .env.docker.example .env
-nano .env
+mkdir -p /data/tgmsg/{releases,shared,incoming,backups}
+mkdir -p /data/tgmsg/shared/{postgres,redis,logs,uploads,nginx-logs}
 ```
 
-### 2. 启动服务
+### 2. 配置线上环境变量
 ```bash
-bash deploy/compose-up.sh
+cp .env.docker.example /data/tgmsg/shared/.env
+nano /data/tgmsg/shared/.env
 ```
 
-### 3. 查看日志
+### 3. 本地标准发版
 ```bash
-docker compose logs -f app
+bash deploy/release.sh --host 47.250.167.174
 ```
 
-### 4. 停止服务
+### 4. 服务器手工发布备用入口
 ```bash
-docker compose down
+# 假设 release 包已经上传到服务器
+mkdir -p /data/tgmsg/releases/<release_id>
+tar -xzf /data/tgmsg/incoming/<release_id>.tar.gz -C /data/tgmsg/releases/<release_id>
+bash /data/tgmsg/releases/<release_id>/deploy/server-install-release.sh \
+  --base-dir /data/tgmsg \
+  --release-dir /data/tgmsg/releases/<release_id> \
+  --release-id <release_id>
 ```
 
-### 5. 进入容器
+### 5. 回滚
 ```bash
-docker compose exec app bash
+bash /data/tgmsg/current/deploy/rollback.sh <release_id>
 ```
 
-### 6. 持久化说明
-- `postgres_data`：PostgreSQL 数据目录
-- `redis_data`：Redis 持久化目录
-- `app_logs`：应用日志目录
-- `app_uploads`：上传目录
+### 6. 目录说明
+- `/data/tgmsg/releases/<release_id>`：每次发版的只读源码
+- `/data/tgmsg/current`：当前生效版本软链
+- `/data/tgmsg/shared/.env`：线上环境变量
+- `/data/tgmsg/shared/postgres`：数据库数据
+- `/data/tgmsg/shared/redis`：Redis 数据
+- `/data/tgmsg/shared/logs`：应用日志
+- `/data/tgmsg/shared/uploads`：上传目录
+- `/data/tgmsg/shared/nginx-logs`：Nginx 日志
 
 ### 7. 前端自愈巡检
 ```bash
-sudo cp deploy/systemd/tgmsg-frontend-watchdog.service /etc/systemd/system/
-sudo cp deploy/systemd/tgmsg-frontend-watchdog.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now tgmsg-frontend-watchdog.timer
-systemctl status tgmsg-frontend-watchdog.timer
-tail -f /data/tgmsg/logs/frontend-watchdog.log
+# server-install-release.sh 会自动安装
+systemctl list-timers | grep tgmsg
+tail -f /data/tgmsg/shared/logs/frontend-watchdog.log
 ```
 
 ### 8. 线上常用命令
 ```bash
-# 完整部署（固定入口）
-bash deploy/compose-up.sh
+# 当前版本
+readlink -f /data/tgmsg/current
 
-# 仅重启后端
-docker compose up -d --build app
+# 容器状态
+cd /data/tgmsg/current
+docker compose --env-file /data/tgmsg/shared/.env ps
 
-# 仅重启前端
-docker compose up -d --build frontend
-
-# 查看前端状态
-docker ps --format '{{.Names}}|{{.Status}}' | grep tgmsg-frontend
+# 查看后端日志
+docker compose --env-file /data/tgmsg/shared/.env logs -f app
 ```
 
 ## 🌐 Nginx 反向代理（H5）
@@ -337,27 +343,21 @@ Redis 默认启用 RDB 和 AOF，无需额外配置。
 
 ## 📝 更新部署
 
-### 1. 拉取最新代码
+### 1. 创建发布分支或合并到主干
 ```bash
+git checkout main
 git pull origin main
 ```
 
-### 2. 更新依赖
+### 2. 本地统一发版
 ```bash
-pip install -r requirements.txt --upgrade
+bash deploy/release.sh --host 47.250.167.174
 ```
 
-### 3. 数据库迁移（如有）
-```bash
-python -m backend.database.runtime.migration_cli apply
-```
-
-### 4. 重启服务
-```bash
-# Supervisor
-sudo supervisorctl restart tg-auto-msg
-
-# Systemd
+说明：
+- 新方案不再推荐直接 `git pull` 到线上源码目录。
+- 生产发布统一走 `deploy/release.sh`，服务切换统一走 `current` 软链。
+- 若仓库暂未从 `master` 迁移到 `main`，可短期兼容，但建议尽快统一。
 sudo systemctl restart tg-auto-msg
 
 # Docker

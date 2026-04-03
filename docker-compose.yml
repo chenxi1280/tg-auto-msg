@@ -10,7 +10,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-tgmsg}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     volumes:
-      - /data/tgmsg/postgres:/var/lib/postgresql/data
+      - ${POSTGRES_DATA_DIR:-/data/tgmsg/postgres}:/var/lib/postgresql/data
       - ./sql/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
@@ -29,7 +29,7 @@ services:
       "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD is required}"
     ]
     volumes:
-      - /data/tgmsg/redis:/data
+      - ${REDIS_DATA_DIR:-/data/tgmsg/redis}:/data
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping | grep PONG"]
       interval: 10s
@@ -72,8 +72,8 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - /data/tgmsg/logs:/app/logs
-      - /data/tgmsg/uploads:/app/uploads
+      - ${APP_LOG_DIR:-/data/tgmsg/logs}:/app/logs
+      - ${APP_UPLOAD_DIR:-/data/tgmsg/uploads}:/app/uploads
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json', timeout=5)\""]
       interval: 20s
@@ -91,7 +91,7 @@ services:
       app:
         condition: service_healthy
     volumes:
-      - /data/tgmsg/nginx-logs:/var/log/nginx
+      - ${NGINX_LOG_DIR:-/data/tgmsg/nginx-logs}:/var/log/nginx
     ports:
       - "80:80"
     healthcheck:

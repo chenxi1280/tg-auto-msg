@@ -2,9 +2,28 @@
 
 set -euo pipefail
 
-APP_DIR="${APP_DIR:-/data/tgmsg/app}"
+BASE_DIR="${BASE_DIR:-/data/tgmsg}"
+CURRENT_APP_DIR="${BASE_DIR}/current"
+LEGACY_APP_DIR="${BASE_DIR}/app"
+
+if [[ -n "${APP_DIR:-}" ]]; then
+  APP_DIR="$APP_DIR"
+elif [[ -L "$CURRENT_APP_DIR" || -d "$CURRENT_APP_DIR" ]]; then
+  APP_DIR="$CURRENT_APP_DIR"
+else
+  APP_DIR="$LEGACY_APP_DIR"
+fi
+
+SHARED_DIR="${SHARED_DIR:-${BASE_DIR}/shared}"
 COMPOSE_FILE="${COMPOSE_FILE:-${APP_DIR}/docker-compose.yml}"
-ENV_FILE="${ENV_FILE:-${APP_DIR}/.env}"
+
+if [[ -n "${ENV_FILE:-}" ]]; then
+  ENV_FILE="$ENV_FILE"
+elif [[ -f "${SHARED_DIR}/.env" ]]; then
+  ENV_FILE="${SHARED_DIR}/.env"
+else
+  ENV_FILE="${APP_DIR}/.env"
+fi
 
 require_command() {
   local cmd="$1"
@@ -51,14 +70,14 @@ ensure_runtime_env() {
   export BIND_FAILURE_WINDOW_SECONDS="${BIND_FAILURE_WINDOW_SECONDS:-$(_inspect_env_value tgmsg-app BIND_FAILURE_WINDOW_SECONDS)}"
   export BIND_LOCK_SECONDS="${BIND_LOCK_SECONDS:-$(_inspect_env_value tgmsg-app BIND_LOCK_SECONDS)}"
   export SERVE_FRONTEND="${SERVE_FRONTEND:-$(_inspect_env_value tgmsg-app SERVE_FRONTEND)}"
+  export POSTGRES_DB="${POSTGRES_DB:-$(_inspect_env_value tgmsg-postgres POSTGRES_DB)}"
+  export POSTGRES_USER="${POSTGRES_USER:-$(_inspect_env_value tgmsg-postgres POSTGRES_USER)}"
 
   local required=(
     TG_API_ID
     TG_API_HASH
     BOT_TOKEN
     ADMIN_API_TOKEN
-    DATABASE_URL
-    REDIS_URL
     POSTGRES_PASSWORD
     REDIS_PASSWORD
     JWT_SECRET_KEY
@@ -79,5 +98,5 @@ ensure_runtime_env() {
 }
 
 compose() {
-  (cd "$APP_DIR" && docker compose "$@")
+  (cd "$APP_DIR" && docker compose --env-file "$ENV_FILE" "$@")
 }

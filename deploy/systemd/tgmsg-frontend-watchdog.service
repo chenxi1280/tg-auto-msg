@@ -5,5 +5,5 @@ Requires=docker.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/data/tgmsg/app
-ExecStart=/data/tgmsg/app/deploy/check-frontend.sh
+WorkingDirectory=/data/tgmsg/current
+ExecStart=/data/tgmsg/current/deploy/check-frontend.sh
