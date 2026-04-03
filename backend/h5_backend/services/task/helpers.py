@@ -108,22 +108,22 @@ def build_auto_delay_profile(priority: int, account: Optional[Account]) -> tuple
     weight = int(getattr(account, "weight", 100) or 100)
 
     if priority >= 100:
-        min_range = (0, 5)
-        max_range = (8, 20)
-    elif weight < 50:
-        min_range = (60, 120)
-        max_range = (180, 300)
-    elif weight < 100:
         min_range = (30, 60)
-        max_range = (120, 240)
+        max_range = (180, 300)
+    elif weight < 50:
+        min_range = (90, 150)
+        max_range = (240, 300)
+    elif weight < 100:
+        min_range = (60, 120)
+        max_range = (210, 300)
     else:
-        min_range = (10, 30)
-        max_range = (60, 180)
+        min_range = (30, 90)
+        max_range = (180, 300)
 
     delay_min = random.randint(*min_range)
     delay_max_low = max(delay_min + 1, max_range[0])
     delay_max = random.randint(delay_max_low, max_range[1])
-    jitter_seconds = random.randint(0, min(delay_max, 300))
+    jitter_seconds = random.randint(30, min(delay_max, 300))
     return delay_min, delay_max, jitter_seconds
 
 
