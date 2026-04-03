@@ -4,10 +4,13 @@
 
 ## 快速入口
 
+- `WORKSPACE_CONVENTIONS.md`：仓库整理与落位约定
 - `setup/QUICKSTART.md`：本地开发快速启动
 - `setup/PROJECT_STRUCTURE.md`：仓库结构与主要入口
 - `setup/MIGRATIONS.md`：数据库迁移说明
 - `deployment/DEPLOYMENT.md`：生产部署与运维流程
+- `../scripts/README.md`：本地维护脚本说明
+- `../docker/README.md`：Docker 构建文件说明
 
 ## 架构说明
 
@@ -22,4 +25,3 @@
 - `BRANCHING_AND_RELEASES.md`：分支与发布规范
 - `GITHUB_ACTIONS_SSH_DEPLOY.md`：GitHub Actions SSH 部署说明
 - `bot_copy_checklist.md`：Bot 文案检查清单
-- `history/COMPLETION_SUMMARY.md`：历史阶段性总结

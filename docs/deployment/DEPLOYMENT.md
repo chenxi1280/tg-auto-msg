@@ -68,6 +68,12 @@ docker run -d -p 6379:6379 redis:7-alpine
 python main.py
 ```
 
+本地开发也可以使用：
+
+```bash
+bash scripts/start.sh
+```
+
 首次启动会要求输入验证码，按照提示完成 Userbot 登录。
 
 ### 9. 使用 Bot

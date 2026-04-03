@@ -6,6 +6,7 @@ name: Deploy Production
     branches:
       - main
       - master
+      - release
 
 concurrency:
   group: deploy-production

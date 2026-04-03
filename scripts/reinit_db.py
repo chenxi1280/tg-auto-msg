@@ -1,5 +1,10 @@
 import asyncio
+from pathlib import Path
 import sys
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 from backend.database.runtime.session import drop_database, init_database
 

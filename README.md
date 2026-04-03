@@ -45,12 +45,26 @@
 
 ## 📚 文档导航
 
+- 文档索引：`docs/README.md`
 - 快速上手：`docs/setup/QUICKSTART.md`
 - 项目结构：`docs/setup/PROJECT_STRUCTURE.md`
 - 数据库迁移：`docs/setup/MIGRATIONS.md`
 - 生产部署：`docs/deployment/DEPLOYMENT.md`
 - 架构文档：`docs/architecture/`
 - 发布与分支：`docs/BRANCHING_AND_RELEASES.md`
+- 仓库整理约定：`docs/WORKSPACE_CONVENTIONS.md`
+
+## 🗂️ 目录约定
+
+- `backend/`：Python 后端业务代码
+- `frontend/h5/`：H5 前端工程
+- `sql/`：基线脚本与增量迁移
+- `scripts/`：本地维护与辅助启动脚本
+- `docker/`：Docker 构建文件
+- `deploy/`：发布、回滚、巡检、Nginx、systemd 资产
+- `docs/`：全部说明文档
+
+根目录只保留高频入口与运行配置，不再新增零散说明文档。
 
 ### 1. 克隆项目
 ```bash

@@ -43,7 +43,7 @@ services:
   app:
     build:
       context: .
-      dockerfile: Dockerfile.backend
+      dockerfile: docker/Dockerfile.backend
     image: tgmsg-app:latest
     container_name: tgmsg-app
     restart: unless-stopped
@@ -83,7 +83,7 @@ services:
   frontend:
     build:
       context: .
-      dockerfile: Dockerfile.frontend
+      dockerfile: docker/Dockerfile.frontend
     image: tgmsg-frontend:latest
     container_name: tgmsg-frontend
     restart: unless-stopped

@@ -41,6 +41,12 @@ python -m backend.database.init_db
 python main.py
 ```
 
+也可以直接使用辅助脚本：
+
+```bash
+bash scripts/start.sh
+```
+
 首次启动时，程序会提示你输入验证码（发送到你的手机号）。
 
 ### 步骤 3：开始使用

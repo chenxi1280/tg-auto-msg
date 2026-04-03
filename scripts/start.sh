@@ -1,5 +1,10 @@
 #!/bin/bash
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+cd "${ROOT_DIR}"
+
 echo "========================================"
 echo "  Telegram 定时消息推送管理系统"
 echo "  快速启动脚本"
