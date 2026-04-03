@@ -43,6 +43,15 @@
 
 ## 📦 安装部署
 
+## 📚 文档导航
+
+- 快速上手：`docs/setup/QUICKSTART.md`
+- 项目结构：`docs/setup/PROJECT_STRUCTURE.md`
+- 数据库迁移：`docs/setup/MIGRATIONS.md`
+- 生产部署：`docs/deployment/DEPLOYMENT.md`
+- 架构文档：`docs/architecture/`
+- 发布与分支：`docs/BRANCHING_AND_RELEASES.md`
+
 ### 1. 克隆项目
 ```bash
 git clone <repository-url>
@@ -207,7 +216,7 @@ ssh root@your-host "tail -f /data/tgmsg/shared/logs/service-health.log"
 - 生产环境建议设置 `SERVE_FRONTEND=false`，由 Nginx 提供前端。
 - 本地开发仍可设置 `SERVE_FRONTEND=true`，继续由 FastAPI 挂载前端构建产物。
 - 标准发版脚本使用 `git archive`，不会再把 `.DS_Store`、`._*` 等本地垃圾文件带到线上。
-- 推荐尽快把默认发布分支统一到 `main`。详细规范见 [docs/BRANCHING_AND_RELEASES.md](/Users/xida/PycharmProjects/tg-auto-msg/docs/BRANCHING_AND_RELEASES.md)。
+- 推荐尽快把默认发布分支统一到 `main`。详细规范见 `docs/BRANCHING_AND_RELEASES.md`。
 
 ## 📊 数据库结构
 

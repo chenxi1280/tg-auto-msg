@@ -125,9 +125,9 @@ python main.py
 
 ## 📚 下一步
 
-- 📖 阅读 [README.md](README.md) 了解完整功能
-- 📖 阅读 [DEPLOYMENT.md](DEPLOYMENT.md) 了解生产部署
-- 📖 阅读 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) 了解项目结构
+- 📖 阅读 [README.md](../../README.md) 了解完整功能
+- 📖 阅读 [DEPLOYMENT.md](../deployment/DEPLOYMENT.md) 了解生产部署
+- 📖 阅读 [PROJECT_STRUCTURE.md](./PROJECT_STRUCTURE.md) 了解项目结构
 
 ## 🆘 获取帮助
 

@@ -7,8 +7,20 @@ tg-auto-msg/
 ├── start.sh
 ├── docker-compose.yml
 ├── Dockerfile
+├── Dockerfile.backend
+├── Dockerfile.frontend
 ├── requirements.txt
 ├── .env.example
+├── docs/
+│   ├── README.md
+│   ├── architecture/
+│   ├── deployment/
+│   ├── setup/
+│   └── history/
+├── deploy/
+│   ├── nginx/
+│   ├── systemd/
+│   └── *.sh
 ├── sql/
 │   ├── init.sql
 │   ├── init_dev.sql
@@ -53,13 +65,8 @@ tg-auto-msg/
 │       └── security/
 ├── frontend/
 │   └── h5/
-├── logs/
-├── uploads/
-├── BOT_ARCHITECTURE.md
-├── BOT_HANDLERS_ARCHITECTURE.md
-├── DATABASE_ARCHITECTURE.md
-├── H5_BACKEND_ARCHITECTURE.md
-└── SCHEDULER_ARCHITECTURE.md
+├── logs/          # 运行日志（已被 git 忽略）
+└── uploads/       # 上传文件（已被 git 忽略）
 ```
 
 ## 启动路径
@@ -71,5 +78,5 @@ tg-auto-msg/
 ## 约束
 
 1. 业务代码全部在 `backend/*` 子目录中分域管理，不再使用平铺兼容层文件。
-2. 代码目录下不放架构说明文档，所有架构文档统一放项目根目录。
+2. 说明文档统一放在 `docs/` 下，不再散落在项目根目录。
 3. 新功能优先放入对应子域目录（例如 `bot/account`、`h5_backend/services/task`、`scheduler/core`）。
