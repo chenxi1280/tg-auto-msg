@@ -42,20 +42,20 @@
         <el-col :xs="24" :md="12">
           <el-card shadow="hover">
             <template #header>
-              <div class="card-title">套餐位状态</div>
+              <div class="card-title">当前授权</div>
             </template>
             <div class="license-status-card">
               <el-tag :type="licenseStatus?.is_active ? 'success' : 'warning'" size="large">
-                {{ licenseStatus?.is_active ? '已有可用套餐位' : '暂无可用套餐位' }}
+                {{ licenseStatus?.is_active ? '授权生效中' : '当前未授权' }}
               </el-tag>
               <div class="license-status-meta">
-                <p>最近到期剩余天数：{{ licenseStatus?.remain_days ?? 0 }}</p>
-                <p>最近到期时间：{{ formatDateTime(licenseStatus?.current?.end_at) }}</p>
+                <p>剩余天数：{{ licenseStatus?.remain_days ?? 0 }}</p>
+                <p>到期时间：{{ formatDateTime(licenseStatus?.current_authorization?.end_at) }}</p>
                 <p>
                   可登录 TG 账号：
-                  {{ `${profile?.license_overview?.account_count ?? 0} / ${profile?.license_overview?.login_capacity ?? 1}` }}
+                  {{ `${profile?.authorization_overview?.account_count ?? 0} / 1` }}
                 </p>
-                <p>已激活套餐位：{{ profile?.license_overview?.active_slot_count ?? 0 }}</p>
+                <p>授权来源：{{ licenseStatus?.current_authorization?.grant_source_label || '未开通' }}</p>
               </div>
             </div>
             <el-alert
@@ -104,38 +104,8 @@
                   @keyup.enter="handleActivateCard"
                 />
               </el-form-item>
-              <el-form-item label="续费目标 TG 账号（可选）">
-                <el-select
-                  v-model="selectedAccountId"
-                  clearable
-                  placeholder="不选择则新开一个套餐位"
-                  style="width: 100%"
-                >
-                  <el-option
-                    v-for="account in accountOptions"
-                    :key="account.account_id"
-                    :label="account.username || account.phone || account.account_id"
-                    :value="account.account_id"
-                  />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="续费目标套餐位（可选）">
-                <el-select
-                  v-model="selectedSlotId"
-                  clearable
-                  placeholder="可直接指定一个已有套餐位续费"
-                  style="width: 100%"
-                >
-                  <el-option
-                    v-for="slot in profile?.license_slots || []"
-                    :key="slot.slot_id"
-                    :label="`${slot.account_name || '待绑定账号'} · 到期 ${formatDateTime(slot.end_at)}`"
-                    :value="slot.slot_id"
-                  />
-                </el-select>
-              </el-form-item>
               <el-alert
-                title="不选择任何续费目标时，将直接新开一个独立套餐位；选择 TG 账号或套餐位时，则对对应套餐位续费。"
+                title="卡密只会续费当前系统账号下的唯一授权，不再新开第二条授权。首次绑定 TG 账号会自动赠送 7 天试用。"
                 type="info"
                 :closable="false"
                 class="license-status-tip"
@@ -148,34 +118,34 @@
         </el-col>
       </el-row>
 
-      <el-row :gutter="16" class="mt16" v-if="profile?.license_slots?.length">
+      <el-row :gutter="16" class="mt16" v-if="profile?.current_authorization">
         <el-col :xs="24" :md="24">
           <el-card shadow="hover">
             <template #header>
-              <div class="card-title">我的套餐位</div>
+              <div class="card-title">当前授权详情</div>
             </template>
             <div class="plan-list">
-              <div class="plan-item" v-for="slot in profile?.license_slots || []" :key="slot.slot_id">
+              <div class="plan-item" :key="profile.current_authorization.authorization_id">
                 <div class="plan-main">
-                  <strong>{{ slot.account_name || (slot.account_id ? `绑定账号 ${slot.account_id.slice(0, 8)}...` : '待绑定账号') }}</strong>
-                  <span>{{ slot.status === 'active' ? '生效中' : slot.status === 'expired' ? '已过期' : '未启用' }}</span>
+                  <strong>{{ profile.current_authorization.account_name || (profile.current_authorization.account_id ? `绑定账号 ${profile.current_authorization.account_id.slice(0, 8)}...` : '未绑定 TG 账号') }}</strong>
+                  <span>{{ profile.current_authorization.status === 'active' ? '生效中' : profile.current_authorization.status === 'expired' ? '已过期' : '未启用' }}</span>
                 </div>
                 <div class="plan-sub">
-                  <span>开始 {{ formatDateTime(slot.start_at) }}</span>
-                  <span>到期 {{ formatDateTime(slot.end_at) }}</span>
+                  <span>开始 {{ formatDateTime(profile.current_authorization.start_at) }}</span>
+                  <span>到期 {{ formatDateTime(profile.current_authorization.end_at) }}</span>
                 </div>
                 <div class="plan-sub">
-                  <span>累计 {{ slot.duration_days }} 天</span>
-                  <span>剩余 {{ slot.remaining_days }} 天</span>
-                  <span>已用Key {{ slot.card_count }}</span>
+                  <span>累计 {{ profile.current_authorization.duration_days }} 天</span>
+                  <span>剩余 {{ profile.current_authorization.remaining_days ?? 0 }} 天</span>
+                  <span>已用Key {{ profile.current_authorization.card_count }}</span>
                 </div>
                 <div class="plan-sub">
-                  <span>来源 {{ slot.grant_source_label || (slot.grant_source === 'bot_trial' ? 'Bot 首绑试用' : '卡密激活') }}</span>
-                  <span>首张卡密 {{ slot.source_card_code_masked || '-' }}</span>
-                  <span>最近续费 {{ slot.latest_card_code_masked || '-' }}</span>
+                  <span>来源 {{ profile.current_authorization.grant_source_label || (profile.current_authorization.grant_source === 'bot_trial' ? '首次绑定 TG 赠送试用' : '卡密续费') }}</span>
+                  <span>首张卡密 {{ profile.current_authorization.source_card_code_masked || '-' }}</span>
+                  <span>最近续费 {{ profile.current_authorization.latest_card_code_masked || '-' }}</span>
                 </div>
                 <div class="slot-actions">
-                  <el-button type="warning" plain size="small" @click="openRenewDialog(slot)">
+                  <el-button type="warning" plain size="small" @click="openRenewDialog(profile.current_authorization)">
                     续费Key
                   </el-button>
                 </div>
@@ -187,13 +157,13 @@
 
       <el-dialog
         v-model="renewDialogVisible"
-        title="续费套餐位"
+        title="续费当前授权"
         width="420px"
         destroy-on-close
       >
         <div v-if="renewTargetSlot">
-          <p class="dialog-tip">为当前套餐位追加新的 Key 时长。</p>
-          <p class="password-hint">绑定账号：{{ renewTargetSlot.account_name || renewTargetSlot.account_id || '待绑定账号' }}</p>
+          <p class="dialog-tip">为当前唯一授权追加新的卡密时长。</p>
+          <p class="password-hint">绑定账号：{{ renewTargetSlot.account_name || renewTargetSlot.account_id || '未绑定账号' }}</p>
           <p class="password-hint">当前到期：{{ formatDateTime(renewTargetSlot.end_at) }}</p>
           <el-input
             v-model.trim="renewCardCode"
@@ -262,9 +232,8 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import type { LicenseSlotItem, LicenseStatus, MeProfile, PricingPlan } from '@/api/me'
+import type { CurrentAuthorization, MeProfile, PricingPlan } from '@/api/me'
 import { activateCard, changePassword, getMe, updateProfile } from '@/api/me'
-import { getAccounts } from '@/api/account'
 import { createBotBindLink } from '@/api/login'
 
 const router = useRouter()
@@ -275,16 +244,12 @@ const savingProfile = ref(false)
 const editDialogVisible = ref(false)
 
 const profile = ref<MeProfile | null>(null)
-const licenseStatus = ref<LicenseStatus | null>(null)
+const licenseStatus = ref<MeProfile['authorization_status'] | null>(null)
 const plans = ref<PricingPlan[]>([])
-const accountOptions = ref<Array<{ account_id: string; username?: string | null; phone?: string | null }>>([])
-
 const cardCode = ref('')
-const selectedAccountId = ref<string | null>(null)
-const selectedSlotId = ref<string | null>(null)
 const renewDialogVisible = ref(false)
 const renewingSlot = ref(false)
-const renewTargetSlot = ref<LicenseSlotItem | null>(null)
+const renewTargetSlot = ref<CurrentAuthorization | null>(null)
 const renewCardCode = ref('')
 const editForm = ref({
   email: '',
@@ -322,17 +287,8 @@ const loadData = async () => {
   try {
     const res = await getMe()
     profile.value = res.data
-    licenseStatus.value = {
-      is_active: res.data.license_status.is_active,
-      current: res.data.license_status.current,
-      remain_days: res.data.license_status.remain_days,
-      bot: res.data.bot,
-      plans: res.data.plans,
-      purchase: res.data.purchase,
-    }
+    licenseStatus.value = res.data.authorization_status
     plans.value = res.data.plans
-    const accountsRes = await getAccounts()
-    accountOptions.value = accountsRes.data
   } finally {
     loading.value = false
   }
@@ -346,21 +302,18 @@ const handleActivateCard = async () => {
 
   activating.value = true
   try {
-    const isRenewing = Boolean(selectedAccountId.value || selectedSlotId.value)
-    const res = await activateCard(cardCode.value, selectedAccountId.value, selectedSlotId.value)
+    const res = await activateCard(cardCode.value)
     licenseStatus.value = res.data
     plans.value = res.data.plans
     cardCode.value = ''
-    selectedAccountId.value = null
-    selectedSlotId.value = null
-    ElMessage.success(isRenewing ? '套餐位续费成功' : '新套餐位已创建')
+    ElMessage.success('授权续费成功')
     await loadData()
   } finally {
     activating.value = false
   }
 }
 
-const openRenewDialog = (slot: LicenseSlotItem) => {
+const openRenewDialog = (slot: CurrentAuthorization) => {
   renewTargetSlot.value = slot
   renewCardCode.value = ''
   renewDialogVisible.value = true
@@ -373,8 +326,8 @@ const handleRenewSlot = async () => {
   }
   renewingSlot.value = true
   try {
-    await activateCard(renewCardCode.value, null, renewTargetSlot.value.slot_id)
-    ElMessage.success('套餐位续费成功')
+    await activateCard(renewCardCode.value)
+    ElMessage.success('授权续费成功')
     renewDialogVisible.value = false
     renewCardCode.value = ''
     await loadData()

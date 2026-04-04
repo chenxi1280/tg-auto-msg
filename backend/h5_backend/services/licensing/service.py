@@ -1,4 +1,4 @@
-"""Slot-based licensing service for TG auto-send capability."""
+"""Single-authorization service for TG auto-send capability."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -14,11 +14,11 @@ from backend.database.schema.models import (
     Account,
     ActivationCard,
     PricingPlan,
-    SlotNoticeLog,
+    AuthorizationNoticeLog,
     User,
-    UserLicenseSlot,
-    UserLicenseSlotBinding,
-    UserLicenseSlotCard,
+    UserAuthorization,
+    UserAuthorizationBinding,
+    UserAuthorizationCard,
 )
 
 BOT_TRIAL_DURATION_DAYS = 7
@@ -28,28 +28,28 @@ GRANT_SOURCE_BOT_TRIAL = "bot_trial"
 @dataclass(frozen=True)
 class AccountAuthorizationSummary:
     account_id: str
-    slot_id: Optional[str]
-    license_status: str
+    authorization_id: Optional[str]
+    authorization_status: str
     can_create_tasks: bool
-    license_end_at: Optional[datetime]
-    license_key_count: int
-    slot_grant_source: Optional[str] = None
+    authorization_end_at: Optional[datetime]
+    authorization_card_count: int
+    authorization_grant_source: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "slot_id": self.slot_id,
-            "license_status": self.license_status,
+            "authorization_id": self.authorization_id,
+            "authorization_status": self.authorization_status,
             "can_create_tasks": self.can_create_tasks,
-            "license_end_at": self.license_end_at.isoformat() if self.license_end_at else None,
-            "license_key_count": int(self.license_key_count),
-            "slot_grant_source": self.slot_grant_source,
-            "slot_grant_source_label": _grant_source_label(self.slot_grant_source),
+            "authorization_end_at": self.authorization_end_at.isoformat() if self.authorization_end_at else None,
+            "authorization_card_count": int(self.authorization_card_count),
+            "authorization_grant_source": self.authorization_grant_source,
+            "authorization_grant_source_label": _grant_source_label(self.authorization_grant_source),
         }
 
 
 @dataclass(frozen=True)
-class SlotOverview:
-    slot_id: str
+class AuthorizationRecord:
+    authorization_id: str
     account_id: Optional[str]
     account_name: Optional[str]
     status: str
@@ -64,7 +64,7 @@ class SlotOverview:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "slot_id": self.slot_id,
+            "authorization_id": self.authorization_id,
             "account_id": self.account_id,
             "account_name": self.account_name,
             "status": self.status,
@@ -81,44 +81,36 @@ class SlotOverview:
 
 
 @dataclass(frozen=True)
-class LicenseOverview:
+class AuthorizationOverview:
     user_id: int
     account_count: int
-    slot_count: int
-    active_slot_count: int
-    unbound_active_slot_count: int
-    remaining_slots: int
-    has_active_license: bool
+    has_active_authorization: bool
     next_expiring_at: Optional[datetime]
 
     @property
-    def login_capacity(self) -> int:
-        return max(1, int(self.active_slot_count))
+    def max_account_count(self) -> int:
+        return 1
 
     @property
     def remaining_login_slots(self) -> int:
-        return max(0, self.login_capacity - int(self.account_count))
+        return max(0, self.max_account_count - int(self.account_count))
 
     @property
     def is_at_limit(self) -> bool:
-        return self.account_count >= self.login_capacity
+        return self.account_count >= self.max_account_count
 
     @property
     def is_over_limit(self) -> bool:
-        return self.account_count > self.login_capacity
+        return self.account_count > self.max_account_count
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "account_count": int(self.account_count),
-            "slot_count": int(self.slot_count),
-            "active_slot_count": int(self.active_slot_count),
-            "unbound_active_slot_count": int(self.unbound_active_slot_count),
-            "remaining_slots": int(self.remaining_slots),
-            "login_capacity": int(self.login_capacity),
-            "remaining_login_slots": int(self.remaining_login_slots),
+            "max_account_count": int(self.max_account_count),
+            "can_bind_account": self.account_count < self.max_account_count,
             "is_at_limit": self.is_at_limit,
             "is_over_limit": self.is_over_limit,
-            "has_active_license": bool(self.has_active_license),
+            "has_active_authorization": bool(self.has_active_authorization),
             "next_expiring_at": self.next_expiring_at.isoformat() if self.next_expiring_at else None,
         }
 
@@ -132,26 +124,32 @@ def _mask_card_code(card_code: Optional[str]) -> Optional[str]:
     return f"{value[:4]}****{value[-4:]}"
 
 
+class TgAccountLimitExceededError(RuntimeError):
+    def __init__(self, overview: AuthorizationOverview):
+        self.overview = overview
+        message = (
+            "当前系统账号仅支持绑定 1 个 TG 账号。"
+            "如需更换，请先删除或退出当前已绑定账号后再继续绑定新的 TG 账号。"
+        )
+        super().__init__(message)
+
+
+def _account_display_name(account: Optional[Account]) -> Optional[str]:
+    if account is None:
+        return None
+    if account.username:
+        return f"@{account.username}"
+    if account.phone:
+        return account.phone
+    if account.tg_user_id:
+        return str(account.tg_user_id)
+    return None
+
+
 def _grant_source_label(grant_source: Optional[str]) -> str:
     if grant_source == GRANT_SOURCE_BOT_TRIAL:
-        return "Bot 首绑试用"
-    return "卡密激活"
-
-
-class TgAccountLimitExceededError(RuntimeError):
-    def __init__(self, overview: LicenseOverview):
-        self.overview = overview
-        if overview.active_slot_count <= 0:
-            message = (
-                "当前未激活 Key 时，最多只能登录 1 个 TG 账号用于查看和管理。"
-                "如需继续新增账号，请先激活新的 Key，或删除当前已登录账号后再切换。"
-            )
-        else:
-            message = (
-                "当前有效套餐位数量不足，无法新增 TG 账号。"
-                "请先激活新的 Key，或释放已有套餐位绑定账号。"
-            )
-        super().__init__(message)
+        return "首次绑定 TG 赠送试用"
+    return "卡密续费"
 
 
 async def _count_active_accounts(user_id: int, session: AsyncSession) -> int:
@@ -190,10 +188,10 @@ async def _choose_legacy_bind_account(user_id: int, session: AsyncSession) -> Op
     account_id = str(accounts[0].account_id)
     existing_slot = (
         await session.execute(
-            select(UserLicenseSlot.slot_id).where(
-                UserLicenseSlot.current_account_id == account_id,
-                UserLicenseSlot.status == "active",
-                UserLicenseSlot.end_at > now,
+            select(UserAuthorization.authorization_id).where(
+                UserAuthorization.current_account_id == account_id,
+                UserAuthorization.status == "active",
+                UserAuthorization.end_at > now,
             ).limit(1)
         )
     ).scalar_one_or_none()
@@ -216,13 +214,13 @@ async def _backfill_legacy_used_cards(
     stmt = (
         select(ActivationCard)
         .outerjoin(
-            UserLicenseSlotCard,
-            UserLicenseSlotCard.activation_card_id == ActivationCard.id,
+            UserAuthorizationCard,
+            UserAuthorizationCard.activation_card_id == ActivationCard.id,
         )
         .where(
             ActivationCard.is_used.is_(True),
             ActivationCard.used_by_user_id.is_not(None),
-            UserLicenseSlotCard.id.is_(None),
+            UserAuthorizationCard.id.is_(None),
         )
         .order_by(ActivationCard.id.asc())
     )
@@ -245,7 +243,7 @@ async def _backfill_legacy_used_cards(
         end_at = start_at + timedelta(days=duration_days)
         status = "active" if end_at > now else "expired"
 
-        slot = UserLicenseSlot(
+        slot = UserAuthorization(
             user_id=int(card.used_by_user_id),
             current_account_id=bind_account_id,
             source_card_id=card.id,
@@ -258,8 +256,8 @@ async def _backfill_legacy_used_cards(
         await session.flush()
 
         session.add(
-            UserLicenseSlotCard(
-                slot_id=slot.slot_id,
+            UserAuthorizationCard(
+                authorization_id=slot.authorization_id,
                 activation_card_id=card.id,
                 duration_days=duration_days,
                 applied_at=start_at,
@@ -267,8 +265,8 @@ async def _backfill_legacy_used_cards(
         )
         if bind_account_id:
             session.add(
-                UserLicenseSlotBinding(
-                    slot_id=slot.slot_id,
+                UserAuthorizationBinding(
+                    authorization_id=slot.authorization_id,
                     account_id=bind_account_id,
                     bind_at=start_at,
                 )
@@ -282,12 +280,12 @@ async def _backfill_legacy_used_cards(
 
 async def _sync_expired_slots(session: AsyncSession, *, user_id: Optional[int] = None) -> None:
     now = datetime.now()
-    stmt = select(UserLicenseSlot).where(
-        UserLicenseSlot.status == "active",
-        UserLicenseSlot.end_at <= now,
+    stmt = select(UserAuthorization).where(
+        UserAuthorization.status == "active",
+        UserAuthorization.end_at <= now,
     )
     if user_id is not None:
-        stmt = stmt.where(UserLicenseSlot.user_id == int(user_id))
+        stmt = stmt.where(UserAuthorization.user_id == int(user_id))
 
     rows = (await session.execute(stmt)).scalars().all()
     updated = False
@@ -297,6 +295,163 @@ async def _sync_expired_slots(session: AsyncSession, *, user_id: Optional[int] =
             updated = True
     if updated:
         await session.flush()
+
+
+def _slot_priority(slot: UserAuthorization, *, now: datetime, accounts_by_id: Dict[str, Account]) -> tuple:
+    account = accounts_by_id.get(str(slot.current_account_id or ""))
+    return (
+        1 if slot.status == "active" and slot.end_at > now else 0,
+        1 if account and account.is_active else 0,
+        1 if account and str(account.health_status) == "online" else 0,
+        slot.end_at or datetime.min,
+        slot.updated_at or slot.created_at or datetime.min,
+        str(slot.authorization_id),
+    )
+
+
+def _account_priority(account: Account) -> tuple:
+    return (
+        1 if account.is_active else 0,
+        1 if str(account.health_status) == "online" else 0,
+        account.last_used_at or datetime.min,
+        account.created_at or datetime.min,
+        str(account.account_id),
+    )
+
+
+async def _disable_tasks_for_accounts(
+    *,
+    account_ids: List[str],
+    session: AsyncSession,
+) -> int:
+    if not account_ids:
+        return 0
+    from backend.database.schema.models import ScheduledMessageTask
+
+    rows = (
+        await session.execute(
+            select(ScheduledMessageTask).where(
+                ScheduledMessageTask.account_id.in_(account_ids),
+                ScheduledMessageTask.enabled == True,
+            )
+        )
+    ).scalars().all()
+    for row in rows:
+        row.enabled = False
+    return len(rows)
+
+
+async def _normalize_single_authorization_model(
+    *,
+    user_id: int,
+    session: AsyncSession,
+) -> tuple[Optional[UserAuthorization], Optional[Account]]:
+    await _backfill_legacy_used_cards(session, user_id=user_id)
+    await _sync_expired_slots(session, user_id=user_id)
+    now = datetime.now()
+
+    accounts = (
+        await session.execute(
+            select(Account).where(Account.user_id == int(user_id)).order_by(Account.created_at.asc())
+        )
+    ).scalars().all()
+    slots = (
+        await session.execute(
+            select(UserAuthorization).where(UserAuthorization.user_id == int(user_id)).order_by(UserAuthorization.created_at.asc())
+        )
+    ).scalars().all()
+    accounts_by_id = {str(account.account_id): account for account in accounts}
+
+    primary_slot = max(slots, key=lambda item: _slot_priority(item, now=now, accounts_by_id=accounts_by_id)) if slots else None
+    primary_account: Optional[Account] = None
+    if primary_slot and primary_slot.current_account_id:
+        primary_account = accounts_by_id.get(str(primary_slot.current_account_id))
+    if primary_account is None and accounts:
+        primary_account = max(accounts, key=_account_priority)
+
+    changed = False
+    if primary_account is not None and not primary_account.is_active:
+        primary_account.is_active = True
+        changed = True
+
+    disabled_account_ids: List[str] = []
+    for account in accounts:
+        if primary_account is not None and str(account.account_id) == str(primary_account.account_id):
+            continue
+        if account.is_active:
+            account.is_active = False
+            changed = True
+        disabled_account_ids.append(str(account.account_id))
+
+    if primary_slot is not None:
+        expected_status = "active" if primary_slot.end_at > now else "expired"
+        if primary_slot.status != expected_status:
+            primary_slot.status = expected_status
+            changed = True
+        desired_account_id = str(primary_account.account_id) if primary_account is not None else None
+        if str(primary_slot.current_account_id or "") != str(desired_account_id or ""):
+            previous_account_id = str(primary_slot.current_account_id or "")
+            if previous_account_id:
+                open_bindings = (
+                    await session.execute(
+                        select(UserAuthorizationBinding).where(
+                            UserAuthorizationBinding.authorization_id == str(primary_slot.authorization_id),
+                            UserAuthorizationBinding.unbind_at.is_(None),
+                        )
+                    )
+                ).scalars().all()
+                for binding in open_bindings:
+                    binding.unbind_at = now
+                    binding.unbind_reason = "single_authorization_normalized"
+            primary_slot.current_account_id = desired_account_id
+            changed = True
+            if desired_account_id:
+                existing_binding = (
+                    await session.execute(
+                        select(UserAuthorizationBinding)
+                        .where(
+                            UserAuthorizationBinding.authorization_id == str(primary_slot.authorization_id),
+                            UserAuthorizationBinding.account_id == desired_account_id,
+                            UserAuthorizationBinding.unbind_at.is_(None),
+                        )
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if existing_binding is None:
+                    session.add(
+                        UserAuthorizationBinding(
+                            authorization_id=str(primary_slot.authorization_id),
+                            account_id=desired_account_id,
+                            bind_at=now,
+                        )
+                    )
+
+    for slot in slots:
+        if primary_slot is not None and str(slot.authorization_id) == str(primary_slot.authorization_id):
+            continue
+        if slot.current_account_id:
+            open_bindings = (
+                await session.execute(
+                    select(UserAuthorizationBinding).where(
+                        UserAuthorizationBinding.authorization_id == str(slot.authorization_id),
+                        UserAuthorizationBinding.unbind_at.is_(None),
+                    )
+                )
+            ).scalars().all()
+            for binding in open_bindings:
+                binding.unbind_at = now
+                binding.unbind_reason = "single_authorization_archived"
+            slot.current_account_id = None
+            changed = True
+        if slot.status != "disabled":
+            slot.status = "disabled"
+            changed = True
+
+    if disabled_account_ids:
+        await _disable_tasks_for_accounts(account_ids=disabled_account_ids, session=session)
+    if changed:
+        await session.flush()
+    return primary_slot, primary_account
 
 
 async def mark_bot_trial_eligible_on_first_bind(
@@ -317,16 +472,17 @@ async def _mark_bot_trial_eligible_on_first_bind(
     user_id: int,
     session: AsyncSession,
 ) -> bool:
+    await _normalize_single_authorization_model(user_id=int(user_id), session=session)
     user = await session.get(User, int(user_id))
     if user is None:
         return False
-    if user.bot_trial_eligible_at or user.bot_trial_granted_at or user.bot_trial_slot_id:
+    if user.bot_trial_eligible_at or user.bot_trial_granted_at or user.bot_trial_authorization_id:
         return False
 
-    slot_exists = await session.execute(
-        select(UserLicenseSlot.slot_id).where(UserLicenseSlot.user_id == int(user_id)).limit(1)
+    authorization_exists = await session.execute(
+        select(UserAuthorization.authorization_id).where(UserAuthorization.user_id == int(user_id)).limit(1)
     )
-    if slot_exists.scalar_one_or_none() is not None:
+    if authorization_exists.scalar_one_or_none() is not None:
         return False
 
     used_card_exists = await session.execute(
@@ -343,50 +499,57 @@ async def _mark_bot_trial_eligible_on_first_bind(
     return True
 
 
-async def grant_bot_trial_slot_if_eligible(
+async def grant_trial_authorization_if_eligible(
     *,
     user_id: int,
     account_id: str,
     session: Optional[AsyncSession] = None,
-) -> Optional[UserLicenseSlot]:
+) -> Optional[UserAuthorization]:
     if session is not None:
-        return await _grant_bot_trial_slot_if_eligible(user_id=user_id, account_id=account_id, session=session)
+        return await _grant_trial_authorization_if_eligible(user_id=user_id, account_id=account_id, session=session)
     async with get_async_session() as own_session:
-        slot = await _grant_bot_trial_slot_if_eligible(user_id=user_id, account_id=account_id, session=own_session)
+        authorization = await _grant_trial_authorization_if_eligible(user_id=user_id, account_id=account_id, session=own_session)
         await own_session.commit()
-        return slot
+        return authorization
 
 
-async def _grant_bot_trial_slot_if_eligible(
+async def _grant_trial_authorization_if_eligible(
     *,
     user_id: int,
     account_id: str,
     session: AsyncSession,
-) -> Optional[UserLicenseSlot]:
+) -> Optional[UserAuthorization]:
+    primary_authorization, _primary_account = await _normalize_single_authorization_model(user_id=int(user_id), session=session)
     user = await session.get(User, int(user_id))
     if user is None:
         return None
-    if not user.bot_trial_eligible_at or user.bot_trial_granted_at or user.bot_trial_slot_id:
+    if user.bot_trial_granted_at or user.bot_trial_authorization_id:
         return None
 
     account = await session.get(Account, str(account_id))
     if account is None or int(account.user_id) != int(user_id):
         return None
 
-    existing_slot_count = (
+    has_used_card = (
         await session.execute(
-            select(func.count(UserLicenseSlot.slot_id)).where(UserLicenseSlot.user_id == int(user_id))
+            select(ActivationCard.id).where(
+                ActivationCard.used_by_user_id == int(user_id),
+                ActivationCard.is_used.is_(True),
+            ).limit(1)
         )
-    ).scalar_one()
-    # 若用户在首次绑定 Bot 后、首次绑定 TG 账号前已自行购入/生成套餐位，
-    # 则不再额外赠送试用，避免同一账号叠加双重授权。
-    if int(existing_slot_count or 0) > 0:
+    ).scalar_one_or_none()
+    if has_used_card is not None:
+        user.bot_trial_eligible_at = None
+        await session.flush()
+        return None
+
+    if primary_authorization is not None:
         user.bot_trial_eligible_at = None
         await session.flush()
         return None
 
     now = datetime.now()
-    slot = UserLicenseSlot(
+    authorization = UserAuthorization(
         user_id=int(user_id),
         current_account_id=str(account_id),
         source_card_id=None,
@@ -396,61 +559,49 @@ async def _grant_bot_trial_slot_if_eligible(
         end_at=now + timedelta(days=BOT_TRIAL_DURATION_DAYS),
         status="active",
     )
-    session.add(slot)
+    session.add(authorization)
     await session.flush()
     session.add(
-        UserLicenseSlotBinding(
-            slot_id=slot.slot_id,
+        UserAuthorizationBinding(
+            authorization_id=authorization.authorization_id,
             account_id=str(account_id),
             bind_at=now,
         )
     )
+    user.bot_trial_eligible_at = user.bot_trial_eligible_at or now
     user.bot_trial_granted_at = now
-    user.bot_trial_slot_id = slot.slot_id
+    user.bot_trial_authorization_id = authorization.authorization_id
     await session.flush()
-    return slot
+    return authorization
 
 
-async def _build_license_overview(user_id: int, session: AsyncSession) -> LicenseOverview:
-    await _backfill_legacy_used_cards(session, user_id=user_id)
-    await _sync_expired_slots(session, user_id=user_id)
+async def _build_authorization_overview(user_id: int, session: AsyncSession) -> AuthorizationOverview:
+    primary_authorization, _primary_account = await _normalize_single_authorization_model(user_id=int(user_id), session=session)
     now = datetime.now()
-
     account_count = await _count_active_accounts(user_id, session)
-    slot_rows = (
-        await session.execute(
-            select(UserLicenseSlot).where(UserLicenseSlot.user_id == int(user_id))
-        )
-    ).scalars().all()
+    has_active_authorization = bool(
+        primary_authorization is not None
+        and primary_authorization.status == "active"
+        and primary_authorization.end_at > now
+    )
+    next_expiring_at = primary_authorization.end_at if has_active_authorization else None
 
-    slot_count = len(slot_rows)
-    active_slots = [slot for slot in slot_rows if slot.status == "active" and slot.end_at > now]
-    active_slot_count = len(active_slots)
-    unbound_active_slot_count = len([slot for slot in active_slots if not slot.current_account_id])
-    next_expiring_at = min((slot.end_at for slot in active_slots), default=None)
-
-    remaining_slots = max(0, active_slot_count - account_count)
-
-    return LicenseOverview(
+    return AuthorizationOverview(
         user_id=int(user_id),
         account_count=account_count,
-        slot_count=slot_count,
-        active_slot_count=active_slot_count,
-        unbound_active_slot_count=unbound_active_slot_count,
-        remaining_slots=remaining_slots,
-        has_active_license=active_slot_count > 0,
+        has_active_authorization=has_active_authorization,
         next_expiring_at=next_expiring_at,
     )
 
 
-async def get_license_overview(
+async def get_authorization_overview(
     user_id: int,
     session: Optional[AsyncSession] = None,
-) -> LicenseOverview:
+) -> AuthorizationOverview:
     if session is not None:
-        return await _build_license_overview(user_id, session)
+        return await _build_authorization_overview(user_id, session)
     async with get_async_session() as own_session:
-        return await _build_license_overview(user_id, own_session)
+        return await _build_authorization_overview(user_id, own_session)
 
 
 async def ensure_can_add_tg_account(
@@ -458,7 +609,7 @@ async def ensure_can_add_tg_account(
     *,
     existing_tg_user_id: Optional[int] = None,
     session: Optional[AsyncSession] = None,
-) -> LicenseOverview:
+) -> AuthorizationOverview:
     if session is not None:
         return await _ensure_can_add_tg_account(user_id, existing_tg_user_id=existing_tg_user_id, session=session)
     async with get_async_session() as own_session:
@@ -470,82 +621,69 @@ async def _ensure_can_add_tg_account(
     *,
     existing_tg_user_id: Optional[int],
     session: AsyncSession,
-) -> LicenseOverview:
+) -> AuthorizationOverview:
+    await _normalize_single_authorization_model(user_id=int(user_id), session=session)
     if existing_tg_user_id is not None:
         existing = await session.execute(
             select(Account.account_id).where(
                 Account.user_id == int(user_id),
                 Account.tg_user_id == int(existing_tg_user_id),
+                Account.is_active.is_(True),
             )
         )
         if existing.scalar_one_or_none() is not None:
-            return await _build_license_overview(user_id, session)
+            return await _build_authorization_overview(user_id, session)
 
-    overview = await _build_license_overview(user_id, session)
-    if overview.account_count >= overview.login_capacity:
+    overview = await _build_authorization_overview(user_id, session)
+    if overview.account_count >= overview.max_account_count:
         raise TgAccountLimitExceededError(overview)
     return overview
 
 
-async def list_user_slots(user_id: int, session: Optional[AsyncSession] = None) -> List[SlotOverview]:
+async def list_user_authorizations(user_id: int, session: Optional[AsyncSession] = None) -> List[AuthorizationRecord]:
     if session is not None:
-        return await _list_user_slots(user_id, session)
+        return await _list_user_authorizations(user_id, session)
     async with get_async_session() as own_session:
-        return await _list_user_slots(user_id, own_session)
+        return await _list_user_authorizations(user_id, own_session)
 
 
-async def _list_user_slots(user_id: int, session: AsyncSession) -> List[SlotOverview]:
-    await _sync_expired_slots(session, user_id=user_id)
-    rows = (
-        await session.execute(
-            select(UserLicenseSlot).where(UserLicenseSlot.user_id == int(user_id)).order_by(UserLicenseSlot.end_at.asc())
-        )
-    ).scalars().all()
+async def _list_user_authorizations(user_id: int, session: AsyncSession) -> List[AuthorizationRecord]:
+    primary_authorization, primary_account = await _normalize_single_authorization_model(user_id=int(user_id), session=session)
+    if primary_authorization is None:
+        return []
     now = datetime.now()
-    items: List[SlotOverview] = []
-    for slot in rows:
-        account_name = None
-        if slot.current_account_id:
-            account = await session.get(Account, str(slot.current_account_id))
-            if account is not None:
-                account_name = (
-                    f"@{account.username}" if account.username
-                    else (account.phone or (str(account.tg_user_id) if account.tg_user_id else None))
-                )
-
-        card_count = (
-            await session.execute(
-                select(func.count(UserLicenseSlotCard.id)).where(UserLicenseSlotCard.slot_id == slot.slot_id)
-            )
-        ).scalar_one()
-        card_rows = (
-            await session.execute(
-                select(UserLicenseSlotCard, ActivationCard.card_code)
-                .join(ActivationCard, ActivationCard.id == UserLicenseSlotCard.activation_card_id)
-                .where(UserLicenseSlotCard.slot_id == slot.slot_id)
-                .order_by(UserLicenseSlotCard.applied_at.asc(), UserLicenseSlotCard.id.asc())
-            )
-        ).all()
-        source_card_code_masked = _mask_card_code(card_rows[0][1]) if card_rows else None
-        latest_card_code_masked = _mask_card_code(card_rows[-1][1]) if card_rows else None
-        remaining_days = max(0, int((slot.end_at - now).total_seconds() // 86400)) if slot.end_at else 0
-        items.append(
-            SlotOverview(
-                slot_id=slot.slot_id,
-                account_id=slot.current_account_id,
-                account_name=account_name,
-                status=slot.status,
-                duration_days=int(slot.total_duration_days or 0),
-                start_at=slot.start_at,
-                end_at=slot.end_at,
-                card_count=int(card_count or 0),
-                remaining_days=remaining_days,
-                grant_source=getattr(slot, "grant_source", None),
-                source_card_code_masked=source_card_code_masked,
-                latest_card_code_masked=latest_card_code_masked,
-            )
+    card_count = (
+        await session.execute(
+            select(func.count(UserAuthorizationCard.id)).where(UserAuthorizationCard.authorization_id == primary_authorization.authorization_id)
         )
-    return items
+    ).scalar_one()
+    card_rows = (
+        await session.execute(
+            select(UserAuthorizationCard, ActivationCard.card_code)
+            .join(ActivationCard, ActivationCard.id == UserAuthorizationCard.activation_card_id)
+            .where(UserAuthorizationCard.authorization_id == primary_authorization.authorization_id)
+            .order_by(UserAuthorizationCard.applied_at.asc(), UserAuthorizationCard.id.asc())
+        )
+    ).all()
+    source_card_code_masked = _mask_card_code(card_rows[0][1]) if card_rows else None
+    latest_card_code_masked = _mask_card_code(card_rows[-1][1]) if card_rows else None
+    remaining_days = max(0, int((primary_authorization.end_at - now).total_seconds() // 86400)) if primary_authorization.end_at else 0
+    return [
+        AuthorizationRecord(
+            authorization_id=primary_authorization.authorization_id,
+            account_id=primary_authorization.current_account_id,
+            account_name=_account_display_name(primary_account),
+            status=primary_authorization.status,
+            duration_days=int(primary_authorization.total_duration_days or 0),
+            start_at=primary_authorization.start_at,
+            end_at=primary_authorization.end_at,
+            card_count=int(card_count or 0),
+            remaining_days=remaining_days,
+            grant_source=getattr(primary_authorization, "grant_source", None),
+            source_card_code_masked=source_card_code_masked,
+            latest_card_code_masked=latest_card_code_masked,
+        )
+    ]
 
 
 async def get_account_authorization_summary(
@@ -564,18 +702,17 @@ async def _get_account_authorization_summary(
 ) -> AccountAuthorizationSummary:
     account = await session.get(Account, str(account_id))
     if account is not None:
-        await _backfill_legacy_used_cards(session, user_id=int(account.user_id))
-    await _sync_expired_slots(session)
+        await _normalize_single_authorization_model(user_id=int(account.user_id), session=session)
     now = datetime.now()
     slot = (
         await session.execute(
-            select(UserLicenseSlot)
+            select(UserAuthorization)
             .where(
-                UserLicenseSlot.current_account_id == str(account_id),
-                UserLicenseSlot.status == "active",
-                UserLicenseSlot.end_at > now,
+                UserAuthorization.current_account_id == str(account_id),
+                UserAuthorization.status == "active",
+                UserAuthorization.end_at > now,
             )
-            .order_by(UserLicenseSlot.end_at.desc())
+            .order_by(UserAuthorization.end_at.desc())
             .limit(1)
         )
     ).scalar_one_or_none()
@@ -583,50 +720,50 @@ async def _get_account_authorization_summary(
     if slot is None:
         expired_slot = (
             await session.execute(
-                select(UserLicenseSlot)
-                .where(UserLicenseSlot.current_account_id == str(account_id))
-                .order_by(UserLicenseSlot.end_at.desc())
+                select(UserAuthorization)
+                .where(UserAuthorization.current_account_id == str(account_id))
+                .order_by(UserAuthorization.end_at.desc())
                 .limit(1)
             )
         ).scalar_one_or_none()
         if expired_slot is not None:
             card_count = (
                 await session.execute(
-                    select(func.count(UserLicenseSlotCard.id)).where(UserLicenseSlotCard.slot_id == expired_slot.slot_id)
+                    select(func.count(UserAuthorizationCard.id)).where(UserAuthorizationCard.authorization_id == expired_slot.authorization_id)
                 )
             ).scalar_one()
             return AccountAuthorizationSummary(
                 account_id=str(account_id),
-                slot_id=expired_slot.slot_id,
-                license_status="expired" if expired_slot.end_at <= now else expired_slot.status,
+                authorization_id=expired_slot.authorization_id,
+                authorization_status="expired" if expired_slot.end_at <= now else expired_slot.status,
                 can_create_tasks=False,
-                license_end_at=expired_slot.end_at,
-                license_key_count=int(card_count or 0),
-                slot_grant_source=getattr(expired_slot, "grant_source", None),
+                authorization_end_at=expired_slot.end_at,
+                authorization_card_count=int(card_count or 0),
+                authorization_grant_source=getattr(expired_slot, "grant_source", None),
             )
         return AccountAuthorizationSummary(
             account_id=str(account_id),
-            slot_id=None,
-            license_status="unlicensed",
+            authorization_id=None,
+            authorization_status="unlicensed",
             can_create_tasks=False,
-            license_end_at=None,
-            license_key_count=0,
-            slot_grant_source=None,
+            authorization_end_at=None,
+            authorization_card_count=0,
+            authorization_grant_source=None,
         )
 
     card_count = (
         await session.execute(
-            select(func.count(UserLicenseSlotCard.id)).where(UserLicenseSlotCard.slot_id == slot.slot_id)
+            select(func.count(UserAuthorizationCard.id)).where(UserAuthorizationCard.authorization_id == slot.authorization_id)
         )
     ).scalar_one()
     return AccountAuthorizationSummary(
         account_id=str(account_id),
-        slot_id=slot.slot_id,
-        license_status="licensed",
+        authorization_id=slot.authorization_id,
+        authorization_status="licensed",
         can_create_tasks=True,
-        license_end_at=slot.end_at,
-        license_key_count=int(card_count or 0),
-        slot_grant_source=getattr(slot, "grant_source", None),
+        authorization_end_at=slot.end_at,
+        authorization_card_count=int(card_count or 0),
+        authorization_grant_source=getattr(slot, "grant_source", None),
     )
 
 
@@ -645,7 +782,7 @@ async def require_account_task_permission(
         status_code=status.HTTP_402_PAYMENT_REQUIRED,
         detail=(
             f"当前 TG 账号尚未获得自动发送授权，暂不可{action_text}。"
-            "请为该账号激活套餐位后再试。"
+            "请先为当前授权续费后再试。"
         ),
     )
 
@@ -654,37 +791,30 @@ async def activate_card_for_user(
     *,
     user_id: int,
     card_code: str,
-    account_id: Optional[str] = None,
-    slot_id: Optional[str] = None,
     session: Optional[AsyncSession] = None,
-) -> tuple[UserLicenseSlot, ActivationCard]:
+) -> tuple[UserAuthorization, ActivationCard]:
     if session is not None:
         return await _activate_card_for_user(
             user_id=user_id,
             card_code=card_code,
-            account_id=account_id,
-            slot_id=slot_id,
             session=session,
         )
     async with get_async_session() as own_session:
-        slot, card = await _activate_card_for_user(
+        authorization, card = await _activate_card_for_user(
             user_id=user_id,
             card_code=card_code,
-            account_id=account_id,
-            slot_id=slot_id,
             session=own_session,
         )
-        return slot, card
+        return authorization, card
 
 
 async def _activate_card_for_user(
     *,
     user_id: int,
     card_code: str,
-    account_id: Optional[str],
-    slot_id: Optional[str],
     session: AsyncSession,
-) -> tuple[UserLicenseSlot, ActivationCard]:
+) -> tuple[UserAuthorization, ActivationCard]:
+    primary_authorization, primary_account = await _normalize_single_authorization_model(user_id=int(user_id), session=session)
     normalized_code = (card_code or "").strip().upper()
     if not normalized_code:
         raise HTTPException(status_code=400, detail="卡密不能为空")
@@ -708,21 +838,15 @@ async def _activate_card_for_user(
     if duration_days <= 0:
         raise HTTPException(status_code=400, detail="卡密配置异常：时长无效")
 
-    renewal_slot: Optional[UserLicenseSlot] = None
-    if slot_id:
-        renewal_slot = await session.get(UserLicenseSlot, str(slot_id))
-        if renewal_slot is None or int(renewal_slot.user_id) != int(user_id):
-            raise HTTPException(status_code=404, detail="套餐位不存在")
-    elif account_id:
-        renewal_slot = await _resolve_renewal_slot_by_account(user_id, account_id, session)
-
-    if renewal_slot is not None:
-        slot = await _renew_slot_with_card(slot=renewal_slot, card=card, duration_days=duration_days, session=session)
+    renewal_authorization: Optional[UserAuthorization] = primary_authorization
+    if renewal_authorization is not None:
+        authorization = await _renew_slot_with_card(slot=renewal_authorization, card=card, duration_days=duration_days, session=session)
     else:
-        slot = await _create_slot_from_card(
+        authorization = await _create_slot_from_card(
             user_id=user_id,
             card=card,
             duration_days=duration_days,
+            account_id=str(primary_account.account_id) if primary_account is not None else None,
             session=session,
         )
 
@@ -730,7 +854,7 @@ async def _activate_card_for_user(
     card.used_by_user_id = int(user_id)
     card.used_at = now
     await session.flush()
-    return slot, card
+    return authorization, card
 
 
 async def _create_slot_from_card(
@@ -738,12 +862,13 @@ async def _create_slot_from_card(
     user_id: int,
     card: ActivationCard,
     duration_days: int,
+    account_id: Optional[str],
     session: AsyncSession,
-) -> UserLicenseSlot:
+) -> UserAuthorization:
     now = datetime.now()
-    slot = UserLicenseSlot(
+    slot = UserAuthorization(
         user_id=int(user_id),
-        current_account_id=None,
+        current_account_id=str(account_id) if account_id else None,
         source_card_id=card.id,
         grant_source=GRANT_SOURCE_CARD,
         total_duration_days=duration_days,
@@ -754,24 +879,32 @@ async def _create_slot_from_card(
     session.add(slot)
     await session.flush()
     session.add(
-        UserLicenseSlotCard(
-            slot_id=slot.slot_id,
+        UserAuthorizationCard(
+            authorization_id=slot.authorization_id,
             activation_card_id=card.id,
             duration_days=duration_days,
             applied_at=now,
         )
     )
+    if account_id:
+        session.add(
+            UserAuthorizationBinding(
+                authorization_id=slot.authorization_id,
+                account_id=str(account_id),
+                bind_at=now,
+            )
+        )
     await session.flush()
     return slot
 
 
 async def _renew_slot_with_card(
     *,
-    slot: UserLicenseSlot,
+    slot: UserAuthorization,
     card: ActivationCard,
     duration_days: int,
     session: AsyncSession,
-) -> UserLicenseSlot:
+) -> UserAuthorization:
     now = datetime.now()
     base_time = slot.end_at if slot.end_at and slot.end_at > now else now
     if not slot.start_at:
@@ -782,8 +915,8 @@ async def _renew_slot_with_card(
     if not slot.source_card_id:
         slot.source_card_id = card.id
     session.add(
-        UserLicenseSlotCard(
-            slot_id=slot.slot_id,
+        UserAuthorizationCard(
+            authorization_id=slot.authorization_id,
             activation_card_id=card.id,
             duration_days=duration_days,
             applied_at=now,
@@ -792,19 +925,19 @@ async def _renew_slot_with_card(
     if slot.current_account_id:
         open_binding = (
             await session.execute(
-                select(UserLicenseSlotBinding)
+                select(UserAuthorizationBinding)
                 .where(
-                    UserLicenseSlotBinding.slot_id == str(slot.slot_id),
-                    UserLicenseSlotBinding.account_id == str(slot.current_account_id),
-                    UserLicenseSlotBinding.unbind_at.is_(None),
+                    UserAuthorizationBinding.authorization_id == str(slot.authorization_id),
+                    UserAuthorizationBinding.account_id == str(slot.current_account_id),
+                    UserAuthorizationBinding.unbind_at.is_(None),
                 )
                 .limit(1)
             )
         ).scalar_one_or_none()
         if open_binding is None:
             session.add(
-                UserLicenseSlotBinding(
-                    slot_id=str(slot.slot_id),
+                UserAuthorizationBinding(
+                    authorization_id=str(slot.authorization_id),
                     account_id=str(slot.current_account_id),
                     bind_at=now,
                 )
@@ -825,143 +958,69 @@ async def _resolve_renewal_slot_by_account(
     user_id: int,
     account_id: str,
     session: AsyncSession,
-) -> UserLicenseSlot:
+) -> UserAuthorization:
+    await _normalize_single_authorization_model(user_id=int(user_id), session=session)
     account = await session.get(Account, str(account_id))
     if account is None or int(account.user_id) != int(user_id):
         raise HTTPException(status_code=404, detail="目标 TG 账号不存在")
 
     slot = (
         await session.execute(
-            select(UserLicenseSlot)
+            select(UserAuthorization)
             .where(
-                UserLicenseSlot.user_id == int(user_id),
-                UserLicenseSlot.current_account_id == str(account_id),
+                UserAuthorization.user_id == int(user_id),
+                UserAuthorization.current_account_id == str(account_id),
             )
-            .order_by(UserLicenseSlot.end_at.desc(), UserLicenseSlot.created_at.desc())
+            .order_by(UserAuthorization.end_at.desc(), UserAuthorization.created_at.desc())
             .limit(1)
         )
     ).scalar_one_or_none()
     if slot is None:
-        raise HTTPException(status_code=400, detail="该 TG 账号当前没有可续费的套餐位，请先新开套餐位")
+        raise HTTPException(status_code=400, detail="该 TG 账号当前没有可续费的授权，请先绑定账号并触发试用，或输入卡密开通当前授权")
     return slot
 
 
-async def auto_bind_available_slot_to_account(
+async def bind_current_authorization_to_account_if_possible(
     *,
     user_id: int,
     account_id: str,
     session: Optional[AsyncSession] = None,
-) -> Optional[UserLicenseSlot]:
+) -> Optional[UserAuthorization]:
     if session is not None:
-        return await _auto_bind_available_slot_to_account(user_id=user_id, account_id=account_id, session=session)
+        return await _bind_current_authorization_to_account_if_possible(user_id=user_id, account_id=account_id, session=session)
     async with get_async_session() as own_session:
-        return await _auto_bind_available_slot_to_account(user_id=user_id, account_id=account_id, session=own_session)
+        return await _bind_current_authorization_to_account_if_possible(user_id=user_id, account_id=account_id, session=own_session)
 
 
-async def _auto_bind_available_slot_to_account(
+async def _bind_current_authorization_to_account_if_possible(
     *,
     user_id: int,
     account_id: str,
     session: AsyncSession,
-) -> Optional[UserLicenseSlot]:
+) -> Optional[UserAuthorization]:
+    primary_authorization, _primary_account = await _normalize_single_authorization_model(user_id=int(user_id), session=session)
     summary = await _get_account_authorization_summary(account_id, session)
     if summary.can_create_tasks:
-        return await session.get(UserLicenseSlot, summary.slot_id)
+        return await session.get(UserAuthorization, summary.authorization_id)
 
-    now = datetime.now()
-    unbound_slots = (
-        await session.execute(
-            select(UserLicenseSlot)
-            .where(
-                UserLicenseSlot.user_id == int(user_id),
-                UserLicenseSlot.current_account_id.is_(None),
-                UserLicenseSlot.status == "active",
-                UserLicenseSlot.end_at > now,
-            )
-            .order_by(UserLicenseSlot.end_at.asc(), UserLicenseSlot.created_at.asc())
-        )
-    ).scalars().all()
-    if len(unbound_slots) != 1:
+    if primary_authorization is None:
         return None
-
-    slot = unbound_slots[0]
-    slot.current_account_id = str(account_id)
-    slot.status = "active"
-    session.add(
-        UserLicenseSlotBinding(
-            slot_id=slot.slot_id,
-            account_id=str(account_id),
-            bind_at=now,
-        )
-    )
-    await session.flush()
-    return slot
-
-
-async def bind_slot_to_account(
-    *,
-    user_id: int,
-    slot_id: str,
-    account_id: str,
-    session: Optional[AsyncSession] = None,
-) -> UserLicenseSlot:
-    if session is not None:
-        return await _bind_slot_to_account(user_id=user_id, slot_id=slot_id, account_id=account_id, session=session)
-    async with get_async_session() as own_session:
-        slot = await _bind_slot_to_account(user_id=user_id, slot_id=slot_id, account_id=account_id, session=own_session)
-        await own_session.commit()
-        return slot
-
-
-async def _bind_slot_to_account(
-    *,
-    user_id: int,
-    slot_id: str,
-    account_id: str,
-    session: AsyncSession,
-) -> UserLicenseSlot:
-    await _sync_expired_slots(session, user_id=user_id)
     now = datetime.now()
-
-    slot = await session.get(UserLicenseSlot, str(slot_id))
-    if slot is None or int(slot.user_id) != int(user_id):
-        raise HTTPException(status_code=404, detail="套餐位不存在")
-    if slot.end_at <= now or slot.status != "active":
-        raise HTTPException(status_code=400, detail="该套餐位已到期，无法再绑定 TG 账号")
-    if slot.current_account_id and str(slot.current_account_id) != str(account_id):
-        raise HTTPException(status_code=400, detail="该套餐位已绑定其他 TG 账号，请先退出原账号后再切换")
-
-    account = await session.get(Account, str(account_id))
-    if account is None or int(account.user_id) != int(user_id):
-        raise HTTPException(status_code=404, detail="目标 TG 账号不存在")
-
-    account_summary = await _get_account_authorization_summary(account_id, session)
-    if account_summary.can_create_tasks and str(account_summary.slot_id) != str(slot_id):
-        raise HTTPException(status_code=400, detail="该 TG 账号已绑定其他有效套餐位，不能重复绑定")
-
-    slot.current_account_id = str(account_id)
-    slot.status = "active"
-    open_binding = (
-        await session.execute(
-            select(UserLicenseSlotBinding)
-            .where(
-                UserLicenseSlotBinding.slot_id == str(slot_id),
-                UserLicenseSlotBinding.account_id == str(account_id),
-                UserLicenseSlotBinding.unbind_at.is_(None),
-            )
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if open_binding is None:
+    if primary_authorization.status != "active" or primary_authorization.end_at <= now:
+        return primary_authorization
+    if primary_authorization.current_account_id and str(primary_authorization.current_account_id) != str(account_id):
+        return primary_authorization
+    if not primary_authorization.current_account_id:
+        primary_authorization.current_account_id = str(account_id)
         session.add(
-            UserLicenseSlotBinding(
-                slot_id=str(slot_id),
+            UserAuthorizationBinding(
+                authorization_id=primary_authorization.authorization_id,
                 account_id=str(account_id),
                 bind_at=now,
             )
         )
-    await session.flush()
-    return slot
+        await session.flush()
+    return primary_authorization
 
 
 async def release_slots_for_account(
@@ -972,25 +1031,25 @@ async def release_slots_for_account(
 ) -> int:
     slots = (
         await session.execute(
-            select(UserLicenseSlot).where(UserLicenseSlot.current_account_id == str(account_id))
+            select(UserAuthorization).where(UserAuthorization.current_account_id == str(account_id))
         )
     ).scalars().all()
     if not slots:
         return 0
 
     now = datetime.now()
-    slot_ids = [slot.slot_id for slot in slots]
+    authorization_ids = [slot.authorization_id for slot in slots]
     binding_rows = (
         await session.execute(
-            select(UserLicenseSlotBinding)
+            select(UserAuthorizationBinding)
             .where(
-                UserLicenseSlotBinding.slot_id.in_(slot_ids),
-                UserLicenseSlotBinding.account_id == str(account_id),
-                UserLicenseSlotBinding.unbind_at.is_(None),
+                UserAuthorizationBinding.authorization_id.in_(authorization_ids),
+                UserAuthorizationBinding.account_id == str(account_id),
+                UserAuthorizationBinding.unbind_at.is_(None),
             )
         )
     ).scalars().all()
-    binding_map = {row.slot_id: row for row in binding_rows}
+    binding_map = {row.authorization_id: row for row in binding_rows}
 
     for slot in slots:
         slot.current_account_id = None
@@ -998,7 +1057,7 @@ async def release_slots_for_account(
             slot.status = "expired"
         else:
             slot.status = "active"
-        binding = binding_map.get(slot.slot_id)
+        binding = binding_map.get(slot.authorization_id)
         if binding is not None:
             binding.unbind_at = now
             binding.unbind_reason = reason
@@ -1043,14 +1102,14 @@ async def list_due_slot_reminders(
     upper = now + timedelta(days=max(notice_days) + 1)
     rows = (
         await session.execute(
-            select(UserLicenseSlot)
+            select(UserAuthorization)
             .where(
-                UserLicenseSlot.status == "active",
-                UserLicenseSlot.user_id.in_(list(user_id_to_tg.keys())),
-                UserLicenseSlot.end_at > now,
-                UserLicenseSlot.end_at <= upper,
+                UserAuthorization.status == "active",
+                UserAuthorization.user_id.in_(list(user_id_to_tg.keys())),
+                UserAuthorization.end_at > now,
+                UserAuthorization.end_at <= upper,
             )
-            .order_by(UserLicenseSlot.end_at.asc())
+            .order_by(UserAuthorization.end_at.asc())
         )
     ).scalars().all()
     items: list[dict[str, Any]] = []
@@ -1059,16 +1118,16 @@ async def list_due_slot_reminders(
         if days_before not in notice_days:
             continue
         exists = await session.execute(
-            select(SlotNoticeLog.id).where(
-                SlotNoticeLog.slot_id == slot.slot_id,
-                SlotNoticeLog.days_before == int(days_before),
+            select(AuthorizationNoticeLog.id).where(
+                AuthorizationNoticeLog.authorization_id == slot.authorization_id,
+                AuthorizationNoticeLog.days_before == int(days_before),
             )
         )
         if exists.scalar_one_or_none() is not None:
             continue
         items.append(
             {
-                "slot_id": slot.slot_id,
+                "authorization_id": slot.authorization_id,
                 "user_id": int(slot.user_id),
                 "tg_user_id": int(user_id_to_tg[int(slot.user_id)]),
                 "days_before": int(days_before),

@@ -12,7 +12,6 @@ from backend.bot.resources.manager import get_resource_manager
 from backend.h5_backend.dependencies import check_account_permission
 from backend.h5_backend.services.licensing.service import (
     activate_card_for_user,
-    bind_slot_to_account,
     get_account_authorization_summary,
 )
 
@@ -183,42 +182,29 @@ class AccountService:
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    async def bind_slot(self, account_id: str, user_id: int, slot_id: str) -> Dict[str, Any]:
-        await check_account_permission(account_id, user_id)
-        if not slot_id:
-            raise HTTPException(status_code=400, detail="缺少套餐位 ID")
-        slot = await bind_slot_to_account(user_id=int(user_id), slot_id=str(slot_id), account_id=str(account_id))
-        auth_summary = await get_account_authorization_summary(account_id)
-        return {
-            "slot_id": slot.slot_id,
-            "account_id": slot.current_account_id,
-            "status": slot.status,
-            "end_at": slot.end_at.isoformat() if slot.end_at else None,
-            "license_status": auth_summary.license_status,
-            "can_create_tasks": auth_summary.can_create_tasks,
-        }
-
-    async def renew_account_slot(self, account_id: str, user_id: int, card_code: str) -> Dict[str, Any]:
+    async def renew_account_authorization(self, account_id: str, user_id: int, card_code: str) -> Dict[str, Any]:
         await check_account_permission(account_id, user_id)
         if not card_code:
             raise HTTPException(status_code=400, detail="缺少卡密")
+        current_summary = await get_account_authorization_summary(account_id)
+        if current_summary.authorization_id is None:
+            raise HTTPException(status_code=400, detail="当前账号还没有可续费的授权，请先绑定 TG 账号触发 7 天试用或输入卡密开通当前授权")
         async with get_async_session() as session:
-            slot, _card = await activate_card_for_user(
+            authorization, _card = await activate_card_for_user(
                 user_id=int(user_id),
                 card_code=card_code,
-                account_id=str(account_id),
                 session=session,
             )
             auth_summary = await get_account_authorization_summary(account_id, session=session)
             await session.commit()
         return {
-            "slot_id": slot.slot_id,
-            "account_id": slot.current_account_id,
-            "status": slot.status,
-            "end_at": slot.end_at.isoformat() if slot.end_at else None,
-            "license_status": auth_summary.license_status,
+            "authorization_id": authorization.authorization_id,
+            "account_id": authorization.current_account_id,
+            "status": authorization.status,
+            "end_at": authorization.end_at.isoformat() if authorization.end_at else None,
+            "authorization_status": auth_summary.authorization_status,
             "can_create_tasks": auth_summary.can_create_tasks,
-            "license_key_count": auth_summary.license_key_count,
+            "authorization_card_count": auth_summary.authorization_card_count,
         }
 
     async def _serialize_account(self, account: Any, now: datetime) -> Dict[str, Any]:
@@ -242,23 +228,22 @@ class AccountService:
             "messages_sent": account.messages_sent,
             "last_used_at": account.last_used_at.isoformat() if account.last_used_at else None,
             "created_at": account.created_at.isoformat() if account.created_at else None,
-            "license_status": auth_summary.license_status,
+            "authorization_status": auth_summary.authorization_status,
             "can_create_tasks": auth_summary.can_create_tasks,
-            "license_end_at": auth_summary.license_end_at.isoformat() if auth_summary.license_end_at else None,
-            "license_key_count": auth_summary.license_key_count,
-            "slot_id": auth_summary.slot_id,
-            "has_active_slot": auth_summary.can_create_tasks,
-            "slot_end_at": auth_summary.license_end_at.isoformat() if auth_summary.license_end_at else None,
-            "slot_grant_source": auth_summary.slot_grant_source,
-            "slot_grant_source_label": (
-                "Bot 首绑试用" if auth_summary.slot_grant_source == "bot_trial" else ("卡密激活" if auth_summary.slot_id else None)
+            "authorization_end_at": auth_summary.authorization_end_at.isoformat() if auth_summary.authorization_end_at else None,
+            "authorization_card_count": auth_summary.authorization_card_count,
+            "authorization_id": auth_summary.authorization_id,
+            "has_active_authorization": auth_summary.can_create_tasks,
+            "authorization_grant_source": auth_summary.authorization_grant_source,
+            "authorization_grant_source_label": (
+                "首次绑定 TG 赠送试用" if auth_summary.authorization_grant_source == "bot_trial" else ("卡密续费" if auth_summary.authorization_id else None)
             ),
-            "slot_remaining_days": (
-                max(0, int((auth_summary.license_end_at - now).total_seconds() // 86400))
-                if auth_summary.license_end_at
+            "authorization_remaining_days": (
+                max(0, int((auth_summary.authorization_end_at - now).total_seconds() // 86400))
+                if auth_summary.authorization_end_at
                 else None
             ),
-            "can_renew_slot": auth_summary.slot_id is not None,
+            "can_renew_authorization": auth_summary.authorization_id is not None,
         }
 
 

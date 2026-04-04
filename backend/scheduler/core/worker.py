@@ -269,7 +269,7 @@ class TaskScheduler:
                             session=session,
                         )
                         logger.warning(
-                            "任务 {} 对应账号已无有效套餐位，已停用该账号下任务 {} 条",
+                            "任务 {} 对应账号已无有效授权，已停用该账号下任务 {} 条",
                             task_id,
                             disabled_count,
                         )

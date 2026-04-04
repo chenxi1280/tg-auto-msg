@@ -46,10 +46,9 @@ from backend.database.schema.models import Account, AdminAuditLog, User
 from backend.h5_backend.services.auth.service import get_auth_service
 from backend.h5_backend.services.licensing.service import (
     TgAccountLimitExceededError,
-    auto_bind_available_slot_to_account,
-    grant_bot_trial_slot_if_eligible,
-    list_user_slots,
-    mark_bot_trial_eligible_on_first_bind,
+    bind_current_authorization_to_account_if_possible,
+    grant_trial_authorization_if_eligible,
+    list_user_authorizations,
 )
 from backend.h5_backend.services.login.service import get_login_service
 from backend.h5_backend.services.me.service import get_me_service
@@ -244,7 +243,6 @@ class BotOnboardingService:
 
     async def try_auto_claim_from_account(self, event, tg_user_id: int) -> bool:
         """Auto-claim system user by existing account.tg_user_id on first /start."""
-        trial_eligible = False
         async with get_async_session() as session:
             rows = (
                 await session.execute(
@@ -277,13 +275,9 @@ class BotOnboardingService:
                 scoped_account_id=str(chosen.account_id),
             )
             await set_active_account_id(session, int(tg_user_id), owner_user_id, str(chosen.account_id))
-            await auto_bind_available_slot_to_account(
+            await bind_current_authorization_to_account_if_possible(
                 user_id=owner_user_id,
                 account_id=str(chosen.account_id),
-                session=session,
-            )
-            trial_eligible = await mark_bot_trial_eligible_on_first_bind(
-                user_id=owner_user_id,
                 session=session,
             )
 
@@ -317,17 +311,11 @@ class BotOnboardingService:
 
         account_label = _account_display_name(chosen)
         _, home_buttons = await self.build_home_view(int(tg_user_id))
-        trial_text = (
-            "\n你已获得 **7 天免费试用套餐位资格**，会在首次成功绑定 TG 账号时开始计时。\n"
-            if trial_eligible
-            else ""
-        )
         await event.respond(
             "✅ **已自动识别并绑定系统账号**\n\n"
             f"当前绑定账号：{account_label}\n"
             "检测到你已在系统内存在该 Telegram 账号，已自动认领到对应系统用户。\n\n"
-            f"{trial_text}"
-            "你当前处于“账号自管”模式：仅可管理自己的账号、任务和套餐位续费。\n\n"
+            "你当前处于“账号自管”模式：仅可管理自己的账号、任务和当前授权续费。\n\n"
             "下一步：请直接使用下方菜单继续操作。",
             buttons=home_buttons,
             parse_mode="markdown",
@@ -383,7 +371,6 @@ class BotOnboardingService:
                 tg_user_id=int(tg_user_id),
                 system_user_id=int(user.id),
             )
-            await mark_bot_trial_eligible_on_first_bind(user_id=int(user.id), session=session)
             await session.commit()
             await session.refresh(user)
             return user
@@ -434,12 +421,12 @@ class BotOnboardingService:
             f"用户名：`{user.username}`\n"
             f"Web 初始密码：`{password}`\n\n"
             "该密码仅展示一次，请尽快在 Web 端修改。\n\n"
-            "你已获得 **7 天免费试用套餐位资格**，会在首次成功绑定 TG 账号时开始计时。\n\n"
-            "下一步：先点击下方「📱 绑定账号」绑定你的 TG 账号，或点击「🎟️ 激活卡密」直接购买正式套餐位。",
+            "首次成功绑定 TG 账号后，系统会自动赠送 **7 天试用授权**。\n\n"
+            "下一步：先点击下方「📱 绑定账号」绑定你的 TG 账号；7 天到期后，如需继续使用再输入卡密续费。",
             parse_mode="markdown",
             buttons=[
                 [Button.inline("📱 绑定账号", data="bot_login_account"), Button.inline("🎟️ 激活卡密", data="bot_activate")],
-                [Button.inline("🧾 查看套餐位", data="bot_slots")],
+                [Button.inline("🧾 查看授权", data="bot_authorization")],
                 [Button.inline("⬅️ 返回主菜单", data="bot_home")],
             ],
         )
@@ -536,12 +523,12 @@ class BotOnboardingService:
         await event.respond(
             "✅ **注册成功**\n\n"
             f"用户名：`{user.username}`\n"
-            "你已获得 **7 天免费试用套餐位资格**，会在首次成功绑定 TG 账号时开始计时。\n\n"
-            "下一步：先点击下方「📱 绑定账号」绑定你的 TG 账号，或点击「🎟️ 激活卡密」直接购买正式套餐位。",
+            "首次成功绑定 TG 账号后，系统会自动赠送 **7 天试用授权**。\n\n"
+            "下一步：先点击下方「📱 绑定账号」绑定你的 TG 账号；7 天到期后，如需继续使用再输入卡密续费。",
             parse_mode="markdown",
             buttons=[
                 [Button.inline("📱 绑定账号", data="bot_login_account"), Button.inline("🎟️ 激活卡密", data="bot_activate")],
-                [Button.inline("🧾 查看套餐位", data="bot_slots")],
+                [Button.inline("🧾 查看授权", data="bot_authorization")],
                 [Button.inline("⬅️ 返回主菜单", data="bot_home")],
             ],
         )
@@ -555,8 +542,8 @@ class BotOnboardingService:
                 "全球通是你的 Telegram 定时消息管理入口。\n\n"
                 "这里就是主操作入口。你可以直接在 Bot 内完成：\n"
                 "1. 注册系统账号\n"
-                "2. 激活Key，生成套餐位\n"
-                "3. 登录 Telegram 账号\n"
+                "2. 绑定 Telegram 账号\n"
+                "3. 输入卡密续费当前授权\n"
                 "4. 管理任务与查看状态\n\n"
                 "如果你已经在 Web 注册，也可以点击 Web 首页的「系统账号绑定到 TG Bot」按钮，直接把系统账号绑定到当前 Bot。\n\n"
                 "下一步：请选择一种注册方式开始。"
@@ -571,38 +558,38 @@ class BotOnboardingService:
 
         me_service = get_me_service()
         profile = await me_service.get_profile(db_user_id)
-        license_status = profile["license_status"]
+        authorization_status = profile["authorization_status"]
         plans = profile["plans"]
         user = profile["user"]
         accounts = await get_account_manager().get_accounts(db_user_id, is_active=False)
         if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED and access_ctx.scoped_account_id:
             accounts = [item for item in accounts if str(item.account_id) == str(access_ctx.scoped_account_id)]
-        license_overview = profile.get("license_overview") or {}
+        authorization_overview = profile.get("authorization_overview") or {}
 
-        if not license_status["is_active"]:
-            login_capacity = int(license_overview.get("login_capacity") or 1)
-            account_count = int(license_overview.get("account_count") or len(accounts))
+        if not authorization_status["is_active"]:
+            max_account_count = int(authorization_overview.get("max_account_count") or 1)
+            account_count = int(authorization_overview.get("account_count") or len(accounts))
             plans_text = " / ".join(
                 f"{plan['display_name']} {plan['price_yuan']}元"
                 for plan in plans
             ) or "请联系管理员配置 Key 规格"
             text = (
-                "⚠️ **全球通账号已注册，尚未拥有可用套餐位**\n\n"
+                "⚠️ **全球通账号已注册，当前还没有可用授权**\n\n"
                 f"用户名：`{user['username']}`\n"
                 f"可选Key规格：{plans_text}\n\n"
-                f"当前已绑定账号：{account_count}/{login_capacity}\n"
+                f"当前已绑定账号：{account_count}/{max_account_count}\n"
                 "未激活 Key 时，系统仍支持绑定 1 个 TG 账号用于查看和管理，但不能执行自动发送任务。\n\n"
-                "系统账号激活 Key 后，会生成一个独立套餐位；每个套餐位可绑定 1 个 TG 账号执行自动发送。\n\n"
-                "下一步：可先绑定 TG 账号，或点击下方「🎟️ 激活卡密」生成可执行自动发送的套餐位。"
+                "首次成功绑定 TG 账号时，系统会自动赠送 7 天试用；试用结束后需输入卡密续费当前唯一授权。\n\n"
+                "下一步：可先绑定 TG 账号，或点击下方「🎟️ 激活卡密」为当前授权续费。"
             )
             buttons = self._build_primary_quick_buttons()
             buttons.extend([
-                [Button.inline("🧾 查看套餐位", data="bot_slots"), Button.inline("🛒 立即购买", data="bot_purchase")],
+                [Button.inline("🧾 查看授权", data="bot_authorization"), Button.inline("🛒 立即购买", data="bot_purchase")],
                 [Button.inline("🎟️ 激活卡密", data="bot_activate"), Button.inline("🛒 立即购买", data="bot_purchase")],
             ])
             return text, buttons
 
-        current = license_status["current"] or {}
+        current = authorization_status["current_authorization"] or {}
         if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED:
             scoped_display = "未命中账号"
             if accounts:
@@ -611,34 +598,31 @@ class BotOnboardingService:
                 "✅ **全球通已就绪（账号自管模式）**\n\n"
                 f"系统用户：`{user['username']}`\n"
                 f"当前账号：{scoped_display}\n"
-                f"可用套餐位：{license_overview.get('active_slot_count', 0)}\n"
+                f"当前授权：{'已开通' if authorization_status['is_active'] else '未开通'}\n"
                 f"最近到期：{current.get('end_at') or '-'}\n\n"
                 "你当前只能管理自己的 TG 账号与其任务。\n"
-                "可续费自己的套餐位，但不能激活新的套餐位或绑定其他 TG 账号。"
+                "可续费自己的当前授权，但不能绑定其他 TG 账号。"
             )
             buttons = self._build_primary_quick_buttons()
             buttons.extend([
                 [Button.inline("👥 查看账号", data="accounts_list"), Button.inline("🗂️ 查看任务", data="task_list")],
-                [Button.inline("🧾 查看套餐位", data="bot_slots")],
+                [Button.inline("🧾 查看授权", data="bot_authorization")],
             ])
             return text, buttons
 
-        account_summary = (
-            f"{license_overview.get('account_count', len(accounts))}/"
-            f"{license_overview.get('active_slot_count', 0)}"
-        )
+        account_summary = f"{authorization_overview.get('account_count', len(accounts))}/1"
         text = (
             "✅ **全球通已就绪，可以开始使用**\n\n"
             f"系统用户：`{user['username']}`\n"
-            f"可用套餐位：{license_overview.get('active_slot_count', 0)}\n"
+            f"当前授权：{'已开通' if authorization_status['is_active'] else '未开通'}\n"
             f"最近到期：{current.get('end_at') or '-'}\n"
             f"账号数量：{account_summary}\n\n"
-            "下一步：可先查看账号，或先激活新的 Key 来新开/续费套餐位。"
+            "下一步：可先查看账号，或输入新的卡密续费当前授权。"
         )
         buttons = self._build_primary_quick_buttons()
         buttons.extend([
             [Button.inline("👥 查看账号", data="accounts_list"), Button.inline("🗂️ 查看任务", data="task_list")],
-            [Button.inline("🧾 查看套餐位", data="bot_slots")],
+            [Button.inline("🧾 查看授权", data="bot_authorization")],
         ])
         buttons.append([Button.inline("🎟️ 激活卡密", data="bot_activate"), Button.inline("🛒 立即购买", data="bot_purchase")])
         if user.get("bot_initial_password_viewable"):
@@ -678,7 +662,7 @@ class BotOnboardingService:
         await event.respond(
             f"⚠️ {message}",
             buttons=[
-                [Button.inline("🧾 查看套餐位", data="bot_slots"), Button.inline("🛒 立即购买", data="bot_purchase")],
+                [Button.inline("🧾 查看授权", data="bot_authorization"), Button.inline("🛒 立即购买", data="bot_purchase")],
                 [Button.inline("⬅️ 返回主菜单", data="bot_home")],
             ],
         )
@@ -689,7 +673,7 @@ class BotOnboardingService:
             await self.show_home(event, tg_user_id)
             return
         me_service = get_me_service()
-        status = await me_service.get_license_status(db_user_id)
+        status = await me_service.get_authorization_status(db_user_id)
         purchase = status["purchase"]
         plans_text = "\n".join(
             f"• {plan['display_name']}：{plan['price_yuan']} 元 / {plan['duration_days']} 天"
@@ -699,8 +683,8 @@ class BotOnboardingService:
         text = (
             "💳 **全球通购买指引**\n\n"
             f"{plans_text}\n\n"
-            "如需开通或续费，请点击下方按钮前往 Telegram 购买入口，购买全球通 Key。\n\n"
-            "下一步：完成购买后，返回 Bot 使用激活码生成套餐位。"
+            "如需继续使用，请点击下方按钮前往 Telegram 购买入口购买全球通卡密。\n\n"
+            "下一步：完成购买后，返回 Bot 输入卡密续费当前授权。"
         )
         buttons = [[Button.inline("⬅️ 返回主菜单", data="bot_home")]]
         purchase_url = (purchase.get("url") or "").strip()
@@ -738,46 +722,41 @@ class BotOnboardingService:
             parse_mode="markdown",
         )
 
-    async def show_slot_overview(self, event, tg_user_id: int) -> None:
+    async def show_authorization_overview(self, event, tg_user_id: int) -> None:
         db_user_id = await self._get_db_user_id(tg_user_id)
         if db_user_id is None:
             await self.show_home(event, tg_user_id)
             return
         me_service = get_me_service()
-        status = await me_service.get_license_status(db_user_id)
+        status = await me_service.get_authorization_status(db_user_id)
         profile = await me_service.get_profile(db_user_id)
-        current = status["current"] or {}
-        overview = profile.get("license_overview") or {}
-        slot_items = status.get("license_slots") or []
-        slot_lines = []
-        slot_buttons: list[list[Any]] = []
-        for idx, slot in enumerate(slot_items[:8], 1):
-            slot_lines.append(
-                f"{idx}. {'🟢' if slot.get('status') == 'active' else '⚪️'} "
-                f"{slot.get('account_name') or slot.get('account_id') or '待绑定账号'}\n"
-                f"   开始：{slot.get('start_at') or '-'}\n"
-                f"   到期：{slot.get('end_at') or '-'}\n"
-                f"   首张卡密：{slot.get('source_card_code_masked') or '-'}\n"
-                f"   最近续费：{slot.get('latest_card_code_masked') or '-'}"
+        current = status["current_authorization"] or {}
+        overview = profile.get("authorization_overview") or {}
+        authorization_lines = []
+        if current:
+            authorization_lines.append(
+                f"状态：{'🟢 生效中' if current.get('status') == 'active' else '⚪️ 已到期'}\n"
+                f"绑定账号：{current.get('account_name') or current.get('account_id') or '未绑定 TG 账号'}\n"
+                f"开始时间：{current.get('start_at') or '-'}\n"
+                f"到期时间：{current.get('end_at') or '-'}\n"
+                f"授权来源：{current.get('grant_source_label') or '-'}\n"
+                f"首张卡密：{current.get('source_card_code_masked') or '-'}\n"
+                f"最近续费：{current.get('latest_card_code_masked') or '-'}"
             )
-            slot_buttons.append([Button.inline(f"💳 套餐位{idx}续费", data=f"slot_renew:{slot['slot_id']}")])
 
         text = (
-            "💳 **全球通套餐位信息**\n\n"
-            f"状态：{'已有可用套餐位' if status['is_active'] else '暂无可用套餐位'}\n"
-            f"套餐位总数：{overview.get('slot_count', 0)}\n"
-            f"生效中：{overview.get('active_slot_count', 0)}\n"
-            f"待绑定账号：{overview.get('unbound_active_slot_count', 0)}\n"
+            "💳 **全球通当前授权**\n\n"
+            f"状态：{'当前授权有效' if status['is_active'] else '当前还没有有效授权'}\n"
+            f"系统账号已绑定 TG 数：{overview.get('account_count', 0)}/1\n"
             f"最近到期：{current.get('end_at') or '-'}\n"
-            f"最近剩余天数：{status.get('remain_days') if status.get('remain_days') is not None else '-'}\n\n"
-            f"已购套餐位列表：{len(slot_items)} 个\n\n"
-            f"{chr(10).join(slot_lines) if slot_lines else '当前还没有套餐位记录'}\n\n"
-            "若即将到期，Bot 会在到期前 7 天、3 天、1 天自动提醒。\n\n"
-            "下一步：没有套餐位请先购买并激活；已有套餐位可登录或切换 TG 账号使用。"
+            f"剩余天数：{status.get('remain_days') if status.get('remain_days') is not None else '-'}\n\n"
+            f"{chr(10).join(authorization_lines) if authorization_lines else '当前还没有授权记录；首次成功绑定 TG 账号时会自动赠送 7 天试用。'}\n\n"
+            "到期后 TG 账号会保持登录，但自动发送任务会暂停。\n\n"
+            "下一步：如需继续使用，请输入新的卡密续费当前授权。"
         )
         buttons = [[Button.inline("⬅️ 返回主菜单", data="bot_home")]]
-        if slot_buttons:
-            buttons = slot_buttons + buttons
+        if current:
+            buttons.insert(0, [Button.inline("💳 续费当前授权", data="authorization_renew")])
         purchase = status.get("purchase") or {}
         if not status["is_active"]:
             buttons.insert(0, [Button.inline("🎟️ 激活卡密", data="bot_activate")])
@@ -790,138 +769,31 @@ class BotOnboardingService:
         if db_user_id is None:
             await self.show_home(event, tg_user_id)
             return
-        access_ctx = await self._get_actor_access_context(tg_user_id)
-        slot_items = await list_user_slots(db_user_id)
-        if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED and access_ctx.scoped_account_id:
-            slot_items = [slot for slot in slot_items if str(slot.account_id or "") == str(access_ctx.scoped_account_id)]
-        active_slots = [slot for slot in slot_items if slot.status == "active"]
         text = (
             "💳 **激活卡密**\n\n"
-            "你可以选择把新的 Key 用在两个方向：\n"
-            "1. 续费当前已有套餐位\n"
-            "2. 激活一个新的套餐位\n\n"
-            "下一步：请选择下方操作。"
-        )
-        buttons = []
-        if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED:
-            text = (
-                "💳 **卡密续费（账号自管模式）**\n\n"
-                "你当前只允许给自己的套餐位续费。\n"
-                "不能激活新的套餐位，也不能为其他账号分配套餐位。\n\n"
-                "下一步：请选择下方续费入口。"
-            )
-            if active_slots:
-                buttons.append([Button.inline("💳 续费当前套餐位", data="bot_activate_renew")])
-            buttons.append([Button.inline("🧾 查看套餐位", data="bot_slots"), Button.inline("⬅️ 返回主菜单", data="bot_home")])
-            await _send_or_edit(event, text, buttons=buttons)
-            return
-
-        if active_slots:
-            buttons.append([Button.inline("💳 续费当前套餐位", data="bot_activate_renew")])
-        buttons.append([Button.inline("✨ 激活新的套餐位", data="bot_activate_new")])
-        buttons.append([Button.inline("🧾 查看套餐位", data="bot_slots"), Button.inline("⬅️ 返回主菜单", data="bot_home")])
-        await _send_or_edit(event, text, buttons=buttons)
-
-    async def start_activation(self, event, tg_user_id: int, *, slot_id: Optional[str] = None) -> None:
-        db_user_id = await self._get_db_user_id(tg_user_id)
-        if db_user_id is None:
-            await self.show_home(event, tg_user_id)
-            return
-        access_ctx = await self._get_actor_access_context(tg_user_id)
-        fsm_storage.set_state(tg_user_id, FSMState.WAIT_ACTIVATION_CODE)
-        fsm_storage.update_data(tg_user_id, activation_slot_id=str(slot_id) if slot_id else None)
-        if slot_id:
-            slot_items = await list_user_slots(db_user_id)
-            target_slot = next((item for item in slot_items if item.slot_id == str(slot_id)), None)
-            if target_slot is None:
-                await _send_or_edit(
-                    event,
-                    "⚠️ 目标套餐位不存在，请返回套餐位列表后重试。",
-                    buttons=[[Button.inline("⬅️ 返回主菜单", data="bot_home")]],
-                )
-                return
-            if (
-                access_ctx.mode == USER_MODE_ACCOUNT_SCOPED
-                and access_ctx.scoped_account_id
-                and str(target_slot.account_id or "") != str(access_ctx.scoped_account_id)
-            ):
-                await _send_or_edit(
-                    event,
-                    "⚠️ 账号自管模式下只能续费自己的套餐位。",
-                    buttons=[[Button.inline("⬅️ 返回主菜单", data="bot_home")]],
-                )
-                return
-            target_desc = target_slot.account_name or target_slot.account_id or "待绑定账号"
-            await _send_or_edit(
-                event,
-                "💳 **续费套餐位**\n\n"
-                f"目标套餐位：`{slot_id}`\n"
-                f"当前绑定：{target_desc}\n"
-                "请输入新的 Key，为该套餐位追加时长。\n"
-                "如果暂时不想继续，发送 `/cancel` 可返回主菜单。",
-            )
-            return
-        await _send_or_edit(
-            event,
-            "💳 **激活新的套餐位**\n\n请输入发卡系统提供的激活码。\n"
-            "如果暂时不想继续，发送 `/cancel` 可返回主菜单。\n\n"
-            "下一步：输入成功后会立即生成一个新的独立套餐位，可用于登录或切换新的 TG 账号。",
-        )
-
-    async def start_activation_for_new_slot(self, event, tg_user_id: int) -> None:
-        access_ctx = await self._get_actor_access_context(tg_user_id)
-        if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED:
-            await _send_or_edit(
-                event,
-                "⚠️ 你当前处于账号自管模式，只允许续费自己的套餐位。\n"
-                "如需激活新的套餐位，请使用系统账号 Owner 身份操作。",
-                buttons=[[Button.inline("⬅️ 返回主菜单", data="bot_home")]],
-            )
-            return
-        await self.start_activation(event, tg_user_id, slot_id=None)
-
-    async def start_activation_for_existing_slot(self, event, tg_user_id: int) -> None:
-        db_user_id = await self._get_db_user_id(tg_user_id)
-        if db_user_id is None:
-            await self.show_home(event, tg_user_id)
-            return
-        access_ctx = await self._get_actor_access_context(tg_user_id)
-        slot_items = [slot for slot in await list_user_slots(db_user_id) if slot.status == "active"]
-        if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED and access_ctx.scoped_account_id:
-            slot_items = [slot for slot in slot_items if str(slot.account_id or "") == str(access_ctx.scoped_account_id)]
-        if not slot_items:
-            await _send_or_edit(
-                event,
-                "⚠️ **当前没有可续费的套餐位**\n\n"
-                "你还没有生效中的套餐位，不能直接续费当前套餐位。\n\n"
-                "下一步：请点击下方「✨ 激活新的套餐位」。",
-                buttons=[
-                    [Button.inline("✨ 激活新的套餐位", data="bot_activate_new")],
-                    [Button.inline("⬅️ 返回主菜单", data="bot_home")],
-                ],
-            )
-            return
-        if len(slot_items) == 1:
-            await self.start_activation(event, tg_user_id, slot_id=slot_items[0].slot_id)
-            return
-
-        text = (
-            "💳 **选择要续费的套餐位**\n\n"
-            "当前有多个生效中的套餐位，请先选择要续费的目标。\n\n"
-            "下一步：点击下方任意套餐位后，再输入新的 Key。"
+            "当前版本已改为单系统账号单 TG 账号授权。\n"
+            "卡密只会用于续费当前唯一授权，不再新开第二条授权。\n\n"
+            "下一步：点击下方按钮后，直接输入卡密即可续费。"
         )
         buttons = [
-            [
-                Button.inline(
-                    f"套餐位{idx}: {slot.account_name or '待绑定账号'} / 到期 {slot.end_at.strftime('%m-%d %H:%M') if slot.end_at else '-'}",
-                    data=f"slot_renew:{slot.slot_id}",
-                )
-            ]
-            for idx, slot in enumerate(slot_items[:8], 1)
+            [Button.inline("💳 输入卡密", data="bot_activate_renew")],
+            [Button.inline("🧾 查看授权", data="bot_authorization"), Button.inline("⬅️ 返回主菜单", data="bot_home")],
         ]
-        buttons.append([Button.inline("✨ 激活新的套餐位", data="bot_activate_new")])
-        buttons.append([Button.inline("⬅️ 返回主菜单", data="bot_home")])
         await _send_or_edit(event, text, buttons=buttons)
+
+    async def start_activation(self, event, tg_user_id: int) -> None:
+        db_user_id = await self._get_db_user_id(tg_user_id)
+        if db_user_id is None:
+            await self.show_home(event, tg_user_id)
+            return
+        fsm_storage.set_state(tg_user_id, FSMState.WAIT_ACTIVATION_CODE)
+        fsm_storage.update_data(tg_user_id)
+        await _send_or_edit(
+            event,
+            "💳 **输入卡密续费授权**\n\n请输入发卡系统提供的卡密。\n"
+            "如果暂时不想继续，发送 `/cancel` 可返回主菜单。\n\n"
+            "下一步：输入成功后会立即续费你当前系统账号下的唯一授权。",
+        )
 
     async def handle_activation_code(self, event, tg_user_id: int, text: str) -> None:
         value = (text or "").strip()
@@ -937,20 +809,11 @@ class BotOnboardingService:
 
         me_service = get_me_service()
         fsm_data = fsm_storage.get_data(tg_user_id)
-        activation_slot_id = str(fsm_data.get("activation_slot_id") or "").strip() or None
-        access_ctx = await self._get_actor_access_context(tg_user_id)
-        if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED and not activation_slot_id:
-            await event.respond(
-                "⚠️ 账号自管模式下不能激活新的套餐位，只能续费自己的套餐位。\n"
-                "下一步：请从「💳 续费当前套餐位」入口继续。",
-                buttons=[[Button.inline("⬅️ 返回主菜单", data="bot_home")]],
-            )
-            return
         try:
-            status = await me_service.activate_card(db_user_id, value, None, activation_slot_id)
+            status = await me_service.activate_card(db_user_id, value)
         except HTTPException as exc:
             buttons = [[Button.inline("⬅️ 返回主菜单", data="bot_home")]]
-            purchase = await me_service.get_license_status(db_user_id)
+            purchase = await me_service.get_authorization_status(db_user_id)
             purchase_meta = purchase.get("purchase") or {}
             purchase_url = (purchase_meta.get("url") or "").strip()
             if is_valid_button_url(purchase_url):
@@ -964,23 +827,17 @@ class BotOnboardingService:
             return
 
         fsm_storage.reset_state(tg_user_id)
-        current = status.get("current") or {}
-        overview = status.get("license_overview") or {}
-        success_text = (
-            "✅ **全球通套餐位续费成功**\n\n"
-            if activation_slot_id
-            else "✅ **全球通 Key 激活成功**\n\n"
-        )
+        current = status.get("current_authorization") or {}
         await event.respond(
             (
-                success_text
+                "✅ **全球通授权续费成功**\n\n"
                 + f"最近到期时间：{current.get('end_at') or '-'}\n"
-                + f"可用套餐位：{overview.get('active_slot_count', 0)}\n\n"
-                + "下一步：点击下方「👥 查看账号」，再进入账号页登录 TG 账号或绑定待用套餐位。"
+                + f"当前授权：{'已开通' if status.get('is_active') else '未开通'}\n\n"
+                + "下一步：点击下方「👥 查看账号」，继续查看当前绑定 TG 账号或创建任务。"
             ),
             parse_mode="markdown",
             buttons=[
-                [Button.inline("👥 查看账号", data="accounts_list"), Button.inline("🧾 查看套餐位", data="bot_slots")],
+                [Button.inline("👥 查看账号", data="accounts_list"), Button.inline("🧾 查看授权", data="bot_authorization")],
                 [Button.inline("⬅️ 返回主菜单", data="bot_home")],
             ],
         )
@@ -995,8 +852,6 @@ class BotOnboardingService:
         account_manager = get_account_manager()
         accounts = await account_manager.get_accounts(int(system_user_id), is_active=False)
         preferred_account_id = accounts[0].account_id if accounts else None
-        trial_eligible = False
-
         async with get_async_session() as session:
             previous_user_id = await replace_linked_system_user_id(session, int(tg_user_id), int(system_user_id))
             if previous_user_id is not None:
@@ -1009,21 +864,10 @@ class BotOnboardingService:
             )
             if preferred_account_id:
                 await set_active_account_id(session, int(tg_user_id), int(system_user_id), preferred_account_id)
-            trial_eligible = await mark_bot_trial_eligible_on_first_bind(
-                user_id=int(system_user_id),
-                session=session,
-            )
             await session.commit()
-
-        trial_text = (
-            "\n你已获得 **7 天免费试用套餐位资格**，会在首次成功绑定 TG 账号时开始计时。\n"
-            if trial_eligible
-            else ""
-        )
         await event.respond(
             "✅ **系统账号已绑定到当前 Bot**\n\n"
-            "后续你可以在这里统一查看该系统账号下的 TG 账号状态、套餐位状态和任务状态。\n\n"
-            f"{trial_text}"
+            "后续你可以在这里统一查看该系统账号下的 TG 账号状态、当前授权状态和任务状态。\n\n"
             "下一步：点击下方按钮进入主菜单。",
             parse_mode="markdown",
             buttons=[[Button.inline("⬅️ 进入主菜单", data="bot_home")]],
@@ -1095,7 +939,7 @@ class BotOnboardingService:
         tg_user_id: int,
         db_user_id: int,
         account_id: str,
-        trial_slot: Optional[dict[str, Any]] = None,
+        trial_authorization: Optional[dict[str, Any]] = None,
     ) -> None:
         account_manager = get_account_manager()
         account = await account_manager.get_account(str(account_id))
@@ -1104,13 +948,13 @@ class BotOnboardingService:
             return
 
         me_service = get_me_service()
-        status = await me_service.get_license_status(db_user_id)
-        current = status.get("current") or {}
+        status = await me_service.get_authorization_status(db_user_id)
+        current = status.get("current_authorization") or {}
         trial_text = ""
-        if trial_slot:
+        if trial_authorization:
             trial_text = (
-                f"🎁 已自动开通 **7 天试用套餐位**\n"
-                f"试用到期：{trial_slot.get('end_at') or '-'}\n\n"
+                f"🎁 已自动开通 **7 天试用授权**\n"
+                f"试用到期：{trial_authorization.get('end_at') or '-'}\n\n"
             )
         await bot_client.send_message(
             tg_user_id,
@@ -1120,11 +964,11 @@ class BotOnboardingService:
             f"{trial_text}"
             f"剩余天数：{status.get('remain_days') if status.get('remain_days') is not None else '-'}\n"
             f"到期时间：{current.get('end_at') or '-'}\n\n"
-            "下一步：可继续查看账号、创建任务或查看套餐位状态。",
+            "下一步：可继续查看账号、创建任务或查看当前授权状态。",
             parse_mode="markdown",
             buttons=[
                 [Button.inline("👥 查看账号", data="accounts_list"), Button.inline("🗂️ 查看任务", data="task_list")],
-                [Button.inline("🧾 查看套餐位", data="bot_slots"), Button.inline("⬅️ 返回主菜单", data="bot_home")],
+                [Button.inline("🧾 查看授权", data="bot_authorization"), Button.inline("⬅️ 返回主菜单", data="bot_home")],
             ],
         )
 
@@ -1406,7 +1250,7 @@ class BotOnboardingService:
             tg_user_id=tg_user_id,
             db_user_id=db_user_id,
             account_id=str(finalized["account_id"]),
-            trial_slot=finalized.get("trial_slot"),
+            trial_authorization=finalized.get("trial_authorization"),
         )
         await _clear_tracked_login_messages(tg_user_id, delete=False)
         fsm_storage.reset_state(tg_user_id)
@@ -1547,7 +1391,7 @@ class BotOnboardingService:
             tg_user_id=tg_user_id,
             db_user_id=db_user_id,
             account_id=str(result["account_id"]),
-            trial_slot=result.get("trial_slot"),
+            trial_authorization=result.get("trial_authorization"),
         )
         await _clear_tracked_login_messages(tg_user_id, delete=False)
         fsm_storage.reset_state(tg_user_id)
@@ -1613,7 +1457,7 @@ class BotOnboardingService:
             tg_user_id=tg_user_id,
             db_user_id=db_user_id,
             account_id=str(result["account_id"]),
-            trial_slot=result.get("trial_slot"),
+            trial_authorization=result.get("trial_authorization"),
         )
         await _clear_tracked_login_messages(tg_user_id, delete=False)
         fsm_storage.reset_state(tg_user_id)

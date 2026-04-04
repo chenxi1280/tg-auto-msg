@@ -28,13 +28,13 @@ from backend.database.schema.models import (
     Proxy,
     TelegramDeveloperApp,
     User,
-    UserLicenseSlot,
-    UserLicenseSlotCard,
+    UserAuthorization,
+    UserAuthorizationCard,
 )
 from backend.h5_backend.services.auth.service import get_auth_service
 from backend.h5_backend.services.licensing.service import (
     get_account_authorization_summary,
-    get_license_overview,
+    get_authorization_overview,
     list_user_slots,
 )
 
@@ -126,14 +126,14 @@ class AdminLicenseService:
             "used_by_user_id": card.used_by_user_id,
             "used_by_username": loaded_used_user.username if loaded_used_user else None,
             "used_at": card.used_at.isoformat() if card.used_at else None,
-            "slot_id": first_usage.slot_id if first_usage else None,
+            "authorization_id": first_usage.authorization_id if first_usage else None,
             "bound_account_id": (
                 first_usage.slot.current_account_id
                 if first_usage and first_usage.__dict__.get("slot") is not None
                 else None
             ),
             "bound_account_name": bound_account_name,
-            "slot_end_at": (
+            "authorization_end_at": (
                 first_usage.slot.end_at.isoformat()
                 if first_usage and first_usage.__dict__.get("slot") is not None and first_usage.slot.end_at
                 else None
@@ -257,7 +257,7 @@ class AdminLicenseService:
 
             data: List[Dict[str, Any]] = []
             for row in rows:
-                overview = await get_license_overview(int(row.id), session=session)
+                overview = await get_authorization_overview(int(row.id), session=session)
                 slots = await list_user_slots(int(row.id), session=session)
                 current = min(
                     (slot for slot in slots if slot.status == "active"),
@@ -272,11 +272,9 @@ class AdminLicenseService:
                         "is_active": row.is_active,
                         "created_at": row.created_at.isoformat() if row.created_at else None,
                         "account_count": int(row.account_count or 0),
-                        "license_slot_count": overview.slot_count,
-                        "active_license_slot_count": overview.active_slot_count,
-                        "unbound_active_slot_count": overview.unbound_active_slot_count,
+                        "authorization_count": overview.authorization_count,
                         "developer_app_id": user_app_map.get(row.id),
-                        "current_license": {
+                        "current_authorization": {
                             "start_at": current.start_at.isoformat() if current else None,
                             "end_at": current.end_at.isoformat() if current else None,
                             "status": current.status if current else None,
@@ -1112,8 +1110,8 @@ class AdminLicenseService:
 
         stmt: Select[Any] = select(ActivationCard).options(
             selectinload(ActivationCard.slot_usages)
-            .selectinload(UserLicenseSlotCard.slot)
-            .selectinload(UserLicenseSlot.current_account),
+            .selectinload(UserAuthorizationCard.slot)
+            .selectinload(UserAuthorization.current_account),
             selectinload(ActivationCard.used_by_user),
         )
         count_stmt: Select[Any] = select(func.count(ActivationCard.id))
@@ -1300,7 +1298,7 @@ class AdminLicenseService:
         workbook.close()
         return buffer.getvalue(), len(rows)
 
-    async def list_license_slots(
+    async def list_authorizations(
         self,
         *,
         status: Optional[str] = None,
@@ -1311,15 +1309,15 @@ class AdminLicenseService:
         offset = max(0, int(offset))
 
         stmt: Select[Any] = (
-            select(UserLicenseSlot, User.username, Account.username, Account.phone, Account.tg_user_id)
-            .join(User, User.id == UserLicenseSlot.user_id)
-            .outerjoin(Account, Account.account_id == UserLicenseSlot.current_account_id)
-            .order_by(UserLicenseSlot.end_at.asc(), UserLicenseSlot.created_at.desc())
+            select(UserAuthorization, User.username, Account.username, Account.phone, Account.tg_user_id)
+            .join(User, User.id == UserAuthorization.user_id)
+            .outerjoin(Account, Account.account_id == UserAuthorization.current_account_id)
+            .order_by(UserAuthorization.end_at.asc(), UserAuthorization.created_at.desc())
             .limit(limit)
             .offset(offset)
         )
         if status:
-            stmt = stmt.where(UserLicenseSlot.status == status)
+            stmt = stmt.where(UserAuthorization.status == status)
 
         async with get_async_session() as session:
             rows = (await session.execute(stmt)).all()
@@ -1328,7 +1326,7 @@ class AdminLicenseService:
         for slot, owner_username, account_username, account_phone, account_tg_user_id in rows:
             data.append(
                 {
-                    "slot_id": slot.slot_id,
+                    "authorization_id": slot.authorization_id,
                     "user_id": slot.user_id,
                     "owner_username": owner_username,
                     "status": slot.status,

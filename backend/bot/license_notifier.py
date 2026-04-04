@@ -1,4 +1,4 @@
-"""Slot expiry reminders delivered by manager bot."""
+"""Authorization expiry reminders delivered by manager bot."""
 from __future__ import annotations
 
 import asyncio
@@ -15,8 +15,8 @@ from backend.bot.handlers.core.helpers import is_valid_button_url
 from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import (
     AppSetting,
-    SlotNoticeLog,
-    UserLicenseSlot,
+    AuthorizationNoticeLog,
+    UserAuthorization,
 )
 from backend.h5_backend.services.licensing.service import list_due_slot_reminders
 from backend.h5_backend.services.me.service import get_me_service
@@ -27,9 +27,9 @@ USER_LINK_KEY_PREFIX = "tg_user_link:"
 
 @dataclass
 class LicenseReminderItem:
-    """Pending license-slot reminder payload."""
+    """Pending authorization reminder payload."""
 
-    slot_id: str
+    authorization_id: str
     user_id: int
     tg_user_id: int
     days_before: int
@@ -38,7 +38,7 @@ class LicenseReminderItem:
 
 
 class LicenseSlotNotifier:
-    """Background reminder task for expiring license slots."""
+    """Background reminder task for expiring authorizations."""
 
     CHECK_INTERVAL_SECONDS = 3600
 
@@ -47,17 +47,17 @@ class LicenseSlotNotifier:
 
     async def start(self) -> None:
         self.running = True
-        logger.info("套餐位到期提醒任务已启动")
+        logger.info("授权到期提醒任务已启动")
         while self.running:
             try:
                 await self.scan_once()
             except Exception as exc:
-                logger.exception(f"套餐位提醒扫描失败: {type(exc).__name__}: {exc!r}")
+                logger.exception(f"授权提醒扫描失败: {type(exc).__name__}: {exc!r}")
             await asyncio.sleep(self.CHECK_INTERVAL_SECONDS)
 
     async def stop(self) -> None:
         self.running = False
-        logger.info("套餐位到期提醒任务已停止")
+        logger.info("授权到期提醒任务已停止")
 
     async def scan_once(self) -> int:
         now = datetime.now()
@@ -72,8 +72,8 @@ class LicenseSlotNotifier:
         for item in reminder_items:
             try:
                 text = (
-                    "⏰ **自动发送套餐位即将到期**\n\n"
-                    f"TG账号：{item.account_id or '待绑定'}\n"
+                    "⏰ **自动发送授权即将到期**\n\n"
+                    f"TG账号：{item.account_id or '未绑定'}\n"
                     f"剩余天数：{item.days_before}\n"
                     f"到期时间：{item.end_at.strftime('%Y-%m-%d %H:%M')}\n\n"
                     "请提前续费，避免该 TG 账号的自动发送任务中断。"
@@ -93,7 +93,7 @@ class LicenseSlotNotifier:
                 sent_count += 1
             except Exception as exc:
                 logger.error(
-                    "发送套餐位到期提醒失败: user_id={}, tg_user_id={}, days_before={}, error={}",
+                    "发送授权到期提醒失败: user_id={}, tg_user_id={}, days_before={}, error={}",
                     item.user_id,
                     item.tg_user_id,
                     item.days_before,
@@ -101,7 +101,7 @@ class LicenseSlotNotifier:
                 )
 
         if sent_count:
-            logger.info("套餐位到期提醒发送完成: {} 条", sent_count)
+            logger.info("授权到期提醒发送完成: {} 条", sent_count)
         return sent_count
 
     async def _collect_due_reminders(self, now: datetime) -> list[LicenseReminderItem]:
@@ -132,7 +132,7 @@ class LicenseSlotNotifier:
             for row in rows:
                 notice_items.append(
                 LicenseReminderItem(
-                        slot_id=str(row["slot_id"]),
+                        authorization_id=str(row["authorization_id"]),
                         user_id=int(row["user_id"]),
                         tg_user_id=int(row["tg_user_id"]),
                         days_before=int(row["days_before"]),
@@ -145,8 +145,8 @@ class LicenseSlotNotifier:
     async def _record_notice(self, item: LicenseReminderItem) -> None:
         async with get_async_session() as session:
             session.add(
-                SlotNoticeLog(
-                    slot_id=item.slot_id,
+                AuthorizationNoticeLog(
+                    authorization_id=item.authorization_id,
                     user_id=item.user_id,
                     days_before=item.days_before,
                 )

@@ -78,7 +78,7 @@ async def get_client(manager, account_id: str) -> Optional[TelegramClient]:
 
     if bool(getattr(account, "reauth_required", False)):
         reason = getattr(account, "reauth_reason", "") or "unknown"
-        logger.warning(f"账号 {account_id} 需要重新登录后才能继续使用: reason={reason}")
+        logger.warning(f"账号 {account_id} 需要重新绑定后才能继续使用: reason={reason}")
         try:
             await manager.update_health_status(account_id, HealthStatus.OFFLINE)
         except Exception as status_err:
@@ -131,7 +131,7 @@ async def get_client(manager, account_id: str) -> Optional[TelegramClient]:
             and int(credentials.credentials_version or 1) > int(getattr(account, "developer_app_version", 1) or 1)
         ):
             logger.warning(
-                f"账号 {account_id} 绑定的开发者凭证已轮换，要求重新登录: "
+                f"账号 {account_id} 绑定的开发者凭证已轮换，要求重新绑定: "
                 f"account_version={getattr(account, 'developer_app_version', 1)}, "
                 f"app_version={credentials.credentials_version}"
             )

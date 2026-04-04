@@ -20,9 +20,9 @@ from backend.config.core.settings import settings
 from backend.database.schema.models import Account, AccountBindLog, HealthStatus, TelegramDeveloperApp
 from backend.database.runtime.session import get_async_session
 from backend.h5_backend.services.licensing.service import (
-    auto_bind_available_slot_to_account,
+    bind_current_authorization_to_account_if_possible,
     ensure_can_add_tg_account,
-    grant_bot_trial_slot_if_eligible,
+    grant_trial_authorization_if_eligible,
 )
 from backend.utils.security.crypto import generate_bind_code
 
@@ -229,7 +229,7 @@ async def bind_account(
             await session.commit()
             await session.refresh(existing_account)
             async with get_async_session() as slot_session:
-                await auto_bind_available_slot_to_account(
+                await bind_current_authorization_to_account_if_possible(
                     user_id=int(owner_user_id),
                     account_id=existing_account.account_id,
                     session=slot_session,
@@ -299,12 +299,12 @@ async def bind_account(
             await set_active_account_id(session, actor_tg_user_id, owner_user_id, account.account_id)
         await session.commit()
         async with get_async_session() as slot_session:
-            await auto_bind_available_slot_to_account(
+            await bind_current_authorization_to_account_if_possible(
                 user_id=int(owner_user_id),
                 account_id=account.account_id,
                 session=slot_session,
             )
-            await grant_bot_trial_slot_if_eligible(
+            await grant_trial_authorization_if_eligible(
                 user_id=int(owner_user_id),
                 account_id=account.account_id,
                 session=slot_session,

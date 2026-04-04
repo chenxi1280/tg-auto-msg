@@ -17,7 +17,7 @@
       <div class="container">
         <el-button type="primary" @click="goToLogin">
           <el-icon><Plus /></el-icon>
-          添加账号
+          绑定账号
         </el-button>
         <el-button @click="refreshAccounts" :loading="loading">
           <el-icon><Refresh /></el-icon>
@@ -30,13 +30,13 @@
           系统账号绑定到 TG Bot
         </el-button>
         <el-button type="danger" plain @click="handleLogout">
-          注销
+          退出系统
         </el-button>
         <div class="stats">
           <el-tag>总计: {{ accounts.length }}</el-tag>
           <el-tag>
-            可登录账号:
-            {{ `${licenseOverview.account_count}/${licenseOverview.login_capacity}` }}
+            已绑定账号:
+            {{ `${licenseOverview.account_count}/1` }}
           </el-tag>
           <el-tag type="success">已授权: {{ licensedAccounts.length }}</el-tag>
           <el-tag type="warning">未授权: {{ unlicensedAccounts.length }}</el-tag>
@@ -51,7 +51,7 @@
     <div class="main">
       <div class="container">
         <el-empty v-if="!loading && accounts.length === 0" description="暂无账号">
-          <el-button type="primary" @click="goToLogin">添加第一个账号</el-button>
+          <el-button type="primary" @click="goToLogin">绑定第一个账号</el-button>
         </el-empty>
 
         <div v-else class="account-grid">
@@ -102,29 +102,29 @@
                 <span class="label">自动发送权限:</span>
                 <span class="value">
                   {{
-                    account.license_status === 'licensed'
+                    account.authorization_status === 'licensed'
                       ? '已授权'
-                      : account.license_status === 'expired'
+                      : account.authorization_status === 'expired'
                         ? '已到期'
                         : '未授权'
                   }}
                 </span>
               </div>
-              <div v-if="account.license_end_at" class="detail-row">
+              <div v-if="account.authorization_end_at" class="detail-row">
                 <span class="label">授权到期:</span>
-                <span class="value">{{ formatDateTime(account.license_end_at) }}</span>
+                <span class="value">{{ formatDateTime(account.authorization_end_at) }}</span>
               </div>
-              <div v-if="account.license_key_count" class="detail-row">
+              <div v-if="account.authorization_card_count" class="detail-row">
                 <span class="label">已用Key数:</span>
-                <span class="value">{{ account.license_key_count }}</span>
+                <span class="value">{{ account.authorization_card_count }}</span>
               </div>
-              <div v-if="account.license_status !== 'unlicensed'" class="detail-row">
-                <span class="label">套餐位:</span>
-                <span class="value">{{ account.has_active_slot ? '已绑定有效套餐位' : '已绑定，待续费' }}</span>
+              <div v-if="account.authorization_status !== 'unlicensed'" class="detail-row">
+                <span class="label">当前授权:</span>
+                <span class="value">{{ account.has_active_authorization ? '已生效' : '待续费' }}</span>
               </div>
-              <div v-if="account.slot_grant_source_label" class="detail-row">
+              <div v-if="account.authorization_grant_source_label" class="detail-row">
                 <span class="label">授权来源:</span>
-                <span class="value">{{ account.slot_grant_source_label }}</span>
+                <span class="value">{{ account.authorization_grant_source_label }}</span>
               </div>
               <div v-if="account.last_used_at" class="detail-row">
                 <span class="label">最后使用:</span>
@@ -152,16 +152,6 @@
                   任务管理
                 </el-button>
                 <el-button
-                  v-if="!account.can_create_tasks && availableLicenseSlots.length > 0"
-                  size="small"
-                  type="warning"
-                  plain
-                  :disabled="isAccountSyncing(account.account_id)"
-                  @click="openBindSlotDialog(account)"
-                >
-                  绑定套餐位
-                </el-button>
-                <el-button
                   size="small"
                   :loading="isAccountSyncing(account.account_id)"
                   :disabled="isAccountSyncing(account.account_id)"
@@ -171,7 +161,7 @@
                   同步资源
                 </el-button>
                 <el-button
-                  v-if="account.can_renew_slot"
+                  v-if="account.can_renew_authorization"
                   size="small"
                   type="warning"
                   plain
@@ -187,7 +177,7 @@
                 type="primary"
                 @click="reloginAccount(account)"
               >
-                重新登录
+                重新绑定
               </el-button>
               <el-button
                 v-if="account.is_active"
@@ -216,7 +206,7 @@
                 @click="confirmDelete(account)"
               >
                 <el-icon><Delete /></el-icon>
-                删除
+                解绑
               </el-button>
             </div>
           </div>
@@ -224,34 +214,14 @@
       </div>
     </div>
 
-    <el-dialog v-model="bindSlotDialog.visible" title="绑定套餐位" width="420px">
-      <div v-if="bindSlotDialog.account">
-        <p class="slot-dialog-hint">
-          选择一个未绑定的套餐位，授权给当前 TG 账号用于自动发送任务。
-        </p>
-        <el-select v-model="bindSlotDialog.slotId" placeholder="请选择套餐位" style="width: 100%">
-          <el-option
-            v-for="slot in availableLicenseSlots"
-            :key="slot.slot_id"
-            :label="`套餐位 ${slot.slot_id.slice(0, 8)}... · ${slot.duration_days}天 · 到期 ${formatDateTime(slot.end_at || '')}`"
-            :value="slot.slot_id"
-          />
-        </el-select>
-      </div>
-      <template #footer>
-        <el-button @click="bindSlotDialog.visible = false">取消</el-button>
-        <el-button type="primary" :disabled="!bindSlotDialog.slotId" @click="confirmBindSlot">确认绑定</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog v-model="renewDialog.visible" title="续费套餐位" width="420px">
+    <el-dialog v-model="renewDialog.visible" title="续费当前授权" width="420px">
       <div v-if="renewDialog.account">
         <p class="slot-dialog-hint">
-          为当前账号已绑定的套餐位追加新的 Key 时长。
+          为当前账号对应的唯一授权追加新的卡密时长。
         </p>
         <div class="renew-target">
           <strong>{{ renewDialog.account.username || renewDialog.account.phone || renewDialog.account.account_id }}</strong>
-          <span>到期：{{ formatDateTime(renewDialog.account.slot_end_at || renewDialog.account.license_end_at || '') }}</span>
+          <span>到期：{{ formatDateTime(renewDialog.account.authorization_end_at || '') }}</span>
         </div>
         <el-input
           v-model.trim="renewDialog.cardCode"
@@ -277,9 +247,9 @@ import { Plus, Refresh, Check, Close, Delete } from '@element-plus/icons-vue'
 import { useAccountStore } from '@/stores/account'
 import { useUserStore } from '@/stores/user'
 import * as authApi from '@/api/auth'
-import { bindAccountSlot, renewAccountSlot, syncAllAccountResources, type Account } from '@/api/account'
+import { renewAccountAuthorization, syncAllAccountResources, type Account } from '@/api/account'
 import { createBotBindLink } from '@/api/login'
-import { getLicenseStatus, type LicenseSlotItem } from '@/api/me'
+import { getLicenseStatus } from '@/api/me'
 
 const router = useRouter()
 const route = useRoute()
@@ -297,24 +267,13 @@ const unlicensedAccounts = computed(() => accounts.value.filter((item) => !item.
 const syncLoading = reactive<Record<string, boolean>>({})
 const licenseOverview = reactive({
   account_count: 0,
-  active_slot_count: 0,
-  login_capacity: 1,
-  remaining_slots: 0,
+  max_account_count: 1,
   is_over_limit: false,
   is_at_limit: false,
+  can_bind_account: true,
 })
 const botInfo = reactive({
   username: '',
-})
-const licenseSlots = ref<LicenseSlotItem[]>([])
-const bindSlotDialog = reactive<{
-  visible: boolean
-  account: Account | null
-  slotId: string
-}>({
-  visible: false,
-  account: null,
-  slotId: '',
 })
 const renewDialog = reactive<{
   visible: boolean
@@ -332,26 +291,19 @@ const isAccountSyncing = (accountId: string) => syncLoading[accountId] === true
 const canOperateAccount = (account: Account) => account.is_active && account.health_status === 'online'
 const needRelogin = (account: Account) =>
   account.health_status !== 'online' || account.reauth_required === true
-const availableLicenseSlots = computed(() =>
-  licenseSlots.value.filter((slot) => slot.status === 'active' && !slot.account_id),
-)
 
 // 跳转到 TG 账号绑定页
 const goToLogin = async () => {
   try {
     const res = await getLicenseStatus()
-    licenseOverview.account_count = res.data.license_overview?.account_count ?? 0
-    licenseOverview.active_slot_count = res.data.license_overview?.active_slot_count ?? 0
-    licenseOverview.login_capacity = res.data.license_overview?.login_capacity ?? 1
-    licenseOverview.remaining_slots = res.data.license_overview?.remaining_slots ?? 0
-    licenseOverview.is_over_limit = res.data.license_overview?.is_over_limit ?? false
-    licenseOverview.is_at_limit = res.data.license_overview?.is_at_limit ?? false
+    licenseOverview.account_count = res.data.authorization_overview?.account_count ?? 0
+    licenseOverview.max_account_count = res.data.authorization_overview?.max_account_count ?? 1
+    licenseOverview.is_over_limit = res.data.authorization_overview?.is_over_limit ?? false
+    licenseOverview.is_at_limit = res.data.authorization_overview?.is_at_limit ?? false
+    licenseOverview.can_bind_account = res.data.authorization_overview?.can_bind_account ?? true
     botInfo.username = res.data.bot?.username || ''
-    licenseSlots.value = res.data.license_slots || []
-    if (res.data.license_overview?.is_at_limit || res.data.license_overview?.is_over_limit) {
-      ElMessage.warning(
-        '当前有效套餐位数量不足，无法新增 TG 账号。请先激活新的 Key，或释放已有套餐位绑定账号。',
-      )
+    if (!licenseOverview.can_bind_account) {
+      ElMessage.warning('当前系统账号仅支持绑定 1 个 TG 账号。如需更换，请先解绑当前账号后再绑定新的 TG 账号。')
       return
     }
     router.push('/bind-tg')
@@ -381,14 +333,12 @@ const refreshAccounts = async () => {
     await accountStore.fetchAccounts(userStore.userId, true)
     try {
       const res = await getLicenseStatus()
-      licenseOverview.account_count = res.data.license_overview?.account_count ?? 0
-      licenseOverview.active_slot_count = res.data.license_overview?.active_slot_count ?? 0
-      licenseOverview.login_capacity = res.data.license_overview?.login_capacity ?? 1
-      licenseOverview.remaining_slots = res.data.license_overview?.remaining_slots ?? 0
-      licenseOverview.is_over_limit = res.data.license_overview?.is_over_limit ?? false
-      licenseOverview.is_at_limit = res.data.license_overview?.is_at_limit ?? false
+      licenseOverview.account_count = res.data.authorization_overview?.account_count ?? 0
+      licenseOverview.max_account_count = res.data.authorization_overview?.max_account_count ?? 1
+      licenseOverview.is_over_limit = res.data.authorization_overview?.is_over_limit ?? false
+      licenseOverview.is_at_limit = res.data.authorization_overview?.is_at_limit ?? false
+      licenseOverview.can_bind_account = res.data.authorization_overview?.can_bind_account ?? true
       botInfo.username = res.data.bot?.username || ''
-      licenseSlots.value = res.data.license_slots || []
     } catch (_err) {
       // ignore
     }
@@ -396,7 +346,7 @@ const refreshAccounts = async () => {
 }
 
 const reloginAccount = (account: Account) => {
-  ElMessage.warning(`账号 ${account.username || account.phone || account.account_id} 当前离线，请重新扫码登录`)
+  ElMessage.warning(`账号 ${account.username || account.phone || account.account_id} 当前离线，请重新绑定`)
   router.push({
     path: '/bind-tg',
     query: {
@@ -461,19 +411,9 @@ const syncAllAccountsOnEntry = async () => {
   }
 }
 
-const openBindSlotDialog = (account: Account) => {
-  if (availableLicenseSlots.value.length === 0) {
-    ElMessage.warning('当前没有可绑定的套餐位')
-    return
-  }
-  bindSlotDialog.account = account
-  bindSlotDialog.slotId = availableLicenseSlots.value[0]?.slot_id || ''
-  bindSlotDialog.visible = true
-}
-
 const openRenewDialog = (account: Account) => {
-  if (!account.can_renew_slot) {
-    ElMessage.warning('当前账号没有可续费的套餐位，请先新开套餐位或绑定空闲套餐位')
+  if (!account.can_renew_authorization) {
+    ElMessage.warning('当前账号没有可续费的授权，请先绑定 TG 账号触发 7 天试用或输入卡密开通当前授权')
     return
   }
   renewDialog.account = account
@@ -481,31 +421,17 @@ const openRenewDialog = (account: Account) => {
   renewDialog.visible = true
 }
 
-const confirmBindSlot = async () => {
-  if (!bindSlotDialog.account || !bindSlotDialog.slotId) {
-    return
-  }
-  try {
-    await bindAccountSlot(bindSlotDialog.account.account_id, bindSlotDialog.slotId)
-    ElMessage.success('套餐位已绑定到当前 TG 账号')
-    bindSlotDialog.visible = false
-    await refreshAccounts()
-  } catch (err: any) {
-    ElMessage.error(err.message || '绑定套餐位失败')
-  }
-}
-
 const confirmRenewSlot = async () => {
   if (!renewDialog.account || !renewDialog.cardCode) return
   renewDialog.loading = true
   try {
-    await renewAccountSlot(renewDialog.account.account_id, renewDialog.cardCode)
-    ElMessage.success('套餐位续费成功')
+    await renewAccountAuthorization(renewDialog.account.account_id, renewDialog.cardCode)
+    ElMessage.success('授权续费成功')
     renewDialog.visible = false
     renewDialog.cardCode = ''
     await refreshAccounts()
   } catch (err: any) {
-    ElMessage.error(err.message || '套餐位续费失败')
+    ElMessage.error(err.message || '授权续费失败')
   } finally {
     renewDialog.loading = false
   }
@@ -558,19 +484,19 @@ const enableAccount = async (accountId: string) => {
 const confirmDelete = async (account: Account) => {
   try {
     await ElMessageBox.confirm(
-      `确定要删除账号 ${account.username || account.phone} 吗？此操作不可恢复！\n\n若该账号绑定了套餐位，删除后该套餐位会保留剩余时间，后续可切换给新的 TG 账号。`,
-      '确认删除',
+      `确定要解绑账号 ${account.username || account.phone} 吗？此操作不可恢复！\n\n解绑后，当前唯一授权会保留剩余时间，后续可重新绑定到新的 TG 账号。`,
+      '确认解绑',
       {
         type: 'error',
-        confirmButtonText: '确定删除',
+        confirmButtonText: '确定解绑',
         cancelButtonText: '取消'
       }
     )
     await accountStore.deleteAccount(account.account_id)
-    ElMessage.success('账号已删除')
+    ElMessage.success('账号已解绑')
   } catch (err: any) {
     if (err !== 'cancel') {
-      ElMessage.error(err.message || '删除失败')
+      ElMessage.error(err.message || '解绑失败')
     }
   }
 }

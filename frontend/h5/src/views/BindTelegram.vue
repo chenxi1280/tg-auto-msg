@@ -115,13 +115,13 @@
       <div v-if="status === LoginStatus.CONFIRMED" class="login-content">
         <div class="bind-code-section">
           <div class="success-icon">✓</div>
-          <h3>扫码成功！</h3>
-          <p class="bind-code-label">系统账号已登录</p>
+          <h3>绑定成功！</h3>
+          <p class="bind-code-label">系统账号已绑定</p>
           <div class="bind-code">{{ confirmedUsername || 'Telegram 账号' }}</div>
           <div class="bind-instructions">
             <p>点击下方按钮，可把当前系统账号直接绑定到 TG Bot 中使用。</p>
             <p v-if="trialSlotEndAt" class="trial-tip">
-              已自动开通 7 天试用套餐位，到期时间：{{ trialSlotEndAt }}
+              已自动开通 7 天试用授权，到期时间：{{ trialSlotEndAt }}
             </p>
           </div>
           <div class="bind-actions">
@@ -320,7 +320,7 @@ const pollStatus = async () => {
       botBindUrl.value = data.bot_bind_url || ''
       botUsername.value = data.bot_username || botUsername.value
       confirmedUsername.value = data.username || ''
-      updateTrialSlotState(data.trial_slot)
+      updateTrialSlotState(data.trial_authorization)
       stopPolling()
       return
     } else if (data.status === LoginStatus.PASSWORD_REQUIRED) {
@@ -450,11 +450,11 @@ const handleSubmitPhoneCode = async () => {
     botBindUrl.value = res.data.bot_bind_url || ''
     botUsername.value = res.data.bot_username || botUsername.value
     confirmedUsername.value = res.data.username || ''
-    updateTrialSlotState(res.data.trial_slot)
+    updateTrialSlotState(res.data.trial_authorization)
     ElMessage.success(
-      res.data.trial_slot
-        ? '登录成功，已自动开通 7 天试用套餐位'
-        : '登录成功，可直接把系统账号绑定到 TG Bot'
+      res.data.trial_authorization
+        ? '登录成功，已自动开通 7 天试用授权'
+        : '绑定成功，可直接把系统账号绑定到 TG Bot'
     )
   } catch (err: any) {
     error.value = err.message || '验证码验证失败'
@@ -496,14 +496,14 @@ const handleSubmitPassword = async () => {
     botBindUrl.value = res.data.bot_bind_url || ''
     botUsername.value = res.data.bot_username || botUsername.value
     confirmedUsername.value = res.data.username || ''
-    updateTrialSlotState(res.data.trial_slot)
+    updateTrialSlotState(res.data.trial_authorization)
     status.value = LoginStatus.CONFIRMED
     error.value = ''
     passwordDialogVisible.value = false
     ElMessage.success(
-      res.data.trial_slot
-        ? '登录成功，已自动开通 7 天试用套餐位'
-        : '登录成功，可直接把系统账号绑定到 TG Bot'
+      res.data.trial_authorization
+        ? '登录成功，已自动开通 7 天试用授权'
+        : '绑定成功，可直接把系统账号绑定到 TG Bot'
     )
   } catch (err: any) {
     error.value = err.message || '二步密码验证失败'

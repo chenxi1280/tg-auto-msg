@@ -145,7 +145,7 @@ class TaskService:
         account_manager = get_account_manager()
         client = await account_manager.get_client(account_id)
         if not client:
-            raise HTTPException(status_code=400, detail="账号客户端不可用，请重新登录该账号")
+            raise HTTPException(status_code=400, detail="账号客户端不可用，请重新绑定该账号")
 
         total_size = 0
         raw_data = bytearray()

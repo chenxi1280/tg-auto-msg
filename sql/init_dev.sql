@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS users (
     password_changed_after_bot_registration BOOLEAN DEFAULT FALSE NOT NULL,
     bot_trial_eligible_at TIMESTAMP,
     bot_trial_granted_at TIMESTAMP,
-    bot_trial_slot_id VARCHAR(36),
+    bot_trial_authorization_id VARCHAR(36),
 
     -- 用户信息
     email VARCHAR(100),
@@ -59,8 +59,8 @@ COMMENT ON COLUMN users.bot_initial_password_encrypted IS 'Bot自动注册初始
 COMMENT ON COLUMN users.bot_initial_password_viewable IS '是否允许在Bot中查看初始密码';
 COMMENT ON COLUMN users.password_changed_after_bot_registration IS 'Bot自动注册后是否已修改密码';
 COMMENT ON COLUMN users.bot_trial_eligible_at IS 'Bot首绑试用资格获得时间';
-COMMENT ON COLUMN users.bot_trial_granted_at IS 'Bot首绑试用套餐位发放时间';
-COMMENT ON COLUMN users.bot_trial_slot_id IS 'Bot首绑试用套餐位ID';
+COMMENT ON COLUMN users.bot_trial_granted_at IS 'Bot首绑试用授权发放时间';
+COMMENT ON COLUMN users.bot_trial_authorization_id IS 'Bot首绑试用授权ID';
 COMMENT ON COLUMN users.email IS '电子邮箱';
 COMMENT ON COLUMN users.is_active IS '是否激活';
 

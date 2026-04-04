@@ -50,10 +50,10 @@ export interface AdminCard {
   expires_at: string | null
   used_by_user_id: number | null
   used_at: string | null
-  slot_id?: string | null
+  authorization_id?: string | null
   bound_account_id?: string | null
   bound_account_name?: string | null
-  slot_end_at?: string | null
+  authorization_end_at?: string | null
   created_at: string | null
 }
 
@@ -70,7 +70,7 @@ export interface AdminCardsPage {
 }
 
 export interface AdminLicenseSlot {
-  slot_id: string
+  authorization_id: string
   user_id: number
   owner_username: string
   status: string
@@ -93,14 +93,12 @@ export interface AdminUserSummary {
   created_at: string | null
   account_count: number
   developer_app_id?: number | null
-  current_license: {
+  current_authorization: {
     start_at: string | null
     end_at: string | null
     status: string | null
   }
-  license_slot_count?: number
-  active_license_slot_count?: number
-  unbound_active_slot_count?: number
+  authorization_count?: number
 }
 
 export interface AdminAccount {

@@ -1,4 +1,4 @@
-"""Profile, license-slot overview and card activation service."""
+"""Profile, current authorization overview and card renewal service."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -24,8 +24,8 @@ from backend.h5_backend.services.licensing.service import (
     activate_card_for_user,
     ensure_can_add_tg_account,
     get_account_authorization_summary,
-    get_license_overview,
-    list_user_slots,
+    get_authorization_overview,
+    list_user_authorizations,
 )
 
 DEFAULT_PURCHASE_URL = "https://t.me/"
@@ -75,16 +75,16 @@ class MeService:
         }
 
     @staticmethod
-    def _serialize_license_status(overview: Dict[str, Any]) -> Dict[str, Any]:
+    def _serialize_authorization_status(overview: Dict[str, Any]) -> Dict[str, Any]:
         return {
-            "is_active": bool(overview.get("active_slot_count", 0) > 0),
-            "current": overview.get("current"),
+            "is_active": bool(overview.get("has_active_authorization", False)),
+            "current_authorization": overview.get("current_authorization"),
             "remain_days": overview.get("remain_days"),
         }
 
-    async def get_current_license_slot(self, user_id: int) -> Optional[Dict[str, Any]]:
-        status = await self.get_license_status(user_id)
-        return status.get("current")
+    async def get_current_authorization(self, user_id: int) -> Optional[Dict[str, Any]]:
+        status = await self.get_authorization_status(user_id)
+        return status.get("current_authorization")
 
     async def get_bot_initial_password(self, user_id: int) -> Optional[str]:
         async with get_async_session() as session:
@@ -123,9 +123,8 @@ class MeService:
     async def get_profile(self, user_id: int) -> Dict[str, Any]:
         plans = await self.list_active_plans()
         purchase = await self.get_purchase_entry()
-        slot_items = await list_user_slots(user_id)
-        license_overview = await get_license_overview(user_id)
-        license_status = await self.get_license_status(user_id)
+        authorization_overview = await get_authorization_overview(user_id)
+        authorization_status = await self.get_authorization_status(user_id)
 
         async with get_async_session() as session:
             user_result = await session.execute(select(User).where(User.id == user_id))
@@ -142,50 +141,38 @@ class MeService:
                 "bot_initial_password_viewable": bool(user.bot_initial_password_viewable and user.bot_initial_password_encrypted),
                 "bot_trial_eligible_at": user.bot_trial_eligible_at.isoformat() if user.bot_trial_eligible_at else None,
                 "bot_trial_granted_at": user.bot_trial_granted_at.isoformat() if user.bot_trial_granted_at else None,
-                "bot_trial_slot_id": user.bot_trial_slot_id,
+                "bot_trial_authorization_id": user.bot_trial_authorization_id,
                 "created_at": user.created_at.isoformat() if user.created_at else None,
             },
-            "license_status": license_status["license_status"],
-            "license_overview": license_overview.to_dict(),
-            "license_slots": [item.to_dict() for item in slot_items],
+            "authorization_status": authorization_status["authorization_status"],
+            "authorization_overview": authorization_overview.to_dict(),
+            "current_authorization": authorization_status["current_authorization"],
             "bot": await self._serialize_bot_entry(),
             "plans": plans,
             "purchase": purchase,
         }
 
-    async def get_license_status(self, user_id: int) -> Dict[str, Any]:
+    async def get_authorization_status(self, user_id: int) -> Dict[str, Any]:
         plans = await self.list_active_plans()
         purchase = await self.get_purchase_entry()
-        slot_items = await list_user_slots(user_id)
-        license_overview = await get_license_overview(user_id)
-        active_slots = [item for item in slot_items if item.status == "active"]
+        authorization_items = await list_user_authorizations(user_id)
+        authorization_overview = await get_authorization_overview(user_id)
+        active_authorizations = [item for item in authorization_items if item.status == "active"]
         current = None
         remain_days = None
-        if active_slots:
-            slot = min(active_slots, key=lambda item: item.end_at)
-            current = {
-                "slot_id": slot.slot_id,
-                "account_id": slot.account_id,
-                "account_name": slot.account_name,
-                "end_at": slot.end_at.isoformat() if slot.end_at else None,
-                "duration_days": slot.duration_days,
-                "card_count": slot.card_count,
-                "status": slot.status,
-                "grant_source": slot.grant_source,
-                "grant_source_label": slot.to_dict().get("grant_source_label"),
-            }
+        if active_authorizations:
+            slot = min(active_authorizations, key=lambda item: item.end_at)
+            current = slot.to_dict()
             remain_days = slot.remaining_days
         return {
-            "is_active": bool(active_slots),
-            "current": current,
-            "remain_days": remain_days,
-            "license_status": {
-                "is_active": bool(active_slots),
-                "current": current,
+            "is_active": bool(active_authorizations),
+            "authorization_status": {
+                "is_active": bool(active_authorizations),
+                "current_authorization": current,
                 "remain_days": remain_days,
             },
-            "license_overview": license_overview.to_dict(),
-            "license_slots": [item.to_dict() for item in slot_items],
+            "authorization_overview": authorization_overview.to_dict(),
+            "current_authorization": current,
             "bot": await self._serialize_bot_entry(),
             "plans": plans,
             "purchase": purchase,
@@ -196,10 +183,10 @@ class MeService:
         return overview.to_dict()
 
     async def require_active_license(self, user_id: int) -> None:
-        status_data = await self.get_license_status(user_id)
+        status_data = await self.get_authorization_status(user_id)
         if status_data["is_active"]:
             return
-        detail = "当前系统账号还没有可用于自动发送的套餐位，请先激活卡密。"
+        detail = "当前系统账号还没有可用于自动发送的有效授权，请先输入卡密续费。"
         purchase_url = ((status_data.get("purchase") or {}).get("url") or "").strip()
         if purchase_url:
             detail = f"{detail} 购买入口：{purchase_url}"
@@ -209,40 +196,15 @@ class MeService:
         self,
         user_id: int,
         card_code: str,
-        account_id: Optional[str] = None,
-        slot_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         async with get_async_session() as session:
             slot, _card = await activate_card_for_user(
                 user_id=user_id,
                 card_code=card_code,
-                account_id=account_id,
-                slot_id=slot_id,
                 session=session,
             )
-            if slot.current_account_id:
-                summary = await get_account_authorization_summary(slot.current_account_id, session=session)
-            else:
-                summary = None
             await session.commit()
-        status_data = await self.get_license_status(user_id)
-        status_data["activated_slot"] = {
-            "slot_id": slot.slot_id,
-            "account_id": slot.current_account_id,
-            "end_at": slot.end_at.isoformat() if slot.end_at else None,
-            "status": slot.status,
-            "account_name": next(
-                (
-                    item.get("account_name")
-                    for item in status_data.get("license_slots") or []
-                    if item.get("slot_id") == slot.slot_id
-                ),
-                None,
-            ),
-        }
-        if summary is not None:
-            status_data["activated_slot"]["license_status"] = summary.license_status
-            status_data["activated_slot"]["license_key_count"] = summary.license_key_count
+        status_data = await self.get_authorization_status(user_id)
         return status_data
 
     async def change_password(self, user_id: int, old_password: str, new_password: str) -> None:

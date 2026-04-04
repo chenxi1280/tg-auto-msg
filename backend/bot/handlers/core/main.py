@@ -73,7 +73,7 @@ async def callback_handler(event):
                 fsm_storage.reset_state(user_id)
                 task_id = data.split(":")[1]
                 await show_task_settings(event, user_id, task_id)
-            elif data in {"bot_home", "bot_purchase", "bot_slots"}:
+            elif data in {"bot_home", "bot_purchase", "bot_authorization"}:
                 fsm_storage.reset_state(user_id)
                 await handle_callback(event, user_id, data)
             elif current_state in {

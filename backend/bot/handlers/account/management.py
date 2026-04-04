@@ -17,9 +17,8 @@ from backend.bot.ui.messages import *
 from backend.database.schema.models import Account
 from backend.database.runtime.session import get_async_session
 from backend.h5_backend.services.licensing.service import (
-    bind_slot_to_account,
     get_account_authorization_summary,
-    list_user_slots,
+    list_user_authorizations,
 )
 
 
@@ -53,18 +52,18 @@ async def show_accounts_list(event, user_id: int):
     accounts = await account_manager.get_accounts(db_user_id, is_active=False) if db_user_id else []
     if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED and access_ctx.scoped_account_id:
         accounts = [item for item in accounts if str(item.account_id) == str(access_ctx.scoped_account_id)]
-    slot_items = await list_user_slots(db_user_id) if db_user_id else []
-    unbound_active_slot_count = len([slot for slot in slot_items if slot.status == "active" and not slot.account_id])
+    authorization_items = await list_user_authorizations(db_user_id) if db_user_id else []
+    current_authorization = authorization_items[0] if authorization_items else None
 
     if not accounts:
         text = (
             "⚠️ 你还没有可用的 Telegram 账号\n\n"
-            f"当前空余套餐位：{unbound_active_slot_count}\n\n"
+            f"当前授权：{'已开通' if current_authorization and current_authorization.status == 'active' else '未开通'}\n\n"
             "请先点击下方“绑定账号”，直接在 Bot 内完成 Telegram 手机号绑定。"
         )
         keyboard = [
             [Button.inline("📱 绑定账号", data="bot_login_account")],
-            [Button.inline("🧾 查看套餐位", data="bot_slots"), Button.inline("🛒 立即购买", data="bot_purchase")],
+            [Button.inline("🧾 查看授权", data="bot_authorization"), Button.inline("🛒 立即购买", data="bot_purchase")],
             [Button.inline("⬅️ 返回主菜单", data="bot_home")],
         ]
         await event.respond(text, buttons=keyboard, parse_mode='markdown')
@@ -87,10 +86,10 @@ async def show_accounts_list(event, user_id: int):
             f"@{acc.username}" if acc.username
             else (acc.phone or f"ID:{acc.tg_user_id}" if acc.tg_user_id else acc.account_id[:8])
         )
-        slot_status = "已绑定" if auth_summary.slot_id else "未绑定"
+        authorization_status = "已开通" if auth_summary.authorization_id else "未开通"
         slot_expiry = (
-            f" / 到期 {auth_summary.license_end_at.strftime('%Y-%m-%d %H:%M')}"
-            if auth_summary.license_end_at
+            f" / 到期 {auth_summary.authorization_end_at.strftime('%Y-%m-%d %H:%M')}"
+            if auth_summary.authorization_end_at
             else ""
         )
 
@@ -99,13 +98,16 @@ async def show_accounts_list(event, user_id: int):
             f"   账号ID: `{acc.account_id}`\n"
             f"   代理: {proxy}\n"
             f"   状态: {current} {flooding}\n"
-            f"   自动发送: {'已授权' if auth_summary.can_create_tasks else ('已到期' if auth_summary.license_status == 'expired' else '未授权')}\n"
-            f"   套餐位: {slot_status}{slot_expiry}"
+            f"   自动发送: {'已授权' if auth_summary.can_create_tasks else ('已到期' if auth_summary.authorization_status == 'expired' else '未授权')}\n"
+            f"   当前授权: {authorization_status}{slot_expiry}"
         )
 
+    auth_expiry_text = ""
+    if current_authorization and current_authorization.end_at:
+        auth_expiry_text = f" / 到期 {current_authorization.end_at.strftime('%Y-%m-%d %H:%M')}"
     text = (
         f"👥 **账号列表**（{len(accounts)}）\n\n"
-        f"空余套餐位：{unbound_active_slot_count}\n\n"
+        f"当前授权：{current_authorization.status if current_authorization else '未开通'}{auth_expiry_text}\n\n"
         f"{chr(10).join(account_lines)}\n\n"
         "下一步：请选择要查看的账号，或使用下方快捷操作。"
     )
@@ -122,7 +124,7 @@ async def show_accounts_list(event, user_id: int):
         prefix = "⭐" if active_account_id and str(acc.account_id) == str(active_account_id) else "▫️"
         keyboard.append([Button.inline(f"{prefix} 账号{idx}: {display[:22]}", data=f"acc_menu:{acc.account_id}")])
 
-    keyboard.append([Button.inline("🧾 查看套餐位", data="bot_slots"), Button.inline("⬅️ 返回主菜单", data="bot_home")])
+    keyboard.append([Button.inline("🧾 查看授权", data="bot_authorization"), Button.inline("⬅️ 返回主菜单", data="bot_home")])
 
     # 避免 callback 编辑失败（同内容触发 MessageNotModified）
     if hasattr(event, "edit"):
@@ -231,7 +233,7 @@ async def show_account_menu(event, user_id: int, account_id: str):
     async with get_async_session() as session:
         active_account_id = await _get_active_account_id(session, user_id, db_user_id)
     auth_summary = await get_account_authorization_summary(account.account_id)
-    auth_text = "已授权" if auth_summary.can_create_tasks else ("已到期" if auth_summary.license_status == "expired" else "未授权")
+    auth_text = "已授权" if auth_summary.can_create_tasks else ("已到期" if auth_summary.authorization_status == "expired" else "未授权")
 
     status_text = (
         "在线" if str(account.health_status) == "online"
@@ -244,88 +246,21 @@ async def show_account_menu(event, user_id: int, account_id: str):
         f"当前账号：{'是' if str(active_account_id or '') == str(account.account_id) else '否'}\n"
         f"已发送：{account.messages_sent}\n"
         f"自动发送：{auth_text}\n"
-        f"到期时间：{auth_summary.license_end_at.strftime('%Y-%m-%d %H:%M') if auth_summary.license_end_at else '-'}\n"
+        f"到期时间：{auth_summary.authorization_end_at.strftime('%Y-%m-%d %H:%M') if auth_summary.authorization_end_at else '-'}\n"
         f"账号ID：`{account.account_id}`\n\n"
         "下一步：请选择下方操作继续管理该账号。"
     )
     keyboard = [
         [Button.inline("⚙️ 设为当前账号", data=f"acc_set_active:{account_id}")],
         [Button.inline("🔄 同步资源", data=f"acc_sync:{account_id}"), Button.inline("📱 重新绑定", data=f"acc_relogin:{account_id}")],
-        [Button.inline("➕ 新建任务", data=f"acc_add_task:{account_id}"), Button.inline("⏳ 续费Key", data=f"acc_renew_slot:{account_id}")],
+        [Button.inline("➕ 新建任务", data=f"acc_add_task:{account_id}"), Button.inline("⏳ 续费卡密", data=f"acc_renew_authorization:{account_id}")],
         [Button.inline("解绑账号", data=f"acc_unbind:{account_id}")],
         [Button.inline("⬅️ 返回账号页", data="accounts_list"), Button.inline("🏠 返回主菜单", data="bot_home")],
     ]
-    if not auth_summary.can_create_tasks:
-        keyboard.insert(3, [Button.inline("🔗 绑定待用套餐位", data=f"acc_bind_slot:{account_id}")])
     if hasattr(event, "edit"):
         await event.edit(text, buttons=keyboard, parse_mode="markdown")
     else:
         await event.respond(text, buttons=keyboard, parse_mode="markdown")
-
-
-async def bind_available_slot(event, user_id: int, account_id: str):
-    db_user_id, account = await _get_owned_account(user_id, account_id)
-    if db_user_id is None:
-        await event.answer("当前 Telegram 账号还未绑定系统账号，请先发送 /start，或回到 Web 首页点击“系统账号绑定到 TG Bot”。", alert=True)
-        return
-    if not account:
-        await event.answer("账号不存在或无权限", alert=True)
-        return
-
-    auth_summary = await get_account_authorization_summary(account_id)
-    if auth_summary.can_create_tasks:
-        await event.answer("当前账号已经绑定有效套餐位", alert=True)
-        return
-
-    slot_items = await list_user_slots(db_user_id)
-    unbound_slots = [slot for slot in slot_items if slot.status == "active" and not slot.account_id]
-    if not unbound_slots:
-        await event.answer("当前没有可绑定的待用套餐位，请先激活新的 Key。", alert=True)
-        return
-    if len(unbound_slots) == 1:
-        await _perform_bind_slot(event, db_user_id, account_id, unbound_slots[0].slot_id)
-        return
-
-    text = (
-        "💳 **选择待绑定套餐位**\n\n"
-        "当前存在多个待绑定套餐位，请选择一个分配给该 TG 账号。\n\n"
-        "下一步：点击下方任意套餐位即可完成绑定。"
-    )
-    buttons = [
-        [
-            Button.inline(
-                f"套餐位{idx}: 到期 {slot.end_at.strftime('%m-%d %H:%M') if slot.end_at else '-'}",
-                data=f"acc_bind_slot_pick:{account_id}:{slot.slot_id}",
-            )
-        ]
-        for idx, slot in enumerate(unbound_slots[:8], 1)
-    ]
-    buttons.append([Button.inline("⬅️ 返回账号详情", data=f"acc_menu:{account_id}"), Button.inline("🏠 返回主菜单", data="bot_home")])
-    await _send_or_reply(event, text, buttons=buttons)
-
-
-async def _perform_bind_slot(event, db_user_id: int, account_id: str, slot_id: str):
-    slot = await bind_slot_to_account(user_id=db_user_id, slot_id=slot_id, account_id=account_id)
-    await event.answer("✅ 已绑定套餐位")
-    await event.respond(
-        "✅ 当前 TG 账号已绑定套餐位\n\n"
-        f"套餐位：`{slot.slot_id}`\n"
-        f"到期时间：{slot.end_at.strftime('%Y-%m-%d %H:%M') if slot.end_at else '-'}\n\n"
-        "下一步：现在可以继续为该账号创建自动发送任务。",
-        parse_mode="markdown",
-        buttons=[[Button.inline("⬅️ 返回账号详情", data=f"acc_menu:{account_id}"), Button.inline("🏠 返回主菜单", data="bot_home")]],
-    )
-
-
-async def bind_specific_slot(event, user_id: int, account_id: str, slot_id: str):
-    db_user_id, account = await _get_owned_account(user_id, account_id)
-    if db_user_id is None:
-        await event.answer("当前 Telegram 账号还未绑定系统账号，请先发送 /start，或回到 Web 首页点击“系统账号绑定到 TG Bot”。", alert=True)
-        return
-    if not account:
-        await event.answer("账号不存在或无权限", alert=True)
-        return
-    await _perform_bind_slot(event, db_user_id, account_id, slot_id)
 
 
 async def set_current_account(event, user_id: int, account_id: str):
@@ -373,7 +308,7 @@ async def relogin_account(event, user_id: int, account_id: str):
     )
 
 
-async def renew_account_slot(event, user_id: int, account_id: str):
+async def renew_account_authorization(event, user_id: int, account_id: str):
     db_user_id, account = await _get_owned_account(user_id, account_id)
     if db_user_id is None:
         await event.answer("当前 Telegram 账号还未绑定系统账号，请先发送 /start，或回到 Web 首页点击“系统账号绑定到 TG Bot”。", alert=True)
@@ -384,11 +319,11 @@ async def renew_account_slot(event, user_id: int, account_id: str):
     from backend.bot.onboarding import get_onboarding_service
 
     auth_summary = await get_account_authorization_summary(account.account_id)
-    if not auth_summary.slot_id:
-        await event.answer("该账号当前没有可续费的套餐位，请先新开套餐位或绑定待用套餐位。", alert=True)
+    if not auth_summary.authorization_id:
+        await event.answer("该账号当前没有可续费的授权，请先绑定 TG 账号触发 7 天试用，或在 H5 中输入卡密开通当前授权。", alert=True)
         return
-    await event.answer("请输入新的续费 Key")
-    await get_onboarding_service().start_activation(event, user_id, slot_id=str(auth_summary.slot_id))
+    await event.answer("请输入新的续费卡密")
+    await get_onboarding_service().start_activation(event, user_id)
 
 
 async def confirm_unbind_account(event, user_id: int, account_id: str):

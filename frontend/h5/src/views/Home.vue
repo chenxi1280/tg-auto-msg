@@ -28,10 +28,10 @@
         <div class="hero">
           <h2>欢迎使用全球通</h2>
           <p class="description">
-            全球通以 Telegram Bot 为主入口，Web 端作为补充管理后台，支持账号、任务、套餐位与资源查看
+            全球通以 Telegram Bot 为主入口，Web 端作为补充管理后台，支持账号、任务、当前授权与资源查看
           </p>
           <p class="bot-description">
-            推荐流程：先在 TG Bot 内完成注册、卡密激活与扫码登录，再回到 Web 端做更完整的管理操作。
+            推荐流程：先在 TG Bot 内完成注册、卡密激活与绑定账号，再回到 Web 端做更完整的管理操作。
           </p>
           <div class="actions">
             <router-link v-if="!isAuthenticated" to="/register" class="btn btn-primary">

@@ -357,14 +357,14 @@ async def admin_list_cards(
 
 
 @router.get("/license-slots", dependencies=[Depends(require_admin_token)])
-async def admin_list_license_slots(
+async def admin_list_authorizations(
     status: Optional[str] = None,
     limit: int = 200,
     offset: int = 0,
 ):
-    """管理员查询套餐位列表。"""
+    """管理员查询历史授权记录列表。"""
     service = get_admin_license_service()
-    data = await service.list_license_slots(status=status, limit=limit, offset=offset)
+    data = await service.list_authorizations(status=status, limit=limit, offset=offset)
     return {"success": True, "data": data}
 
 

@@ -36,8 +36,8 @@ from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import Account, HealthStatus, TelegramDeveloperApp
 from backend.h5_backend.services.licensing.service import (
     TgAccountLimitExceededError,
-    auto_bind_available_slot_to_account,
-    grant_bot_trial_slot_if_eligible,
+    bind_current_authorization_to_account_if_possible,
+    grant_trial_authorization_if_eligible,
 )
 from backend.h5_backend.services.me.service import get_me_service
 from backend.utils.security.crypto import decrypt_string_session, encrypt_string_session
@@ -134,7 +134,7 @@ class LoginService:
 
         developer_service = get_developer_app_service()
         async with get_async_session() as db_session:
-            trial_slot = None
+            trial_authorization = None
             existing = await db_session.execute(
                 select(Account).where(
                     Account.user_id == user_id,
@@ -197,12 +197,12 @@ class LoginService:
                 account.reauth_required_at = None
                 account.health_status = HealthStatus.ONLINE
 
-            await auto_bind_available_slot_to_account(
+            await bind_current_authorization_to_account_if_possible(
                 user_id=user_id,
                 account_id=account.account_id,
                 session=db_session,
             )
-            trial_slot = await grant_bot_trial_slot_if_eligible(
+            trial_authorization = await grant_trial_authorization_if_eligible(
                 user_id=user_id,
                 account_id=account.account_id,
                 session=db_session,
@@ -245,13 +245,13 @@ class LoginService:
             "account_id": account.account_id,
             "tg_user_id": int(account.tg_user_id or 0),
             "username": account.username or account.first_name or "",
-            "trial_slot": (
+            "trial_authorization": (
                 {
-                    "slot_id": trial_slot.slot_id,
-                    "end_at": trial_slot.end_at.isoformat() if trial_slot.end_at else None,
-                    "grant_source": getattr(trial_slot, "grant_source", None),
+                    "authorization_id": trial_authorization.authorization_id,
+                    "end_at": trial_authorization.end_at.isoformat() if trial_authorization.end_at else None,
+                    "grant_source": getattr(trial_authorization, "grant_source", None),
                 }
-                if trial_slot is not None
+                if trial_authorization is not None
                 else None
             ),
         }
@@ -475,7 +475,7 @@ class LoginService:
                 "username": finalized["username"],
                 "bot_bind_url": bind_link["bot_bind_url"],
                 "bot_username": bind_link["bot_username"],
-                "trial_slot": finalized.get("trial_slot"),
+                "trial_authorization": finalized.get("trial_authorization"),
             }
         except SessionPasswordNeededError:
             password_info = await client(GetPasswordRequest())
@@ -553,7 +553,7 @@ class LoginService:
                     "username": finalized["username"],
                     "bot_bind_url": bind_link["bot_bind_url"],
                     "bot_username": bind_link["bot_username"],
-                    "trial_slot": finalized.get("trial_slot"),
+                    "trial_authorization": finalized.get("trial_authorization"),
                 }
             )
         elif session.status == LoginStatus.PASSWORD_REQUIRED:
@@ -589,7 +589,7 @@ class LoginService:
         if session.status != LoginStatus.PASSWORD_REQUIRED:
             raise HTTPException(status_code=400, detail="当前会话无需输入二步密码")
         if not session.pending_session_encrypted:
-            raise HTTPException(status_code=400, detail="会话缺少待验证状态，请重新登录")
+            raise HTTPException(status_code=400, detail="会话缺少待验证状态，请重新绑定")
 
         credentials = await self._resolve_login_credentials(
             user_id=user_id,
@@ -637,7 +637,7 @@ class LoginService:
                 "username": finalized["username"],
                 "bot_bind_url": bind_link["bot_bind_url"],
                 "bot_username": bind_link["bot_username"],
-                "trial_slot": finalized.get("trial_slot"),
+                "trial_authorization": finalized.get("trial_authorization"),
             }
         except PasswordHashInvalidError as exc:
             await get_redis_login_manager().update_status(

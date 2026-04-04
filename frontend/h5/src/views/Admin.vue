@@ -11,7 +11,7 @@
 
     <div class="container main">
       <el-tabs v-model="activeTab">
-        <el-tab-pane label="卡密与套餐位" name="licenses">
+        <el-tab-pane label="卡密与授权" name="licenses">
           <el-tabs v-model="licenseSubTab">
             <el-tab-pane label="配置中心" name="config">
               <el-row :gutter="12">
@@ -79,7 +79,7 @@
               </el-row>
             </el-tab-pane>
 
-            <el-tab-pane label="Key与套餐位数据" name="data">
+            <el-tab-pane label="Key与授权数据" name="data">
               <el-card shadow="hover">
                 <template #header>
                   <div class="card-header">Key列表</div>
@@ -130,8 +130,8 @@
                       {{ row.bound_account_name || (row.bound_account_id ? `${row.bound_account_id.slice(0, 8)}...` : '未绑定') }}
                     </template>
                   </el-table-column>
-                  <el-table-column label="套餐位到期" width="170">
-                    <template #default="{ row }">{{ formatDateTime(row.slot_end_at) }}</template>
+                  <el-table-column label="授权到期" width="170">
+                    <template #default="{ row }">{{ formatDateTime(row.authorization_end_at) }}</template>
                   </el-table-column>
                   <el-table-column label="状态" width="120">
                     <template #default="{ row }">
@@ -205,12 +205,13 @@
                 </template>
               </el-table-column>
               <el-table-column label="最近到期" width="170">
-                <template #default="{ row }">{{ formatDateTime(row.current_license?.end_at) }}</template>
+                <template #default="{ row }">{{ formatDateTime(row.current_authorization?.end_at) }}</template>
               </el-table-column>
-              <el-table-column label="套餐位" width="150">
+              <el-table-column label="当前授权" width="150">
                 <template #default="{ row }">
-                  <el-tag type="success">{{ row.active_license_slot_count || 0 }} 生效</el-tag>
-                  <el-tag type="info">{{ row.unbound_active_slot_count || 0 }} 待绑</el-tag>
+                  <el-tag :type="row.current_authorization?.status === 'active' ? 'success' : 'info'">
+                    {{ row.current_authorization?.status === 'active' ? '已授权' : '未授权' }}
+                  </el-tag>
                 </template>
               </el-table-column>
               <el-table-column label="开发者应用" min-width="260">
@@ -1320,7 +1321,7 @@ const saveDeveloperAppEdit = async () => {
     })
     const rotated = Number(response.data?.rotated_accounts || 0)
     ElMessage.success(
-      rotated > 0 ? `开发者应用已更新，${rotated} 个账号需要重新登录` : '开发者应用已更新',
+      rotated > 0 ? `开发者应用已更新，${rotated} 个账号需要重新绑定` : '开发者应用已更新',
     )
     developerAppEditDialog.visible = false
     await loadDeveloperApps()

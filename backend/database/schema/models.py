@@ -28,8 +28,8 @@ class User(Base):
     bot_initial_password_viewable: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, comment="是否允许在Bot中查看初始密码")
     password_changed_after_bot_registration: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, comment="Bot自动注册后是否已修改密码")
     bot_trial_eligible_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="Bot首绑试用资格获得时间")
-    bot_trial_granted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="Bot首绑试用套餐位发放时间")
-    bot_trial_slot_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, comment="Bot首绑试用套餐位ID")
+    bot_trial_granted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="Bot首绑试用授权发放时间")
+    bot_trial_authorization_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, comment="Bot首绑试用授权ID")
     email: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, comment="邮箱")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, comment="是否激活")
     # 时间戳
@@ -42,8 +42,8 @@ class User(Base):
         "ActivationCard",
         back_populates="used_by_user",
     )
-    license_slots: Mapped[List["UserLicenseSlot"]] = relationship(
-        "UserLicenseSlot",
+    authorizations: Mapped[List["UserAuthorization"]] = relationship(
+        "UserAuthorization",
         back_populates="user",
         cascade="all, delete-orphan",
     )
@@ -99,8 +99,8 @@ class ActivationCard(Base):
 
     plan: Mapped[Optional["PricingPlan"]] = relationship("PricingPlan", back_populates="activation_cards")
     used_by_user: Mapped[Optional["User"]] = relationship("User", back_populates="activated_cards")
-    slot_usages: Mapped[List["UserLicenseSlotCard"]] = relationship(
-        "UserLicenseSlotCard",
+    slot_usages: Mapped[List["UserAuthorizationCard"]] = relationship(
+        "UserAuthorizationCard",
         back_populates="activation_card",
         cascade="all, delete-orphan",
     )
@@ -111,11 +111,11 @@ class ActivationCard(Base):
     )
 
 
-class UserLicenseSlot(Base):
-    """系统用户下的可独立计费套餐位。"""
-    __tablename__ = "user_license_slots"
+class UserAuthorization(Base):
+    """系统用户下的当前授权记录。"""
+    __tablename__ = "user_authorizations"
 
-    slot_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    authorization_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey("users.id", ondelete="CASCADE"),
@@ -132,13 +132,13 @@ class UserLicenseSlot(Base):
         Integer,
         ForeignKey("activation_cards.id", ondelete="SET NULL"),
         nullable=True,
-        comment="首次创建该套餐位的卡密 ID",
+        comment="首次创建该授权的卡密 ID",
     )
     grant_source: Mapped[str] = mapped_column(
         String(20),
         default="card",
         nullable=False,
-        comment="套餐位来源：card/bot_trial",
+        comment="授权来源：card/bot_trial",
     )
     total_duration_days: Mapped[int] = mapped_column(Integer, default=0, nullable=False, comment="累计授权天数")
     start_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, comment="首次生效时间")
@@ -152,37 +152,37 @@ class UserLicenseSlot(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
-    user: Mapped["User"] = relationship("User", back_populates="license_slots")
+    user: Mapped["User"] = relationship("User", back_populates="authorizations")
     current_account: Mapped[Optional["Account"]] = relationship("Account", foreign_keys=[current_account_id])
     source_card: Mapped[Optional["ActivationCard"]] = relationship("ActivationCard", foreign_keys=[source_card_id])
-    card_usages: Mapped[List["UserLicenseSlotCard"]] = relationship(
-        "UserLicenseSlotCard",
+    card_usages: Mapped[List["UserAuthorizationCard"]] = relationship(
+        "UserAuthorizationCard",
         back_populates="slot",
         cascade="all, delete-orphan",
     )
-    bindings: Mapped[List["UserLicenseSlotBinding"]] = relationship(
-        "UserLicenseSlotBinding",
+    bindings: Mapped[List["UserAuthorizationBinding"]] = relationship(
+        "UserAuthorizationBinding",
         back_populates="slot",
         cascade="all, delete-orphan",
     )
 
     __table_args__ = (
-        Index("idx_user_license_slots_user_status", "user_id", "status"),
-        Index("idx_user_license_slots_account", "current_account_id"),
-        Index("idx_user_license_slots_end_at", "end_at"),
+        Index("idx_user_authorizations_user_status", "user_id", "status"),
+        Index("idx_user_authorizations_account", "current_account_id"),
+        Index("idx_user_authorizations_end_at", "end_at"),
     )
 
 
-class UserLicenseSlotCard(Base):
-    """套餐位所消费的激活 key 记录。"""
-    __tablename__ = "user_license_slot_cards"
+class UserAuthorizationCard(Base):
+    """当前授权所消费的卡密记录。"""
+    __tablename__ = "user_authorization_cards"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    slot_id: Mapped[str] = mapped_column(
+    authorization_id: Mapped[str] = mapped_column(
         String(36),
-        ForeignKey("user_license_slots.slot_id", ondelete="CASCADE"),
+        ForeignKey("user_authorizations.authorization_id", ondelete="CASCADE"),
         nullable=False,
-        comment="套餐位 ID",
+        comment="授权 ID",
     )
     activation_card_id: Mapped[int] = mapped_column(
         Integer,
@@ -193,25 +193,25 @@ class UserLicenseSlotCard(Base):
     duration_days: Mapped[int] = mapped_column(Integer, nullable=False, comment="本次增加时长（天）")
     applied_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False, comment="应用时间")
 
-    slot: Mapped["UserLicenseSlot"] = relationship("UserLicenseSlot", back_populates="card_usages")
+    slot: Mapped["UserAuthorization"] = relationship("UserAuthorization", back_populates="card_usages")
     activation_card: Mapped["ActivationCard"] = relationship("ActivationCard", back_populates="slot_usages")
 
     __table_args__ = (
-        UniqueConstraint("activation_card_id", name="uq_user_license_slot_cards_activation_card_id"),
-        Index("idx_user_license_slot_cards_slot_id", "slot_id"),
+        UniqueConstraint("activation_card_id", name="uq_user_authorization_cards_activation_card_id"),
+        Index("idx_user_authorization_cards_authorization_id", "authorization_id"),
     )
 
 
-class UserLicenseSlotBinding(Base):
-    """套餐位与 TG 账号的切换历史。"""
-    __tablename__ = "user_license_slot_bindings"
+class UserAuthorizationBinding(Base):
+    """当前授权与 TG 账号的切换历史。"""
+    __tablename__ = "user_authorization_bindings"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    slot_id: Mapped[str] = mapped_column(
+    authorization_id: Mapped[str] = mapped_column(
         String(36),
-        ForeignKey("user_license_slots.slot_id", ondelete="CASCADE"),
+        ForeignKey("user_authorizations.authorization_id", ondelete="CASCADE"),
         nullable=False,
-        comment="套餐位 ID",
+        comment="授权 ID",
     )
     account_id: Mapped[str] = mapped_column(
         String(36),
@@ -223,25 +223,25 @@ class UserLicenseSlotBinding(Base):
     unbind_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="解绑时间")
     unbind_reason: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, comment="解绑原因")
 
-    slot: Mapped["UserLicenseSlot"] = relationship("UserLicenseSlot", back_populates="bindings")
+    slot: Mapped["UserAuthorization"] = relationship("UserAuthorization", back_populates="bindings")
     account: Mapped["Account"] = relationship("Account")
 
     __table_args__ = (
-        Index("idx_user_license_slot_bindings_slot_id", "slot_id"),
-        Index("idx_user_license_slot_bindings_account_id", "account_id"),
+        Index("idx_user_authorization_bindings_authorization_id", "authorization_id"),
+        Index("idx_user_authorization_bindings_account_id", "account_id"),
     )
 
 
-class SlotNoticeLog(Base):
-    """套餐位到期提醒发送记录。"""
-    __tablename__ = "slot_notice_logs"
+class AuthorizationNoticeLog(Base):
+    """授权到期提醒发送记录。"""
+    __tablename__ = "authorization_notice_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    slot_id: Mapped[str] = mapped_column(
+    authorization_id: Mapped[str] = mapped_column(
         String(36),
-        ForeignKey("user_license_slots.slot_id", ondelete="CASCADE"),
+        ForeignKey("user_authorizations.authorization_id", ondelete="CASCADE"),
         nullable=False,
-        comment="套餐位 ID",
+        comment="授权 ID",
     )
     user_id: Mapped[int] = mapped_column(
         Integer,
@@ -253,9 +253,9 @@ class SlotNoticeLog(Base):
     sent_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False, comment="发送时间")
 
     __table_args__ = (
-        UniqueConstraint("slot_id", "days_before", name="uq_slot_notice_once"),
-        Index("idx_slot_notice_user_id", "user_id"),
-        Index("idx_slot_notice_sent_at", "sent_at"),
+        UniqueConstraint("authorization_id", "days_before", name="uq_authorization_notice_once"),
+        Index("idx_authorization_notice_user_id", "user_id"),
+        Index("idx_authorization_notice_sent_at", "sent_at"),
     )
 
 
@@ -530,7 +530,7 @@ class Account(Base):
     # 风控状态
     is_flooding: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否触发 FloodWait")
     flood_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="FloodWait 解除时间")
-    reauth_required: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, comment="是否需要重新登录")
+    reauth_required: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, comment="是否需要重新绑定")
     reauth_reason: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, comment="需要重登的原因")
     reauth_required_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="重登要求生效时间")
 

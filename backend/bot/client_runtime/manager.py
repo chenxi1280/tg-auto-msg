@@ -102,7 +102,7 @@ async def start_manager_bot(bot_token: str):
         if await bot_client.is_user_authorized():
             current_me = await bot_client.get_me()
     except Exception as e:
-        logger.warning(f"读取当前 bot 会话失败，将继续使用 token 重新登录: {e}")
+        logger.warning(f"读取当前 bot 会话失败，将继续使用 token 重新建立会话: {e}")
 
     if current_me and expected_bot_id and int(current_me.id) != int(expected_bot_id):
         logger.warning(

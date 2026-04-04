@@ -40,11 +40,11 @@ export interface LoginStatusResponse {
   bot_username?: string
   password_hint?: string
   error?: string
-  trial_slot?: LoginTrialSlot | null
+  trial_authorization?: LoginTrialAuthorization | null
 }
 
-export interface LoginTrialSlot {
-  slot_id: string
+export interface LoginTrialAuthorization {
+  authorization_id: string
   end_at: string | null
   grant_source?: string | null
 }
@@ -119,7 +119,7 @@ export interface SubmitPasswordResponse {
   username: string
   bot_bind_url: string
   bot_username: string
-  trial_slot?: LoginTrialSlot | null
+  trial_authorization?: LoginTrialAuthorization | null
 }
 
 export const submitLoginPassword = (

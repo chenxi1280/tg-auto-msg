@@ -7,7 +7,7 @@
           <img class="brand-logo" src="/quanqiu.png" alt="全球通" />
           <div>
             <h1>全球通 Key 购买</h1>
-            <p class="sub-title">每个生效套餐位可绑定 1 个 TG 账号执行自动发送；如需新增可执行账号，请购买并激活新的 Key</p>
+            <p class="sub-title">一个系统账号只绑定 1 个 TG 账号。首次成功绑定 TG 账号会赠送 7 天试用，之后可通过卡密续费当前授权。</p>
           </div>
         </div>
       </div>
@@ -18,14 +18,14 @@
         v-if="licenseStatus?.is_active"
         type="success"
         :closable="false"
-        title="当前已有可用套餐位，如需增加可执行账号数量，可继续购买新的 Key"
+        title="当前授权已生效，如需继续使用可继续购买新的卡密续费当前授权"
       />
 
       <el-alert
         v-else
         type="warning"
         :closable="false"
-        title="当前还没有可用套餐位，请先购买 Key 或输入卡密激活"
+        title="当前还没有可用授权，请先购买卡密或在“我的”页面输入卡密续费"
       />
 
       <el-card shadow="hover" class="mt16">
@@ -51,7 +51,7 @@
         <template #header>
           <div class="card-title">购买方式</div>
         </template>
-        <p class="helper-text">点击下方按钮跳转 Telegram 购买全球通 Key。购买后可在“我的”页面输入卡密激活，生成新的套餐位。</p>
+        <p class="helper-text">点击下方按钮跳转 Telegram 购买全球通卡密。购买后可在“我的”页面输入卡密，为当前唯一授权续费。</p>
         <div class="actions">
           <el-button type="primary" size="large" @click="goTelegramPurchase">
             {{ purchase.button_text || '去 TG 购买' }}
@@ -67,13 +67,13 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import type { PricingPlan, LicenseStatus } from '@/api/me'
+import type { PricingPlan, AuthorizationStatus } from '@/api/me'
 import { getLicenseStatus } from '@/api/me'
 
 const router = useRouter()
 const loading = ref(false)
 const plans = ref<PricingPlan[]>([])
-const licenseStatus = ref<LicenseStatus | null>(null)
+const licenseStatus = ref<AuthorizationStatus | null>(null)
 const purchase = ref({
   url: '',
   button_text: '去 TG 购买',

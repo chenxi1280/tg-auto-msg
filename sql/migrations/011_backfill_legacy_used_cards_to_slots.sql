@@ -1,5 +1,5 @@
 -- Backfill legacy used activation cards into slot-based licenses.
--- Idempotent: only processes cards that have no entry in user_license_slot_cards.
+-- Idempotent: only processes cards that have no entry in user_authorization_cards.
 
 WITH legacy_used_cards AS (
     SELECT
@@ -13,14 +13,14 @@ WITH legacy_used_cards AS (
         COALESCE(c.used_at, c.created_at, NOW()) AS start_at
     FROM activation_cards c
     LEFT JOIN pricing_plans p ON p.plan_code = c.plan_code
-    LEFT JOIN user_license_slot_cards usc ON usc.activation_card_id = c.id
+    LEFT JOIN user_authorization_cards usc ON usc.activation_card_id = c.id
     WHERE c.is_used = TRUE
       AND c.used_by_user_id IS NOT NULL
       AND usc.id IS NULL
 ),
 prepared AS (
     SELECT
-        md5('legacy-slot-' || l.activation_card_id::text) AS slot_id,
+        md5('legacy-slot-' || l.activation_card_id::text) AS authorization_id,
         l.activation_card_id,
         l.user_id,
         l.duration_days,
@@ -29,8 +29,8 @@ prepared AS (
     FROM legacy_used_cards l
     WHERE l.duration_days > 0
 )
-INSERT INTO user_license_slots (
-    slot_id,
+INSERT INTO user_authorizations (
+    authorization_id,
     user_id,
     current_account_id,
     source_card_id,
@@ -42,7 +42,7 @@ INSERT INTO user_license_slots (
     updated_at
 )
 SELECT
-    p.slot_id,
+    p.authorization_id,
     p.user_id,
     NULL,
     p.activation_card_id,
@@ -53,7 +53,7 @@ SELECT
     NOW(),
     NOW()
 FROM prepared p
-ON CONFLICT (slot_id) DO NOTHING;
+ON CONFLICT (authorization_id) DO NOTHING;
 
 WITH legacy_used_cards AS (
     SELECT
@@ -67,14 +67,14 @@ WITH legacy_used_cards AS (
         COALESCE(c.used_at, c.created_at, NOW()) AS start_at
     FROM activation_cards c
     LEFT JOIN pricing_plans p ON p.plan_code = c.plan_code
-    LEFT JOIN user_license_slot_cards usc ON usc.activation_card_id = c.id
+    LEFT JOIN user_authorization_cards usc ON usc.activation_card_id = c.id
     WHERE c.is_used = TRUE
       AND c.used_by_user_id IS NOT NULL
       AND usc.id IS NULL
 ),
 prepared AS (
     SELECT
-        md5('legacy-slot-' || l.activation_card_id::text) AS slot_id,
+        md5('legacy-slot-' || l.activation_card_id::text) AS authorization_id,
         l.activation_card_id,
         l.user_id,
         l.duration_days,
@@ -82,14 +82,14 @@ prepared AS (
     FROM legacy_used_cards l
     WHERE l.duration_days > 0
 )
-INSERT INTO user_license_slot_cards (
-    slot_id,
+INSERT INTO user_authorization_cards (
+    authorization_id,
     activation_card_id,
     duration_days,
     applied_at
 )
 SELECT
-    p.slot_id,
+    p.authorization_id,
     p.activation_card_id,
     p.duration_days,
     p.start_at
