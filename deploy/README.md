@@ -12,6 +12,8 @@
   - 服务器端安装 release、切换软链、拉起服务。
 - `compose-up.sh`
   - 统一封装 `docker compose` 启动流程。
+- `ensure-database.sh`
+  - 使用共享业务子账号连接 infra PostgreSQL，确保本项目数据库存在。
 - `docker-env.sh`
   - 生成或校验 Docker 所需环境变量。
 - `check-services.sh`

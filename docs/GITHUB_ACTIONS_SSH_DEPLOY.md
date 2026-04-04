@@ -114,6 +114,8 @@ vi /data/tgmsg/shared/.env
 - `tgmsg` 不再自行启动 `postgres` / `redis`
 - `DATABASE_URL` 与 `REDIS_URL` 必须指向独立的基础设施项目
 - 默认约定为连接 `infra_default` 网络内的 `postgres` / `redis`
+- `DATABASE_URL` 推荐使用共享业务子账号，例如 `app_user`
+- 发布脚本会在启动容器前自动确保 `tgmsg` 数据库存在
 
 ## 四、Workflow 已做什么
 

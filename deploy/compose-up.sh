@@ -11,6 +11,9 @@ ensure_runtime_env
 echo "==> 发布目录: $APP_DIR"
 echo "==> 环境文件: $ENV_FILE"
 
+echo "==> 确保业务数据库存在"
+bash "$SCRIPT_DIR/ensure-database.sh"
+
 echo "==> 启动并构建核心服务（app + frontend）"
 compose up -d --build --remove-orphans app frontend
 

@@ -183,6 +183,8 @@ cp .env.docker.example /data/tgmsg/shared/.env
 # 编辑 /data/tgmsg/shared/.env，至少填写以下必填项：
 # TG_API_ID TG_API_HASH BOT_TOKEN JWT_SECRET_KEY ADMIN_API_TOKEN
 # DATABASE_URL REDIS_URL
+# DATABASE_URL 推荐使用共享业务子账号，例如：
+# postgresql+asyncpg://app_user:shared_password@postgres:5432/tgmsg
 
 # 2) 本地统一发版（推荐）
 bash deploy/release.sh --host 47.250.167.174
@@ -226,6 +228,7 @@ ssh root@your-host "tail -f /data/tgmsg/shared/logs/service-health.log"
 说明：
 - 生产环境建议设置 `SERVE_FRONTEND=false`，由 Nginx 提供前端。
 - `DATABASE_URL` 和 `REDIS_URL` 应指向 `infra_default` 网络里的 `postgres` / `redis` 服务。
+- `DATABASE_URL` 使用共享业务子账号，发布时会自动确保 `tgmsg` 数据库存在。
 - 本地开发仍可设置 `SERVE_FRONTEND=true`，继续由 FastAPI 挂载前端构建产物。
 - 标准发版脚本使用 `git archive`，不会再把 `.DS_Store`、`._*` 等本地垃圾文件带到线上。
 - 推荐尽快把默认发布分支统一到 `main`。详细规范见 `docs/BRANCHING_AND_RELEASES.md`。
