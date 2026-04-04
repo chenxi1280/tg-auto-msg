@@ -87,8 +87,6 @@ install_systemd_units() {
 prepare_shared_layout() {
   mkdir -p "$RELEASES_DIR" "$SHARED_DIR" "$INCOMING_DIR" "$BACKUP_DIR"
   mkdir -p \
-    "${SHARED_DIR}/postgres" \
-    "${SHARED_DIR}/redis" \
     "${SHARED_DIR}/logs" \
     "${SHARED_DIR}/uploads" \
     "${SHARED_DIR}/nginx-logs"

@@ -28,8 +28,6 @@ if [[ "$frontend_status" != "running" || "$frontend_health" == "unhealthy" || "$
 fi
 
 services=(
-  tgmsg-postgres
-  tgmsg-redis
   tgmsg-app
   tgmsg-frontend
 )

@@ -93,7 +93,7 @@ ssh -i ~/.ssh/tgmsg_github_actions root@47.250.167.174
 
 ```bash
 mkdir -p /data/tgmsg/{releases,shared,incoming,backups}
-mkdir -p /data/tgmsg/shared/{postgres,redis,logs,uploads,nginx-logs}
+mkdir -p /data/tgmsg/shared/{logs,uploads,nginx-logs}
 ```
 
 然后准备线上环境文件：
@@ -108,6 +108,12 @@ cp /data/tgmsg/app/.env /data/tgmsg/shared/.env
 cp /data/tgmsg/app/.env.docker.example /data/tgmsg/shared/.env
 vi /data/tgmsg/shared/.env
 ```
+
+注意：
+
+- `tgmsg` 不再自行启动 `postgres` / `redis`
+- `DATABASE_URL` 与 `REDIS_URL` 必须指向独立的基础设施项目
+- 默认约定为连接 `infra_default` 网络内的 `postgres` / `redis`
 
 ## 四、Workflow 已做什么
 
@@ -131,6 +137,13 @@ vi /data/tgmsg/shared/.env
 5. 调用 `deploy/server-install-release.sh`
 6. 执行 `docker compose up -d --build --remove-orphans`
 7. 更新 `/data/tgmsg/current`
+
+当前 `tgmsg` 的 `docker-compose.yml` 只会更新：
+
+- `app`
+- `frontend`
+
+数据库与 Redis 由独立的 `infra-compose` 维护。
 
 ## 五、怎么触发发布
 

@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/docker-env.sh"
 
 ALERT_ENV_FILE="${ALERT_ENV_FILE:-/etc/tgmsg/service-health.env}"
-LOG_DIR="${LOG_DIR:-/data/tgmsg/logs}"
+LOG_DIR="${LOG_DIR:-${APP_LOG_DIR:-/data/tgmsg/shared/logs}}"
 LOG_FILE="${LOG_FILE:-${LOG_DIR}/service-health.log}"
 STATE_FILE="${STATE_FILE:-${LOG_DIR}/service-health.state}"
 MEM_AVAILABLE_THRESHOLD_MB="${MEM_AVAILABLE_THRESHOLD_MB:-128}"
@@ -125,7 +125,7 @@ ensure_runtime_env
 
 issues=()
 recovered_services=()
-services=(tgmsg-postgres tgmsg-redis tgmsg-app tgmsg-frontend)
+services=(tgmsg-app tgmsg-frontend)
 
 for service in "${services[@]}"; do
   status="$(service_status "$service")"
@@ -136,24 +136,12 @@ for service in "${services[@]}"; do
     continue
   fi
 
-  if [[ "$service" == "tgmsg-app" || "$service" == "tgmsg-frontend" ]]; then
-    if ! service_ok "$service"; then
-      compose_name="${service#tgmsg-}"
-      reason="status=${status:-missing},health=${health:-none}"
-      if ! attempt_service_recovery "$service" "$compose_name" "$reason"; then
-        issues+=("容器自愈失败: $service (status=$(service_status "$service"), health=$(service_health "$service"))")
-      fi
+  if ! service_ok "$service"; then
+    compose_name="${service#tgmsg-}"
+    reason="status=${status:-missing},health=${health:-none}"
+    if ! attempt_service_recovery "$service" "$compose_name" "$reason"; then
+      issues+=("容器自愈失败: $service (status=$(service_status "$service"), health=$(service_health "$service"))")
     fi
-    continue
-  fi
-
-  if [[ "$status" != "running" ]]; then
-    issues+=("容器未运行: $service (status=$status)")
-    continue
-  fi
-
-  if [[ -n "$health" && "$health" != "healthy" ]]; then
-    issues+=("容器健康异常: $service (health=$health)")
   fi
 done
 

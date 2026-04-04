@@ -15,7 +15,7 @@
 - `docker-env.sh`
   - 生成或校验 Docker 所需环境变量。
 - `check-services.sh`
-  - 后端与基础服务健康检查。
+  - 后端与前端服务健康检查、自愈和告警。
 - `check-frontend.sh`
   - 前端可用性巡检。
 - `nginx/`

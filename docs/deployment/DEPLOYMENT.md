@@ -2,6 +2,11 @@
 
 本文档提供详细的部署指南，包括开发环境、生产环境和 Docker 部署。
 
+> 注意：当前线上标准发布入口已经切换为 GitHub Actions + SSH 与 `deploy/release.sh`。
+> 如果你是在维护 `47.250.167.174` 的生产环境，请优先参考
+> `docs/GITHUB_ACTIONS_SSH_DEPLOY.md`。另外，线上 `PostgreSQL/Redis` 已建议拆分到独立的
+> `infra-compose` 项目，不再跟随 `tgmsg` 一起发版。
+
 ## 📋 前置要求
 
 ### 必须安装

@@ -53,9 +53,7 @@ git push origin --delete master
 │   ├── .env
 │   ├── logs/
 │   ├── uploads/
-│   ├── nginx-logs/
-│   ├── postgres/
-│   └── redis/
+│   └── nginx-logs/
 ├── incoming/
 └── backups/
 ```
@@ -65,6 +63,7 @@ git push origin --delete master
 - `releases/` 保存每次发版的只读源码
 - `current` 指向当前正在运行的版本
 - `shared/` 保存不应随版本切换而丢失的配置和持久化数据
+- `postgres` / `redis` 建议由独立的 `infra-compose` 项目维护，不再耦合在 `tgmsg` 发版里
 
 ## 标准发布入口
 

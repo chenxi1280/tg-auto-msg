@@ -182,7 +182,7 @@ sudo supervisorctl start tg-auto-msg
 cp .env.docker.example /data/tgmsg/shared/.env
 # 编辑 /data/tgmsg/shared/.env，至少填写以下必填项：
 # TG_API_ID TG_API_HASH BOT_TOKEN JWT_SECRET_KEY ADMIN_API_TOKEN
-# POSTGRES_PASSWORD REDIS_PASSWORD
+# DATABASE_URL REDIS_URL
 
 # 2) 本地统一发版（推荐）
 bash deploy/release.sh --host 47.250.167.174
@@ -197,15 +197,12 @@ systemctl list-timers | grep tgmsg
 生产结构说明：
 - `frontend`：独立 Nginx 容器，负责静态资源与 SPA 路由，并反向代理 `/api` 到 `app`
 - `app`：FastAPI API 容器，只在 Docker 内网暴露 `8000`
-- `postgres`：PostgreSQL 容器
-- `redis`：Redis 容器
+- `postgres` / `redis`：由独立的 `infra-compose` 项目维护，通过 `infra_default` 外部网络提供
 
 标准目录结构：
 - `/data/tgmsg/releases/<release_id>`：每次发版的只读源码目录
 - `/data/tgmsg/current`：当前正在运行的版本软链
 - `/data/tgmsg/shared/.env`：线上环境变量
-- `/data/tgmsg/shared/postgres`：PostgreSQL 数据
-- `/data/tgmsg/shared/redis`：Redis 数据
 - `/data/tgmsg/shared/logs`：后端应用日志
 - `/data/tgmsg/shared/uploads`：业务上传目录
 - `/data/tgmsg/shared/nginx-logs`：Nginx 日志
@@ -228,6 +225,7 @@ ssh root@your-host "tail -f /data/tgmsg/shared/logs/service-health.log"
 
 说明：
 - 生产环境建议设置 `SERVE_FRONTEND=false`，由 Nginx 提供前端。
+- `DATABASE_URL` 和 `REDIS_URL` 应指向 `infra_default` 网络里的 `postgres` / `redis` 服务。
 - 本地开发仍可设置 `SERVE_FRONTEND=true`，继续由 FastAPI 挂载前端构建产物。
 - 标准发版脚本使用 `git archive`，不会再把 `.DS_Store`、`._*` 等本地垃圾文件带到线上。
 - 推荐尽快把默认发布分支统一到 `main`。详细规范见 `docs/BRANCHING_AND_RELEASES.md`。

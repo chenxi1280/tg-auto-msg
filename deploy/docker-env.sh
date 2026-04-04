@@ -58,9 +58,6 @@ _inspect_env_value() {
 ensure_runtime_env() {
   load_base_env
 
-  export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(_inspect_env_value tgmsg-postgres POSTGRES_PASSWORD)}"
-  export REDIS_PASSWORD="${REDIS_PASSWORD:-$(_inspect_env_value tgmsg-redis REDIS_PASSWORD)}"
-
   export JWT_SECRET_KEY="${JWT_SECRET_KEY:-$(_inspect_env_value tgmsg-app JWT_SECRET_KEY)}"
   export ENCRYPTION_KEY="${ENCRYPTION_KEY:-$(_inspect_env_value tgmsg-app ENCRYPTION_KEY)}"
   export H5_BASE_URL="${H5_BASE_URL:-$(_inspect_env_value tgmsg-app H5_BASE_URL)}"
@@ -70,16 +67,14 @@ ensure_runtime_env() {
   export BIND_FAILURE_WINDOW_SECONDS="${BIND_FAILURE_WINDOW_SECONDS:-$(_inspect_env_value tgmsg-app BIND_FAILURE_WINDOW_SECONDS)}"
   export BIND_LOCK_SECONDS="${BIND_LOCK_SECONDS:-$(_inspect_env_value tgmsg-app BIND_LOCK_SECONDS)}"
   export SERVE_FRONTEND="${SERVE_FRONTEND:-$(_inspect_env_value tgmsg-app SERVE_FRONTEND)}"
-  export POSTGRES_DB="${POSTGRES_DB:-$(_inspect_env_value tgmsg-postgres POSTGRES_DB)}"
-  export POSTGRES_USER="${POSTGRES_USER:-$(_inspect_env_value tgmsg-postgres POSTGRES_USER)}"
 
   local required=(
     TG_API_ID
     TG_API_HASH
     BOT_TOKEN
     ADMIN_API_TOKEN
-    POSTGRES_PASSWORD
-    REDIS_PASSWORD
+    DATABASE_URL
+    REDIS_URL
     JWT_SECRET_KEY
   )
 
