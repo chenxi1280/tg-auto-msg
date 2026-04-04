@@ -50,6 +50,7 @@
 - 项目结构：`docs/setup/PROJECT_STRUCTURE.md`
 - 数据库迁移：`docs/setup/MIGRATIONS.md`
 - 生产部署：`docs/deployment/DEPLOYMENT.md`
+- 线上运行目录：`docs/deployment/PRODUCTION_RUNTIME.md`
 - 架构文档：`docs/architecture/`
 - 发布与分支：`docs/BRANCHING_AND_RELEASES.md`
 - 仓库整理约定：`docs/WORKSPACE_CONVENTIONS.md`
@@ -205,9 +206,9 @@ systemctl list-timers | grep tgmsg
 - `/data/tgmsg/releases/<release_id>`：每次发版的只读源码目录
 - `/data/tgmsg/current`：当前正在运行的版本软链
 - `/data/tgmsg/shared/.env`：线上环境变量
-- `/data/tgmsg/shared/logs`：后端应用日志
-- `/data/tgmsg/shared/uploads`：业务上传目录
-- `/data/tgmsg/shared/nginx-logs`：Nginx 日志
+- `/data/tgmsg/logs`：后端应用日志
+- `/data/tgmsg/uploads`：业务上传目录
+- `/data/tgmsg/nginx-logs`：Nginx 日志
 
 访问入口：
 - `http://your-host/`：前端首页
@@ -232,6 +233,7 @@ ssh root@your-host "tail -f /data/tgmsg/shared/logs/service-health.log"
 - 本地开发仍可设置 `SERVE_FRONTEND=true`，继续由 FastAPI 挂载前端构建产物。
 - 标准发版脚本使用 `git archive`，不会再把 `.DS_Store`、`._*` 等本地垃圾文件带到线上。
 - 推荐尽快把默认发布分支统一到 `main`。详细规范见 `docs/BRANCHING_AND_RELEASES.md`。
+- 当前线上真实目录、挂载和兼容说明以 `docs/deployment/PRODUCTION_RUNTIME.md` 为准。
 
 ## 📊 数据库结构
 

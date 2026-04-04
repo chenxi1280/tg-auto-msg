@@ -176,6 +176,10 @@ systemctl list-timers | grep tgmsg
 
 看 release 是否切换成功，容器是否 healthy。
 
+当前线上目录、挂载和验收清单，见：
+
+- `docs/deployment/PRODUCTION_RUNTIME.md`
+
 ## 七、回滚
 
 如果某次发布有问题：
