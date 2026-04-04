@@ -51,7 +51,7 @@
 - `/data/tgmsg/current` 指向当前运行版本。
 - `/data/tgmsg/incoming` 存放 Actions 上传的 release 包。
 - `/data/tgmsg/backups` 存放归档与备份材料。
-- `/data/tgmsg/postgres` 和 `/data/tgmsg/redis` 已由 `infra-compose` 使用，本项目只保留这两个目录的历史归属，不再维护对应容器。
+- `/data/tgmsg/postgres` 和 `/data/tgmsg/redis` 现仅保留为历史回退副本，不再被运行中的 `infra-compose` 容器挂载。
 
 ## 3. 当前真实挂载
 
@@ -92,10 +92,12 @@ INFRA_NETWORK_NAME=infra_default
 
 当前线上实际：
 
-- `tgmsg` 仍在使用旧业务账号连接串
-- PostgreSQL 与 Redis 数据目录仍位于 `/data/tgmsg/postgres` 和 `/data/tgmsg/redis`
+- `tgmsg` 已切换为共享业务账号 `app_user`
+- `infra-compose` 的管理员入口已切换为 `postgres`
+- PostgreSQL 与 Redis 数据目录已经迁移到 `/data/infra/postgres` 和 `/data/infra/redis`
+- `/data/tgmsg/postgres` 与 `/data/tgmsg/redis` 仍保留为回退副本
 
-这两个兼容点在本轮不迁移，只记录在文档中。
+当前仍保留的兼容点主要是 `tgmsg` 自己的日志、上传和 Nginx 日志目录仍位于 `/data/tgmsg/*`。
 
 ## 6. 发布后验收清单
 
