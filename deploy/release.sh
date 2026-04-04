@@ -8,7 +8,7 @@ BASE_DIR="${BASE_DIR:-/data/tgmsg}"
 REF_NAME="${REF_NAME:-HEAD}"
 ALLOW_DIRTY="${ALLOW_DIRTY:-0}"
 KEEP_ARCHIVE="${KEEP_ARCHIVE:-0}"
-EXPECTED_BRANCHES="${EXPECTED_BRANCHES:-main master}"
+EXPECTED_BRANCHES="${EXPECTED_BRANCHES:-release main master}"
 SSH_OPTS=()
 
 usage() {
@@ -22,13 +22,13 @@ Options:
   --base-dir DIR        Remote base directory, default /data/tgmsg
   --ref REF             Git ref to release, default HEAD
   --allow-dirty         Allow releasing with local uncommitted changes
-  --branch-list "..."   Allowed release branches, default "main master"
+  --branch-list "..."   Allowed release branches, default "release main master"
   --ssh-opt OPT         Extra ssh/scp option, can be repeated
   -h, --help            Show this help
 
 Examples:
   bash deploy/release.sh --host 47.250.167.174
-  bash deploy/release.sh --host 47.250.167.174 --branch-list "main"
+  bash deploy/release.sh --host 47.250.167.174 --branch-list "release"
 EOF
 }
 

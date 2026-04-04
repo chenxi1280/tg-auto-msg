@@ -14,8 +14,14 @@ echo "==> 环境文件: $ENV_FILE"
 echo "==> 确保业务数据库存在"
 bash "$SCRIPT_DIR/ensure-database.sh"
 
-echo "==> 启动并构建核心服务（app + frontend）"
-compose up -d --build --remove-orphans app frontend
+echo "==> 预构建核心服务镜像（app + frontend）"
+compose build app frontend
+
+echo "==> 执行数据库迁移"
+compose run --rm --no-deps app python -m backend.database.runtime.migration_cli apply
+
+echo "==> 启动核心服务（app + frontend）"
+compose up -d --remove-orphans app frontend
 
 echo "==> 检查容器状态"
 compose ps
