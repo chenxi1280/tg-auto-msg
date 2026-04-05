@@ -111,9 +111,6 @@ async def ensure_database_schema(force: bool = False) -> None:
         if _schema_ready and not force:
             return
 
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-
         migration_result = await apply_pending_migrations(engine)
         if migration_result.get("applied", 0) > 0:
             logger.info(
