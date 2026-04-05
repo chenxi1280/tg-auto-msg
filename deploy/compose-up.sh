@@ -20,8 +20,49 @@ compose build app frontend
 echo "==> 执行数据库迁移"
 compose run --rm --no-deps app python -m backend.database.runtime.migration_cli apply
 
-echo "==> 启动核心服务（app + frontend）"
-compose up -d --remove-orphans app frontend
+wait_for_container_health() {
+  local container_name="$1"
+  local timeout_seconds="${2:-360}"
+  local started_at
+  started_at="$(date +%s)"
+
+  while true; do
+    local now elapsed status health
+    now="$(date +%s)"
+    elapsed=$((now - started_at))
+    status="$(docker inspect "$container_name" --format '{{.State.Status}}' 2>/dev/null || true)"
+    health="$(docker inspect "$container_name" --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' 2>/dev/null || true)"
+
+    if [[ "$status" == "running" && ( -z "$health" || "$health" == "healthy" ) ]]; then
+      echo "✅ ${container_name} 已就绪: status=$status health=${health:-none}"
+      return 0
+    fi
+
+    if [[ "$status" == "exited" || "$health" == "unhealthy" ]]; then
+      echo "❌ ${container_name} 启动失败: status=${status:-unknown} health=${health:-none}" >&2
+      echo "==> 最近 200 行 ${container_name} 日志" >&2
+      docker logs --tail 200 "$container_name" >&2 || true
+      return 1
+    fi
+
+    if (( elapsed >= timeout_seconds )); then
+      echo "❌ 等待 ${container_name} 超时: status=${status:-unknown} health=${health:-none}" >&2
+      echo "==> 最近 200 行 ${container_name} 日志" >&2
+      docker logs --tail 200 "$container_name" >&2 || true
+      return 1
+    fi
+
+    echo "⏳ 等待 ${container_name} 就绪 (${elapsed}s/${timeout_seconds}s): status=${status:-unknown} health=${health:-none}"
+    sleep 5
+  done
+}
+
+echo "==> 启动后端服务（app）"
+compose up -d --remove-orphans app
+wait_for_container_health tgmsg-app 420
+
+echo "==> 启动前端服务（frontend）"
+compose up -d --remove-orphans frontend
 
 echo "==> 检查容器状态"
 compose ps
