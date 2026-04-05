@@ -83,8 +83,7 @@ CREATE INDEX IF NOT EXISTS idx_pricing_plans_is_active ON pricing_plans(is_activ
 
 INSERT INTO pricing_plans (plan_code, display_name, billing_cycle, price_cents, duration_days, is_active, sort_order)
 VALUES
-    ('monthly', '月付Key', 'monthly', 20000, 30, TRUE, 10),
-    ('yearly', '年付Key', 'yearly', 110000, 365, TRUE, 20)
+    ('monthly', '月付Key', 'monthly', 10000, 30, TRUE, 10)
 ON CONFLICT (plan_code) DO UPDATE
 SET
     display_name = EXCLUDED.display_name,
@@ -93,6 +92,10 @@ SET
     duration_days = EXCLUDED.duration_days,
     is_active = EXCLUDED.is_active,
     sort_order = EXCLUDED.sort_order;
+
+UPDATE pricing_plans
+SET is_active = FALSE
+WHERE plan_code <> 'monthly';
 
 COMMENT ON TABLE pricing_plans IS 'Key规格配置表';
 

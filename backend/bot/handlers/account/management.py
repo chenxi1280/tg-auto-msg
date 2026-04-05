@@ -49,7 +49,9 @@ async def show_accounts_list(event, user_id: int):
             if db_user_id is not None
             else None
         )
-    accounts = await account_manager.get_accounts(db_user_id, is_active=False) if db_user_id else []
+    if db_user_id:
+        await list_user_authorizations(db_user_id)
+    accounts = await account_manager.get_accounts(db_user_id, is_active=True) if db_user_id else []
     if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED and access_ctx.scoped_account_id:
         accounts = [item for item in accounts if str(item.account_id) == str(access_ctx.scoped_account_id)]
     authorization_items = await list_user_authorizations(db_user_id) if db_user_id else []

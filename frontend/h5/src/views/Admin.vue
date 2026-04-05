@@ -893,7 +893,7 @@ const planDialog = reactive({
   form: {
     display_name: '',
     billing_cycle: 'monthly',
-    price_cents: 20000,
+    price_cents: 10000,
     duration_days: 30,
     is_active: true,
   },

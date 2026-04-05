@@ -204,7 +204,9 @@ class AdminLicenseService:
     async def list_plans(self) -> List[Dict[str, Any]]:
         async with get_async_session() as session:
             result = await session.execute(
-                select(PricingPlan).order_by(PricingPlan.sort_order.asc(), PricingPlan.price_cents.asc())
+                select(PricingPlan)
+                .where(PricingPlan.is_active.is_(True))
+                .order_by(PricingPlan.sort_order.asc(), PricingPlan.price_cents.asc())
             )
             plans = result.scalars().all()
         return [self._serialize_plan(plan) for plan in plans]
@@ -221,7 +223,7 @@ class AdminLicenseService:
                     User.email,
                     User.is_active,
                     User.created_at,
-                    func.count(Account.account_id).label("account_count"),
+                    func.count(Account.account_id).filter(Account.is_active.is_(True)).label("account_count"),
                 )
                 .outerjoin(Account, Account.user_id == User.id)
                 .group_by(User.id)

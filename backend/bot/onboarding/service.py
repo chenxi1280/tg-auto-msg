@@ -561,7 +561,8 @@ class BotOnboardingService:
         authorization_status = profile["authorization_status"]
         plans = profile["plans"]
         user = profile["user"]
-        accounts = await get_account_manager().get_accounts(db_user_id, is_active=False)
+        await me_service.get_authorization_status(db_user_id)
+        accounts = await get_account_manager().get_accounts(db_user_id, is_active=True)
         if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED and access_ctx.scoped_account_id:
             accounts = [item for item in accounts if str(item.account_id) == str(access_ctx.scoped_account_id)]
         authorization_overview = profile.get("authorization_overview") or {}
@@ -850,7 +851,7 @@ class BotOnboardingService:
             return
 
         account_manager = get_account_manager()
-        accounts = await account_manager.get_accounts(int(system_user_id), is_active=False)
+        accounts = await account_manager.get_accounts(int(system_user_id), is_active=True)
         preferred_account_id = accounts[0].account_id if accounts else None
         async with get_async_session() as session:
             previous_user_id = await replace_linked_system_user_id(session, int(tg_user_id), int(system_user_id))

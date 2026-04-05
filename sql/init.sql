@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS pricing_plans (
 
 CREATE INDEX IF NOT EXISTS idx_pricing_plans_is_active ON pricing_plans(is_active, sort_order);
 
--- 默认套餐（月付 200 元，年付 1100 元）
+-- 默认收费信息（统一为 100 元 / 月）
 INSERT INTO pricing_plans (
     plan_code,
     display_name,
@@ -54,8 +54,7 @@ INSERT INTO pricing_plans (
     sort_order
 )
 VALUES
-    ('monthly', '月付Key', 'monthly', 20000, 30, TRUE, 10),
-    ('yearly', '年付Key', 'yearly', 110000, 365, TRUE, 20)
+    ('monthly', '月付Key', 'monthly', 10000, 30, TRUE, 10)
 ON CONFLICT (plan_code) DO UPDATE
 SET
     display_name = EXCLUDED.display_name,
@@ -64,6 +63,10 @@ SET
     duration_days = EXCLUDED.duration_days,
     is_active = EXCLUDED.is_active,
     sort_order = EXCLUDED.sort_order;
+
+UPDATE pricing_plans
+SET is_active = FALSE
+WHERE plan_code <> 'monthly';
 
 -- ========================================
 -- 3) 激活卡密

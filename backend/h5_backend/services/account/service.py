@@ -23,7 +23,9 @@ class AccountService:
 
     async def list_accounts(self, user_id: int, probe: bool = False) -> List[Dict[str, Any]]:
         account_manager = get_account_manager()
-        accounts = await account_manager.get_accounts(user_id, is_active=False)
+        # 先执行一次授权归一化，确保历史多账号数据被收口到当前唯一账号模型。
+        await get_authorization_overview(user_id)
+        accounts = await account_manager.get_accounts(user_id, is_active=True)
 
         if probe:
             # 刷新状态时尝试自动重连探测：会话仍有效可自动恢复在线
@@ -37,7 +39,7 @@ class AccountService:
                 except Exception:
                     # 探测失败保持原状态，不影响整体列表返回
                     pass
-            accounts = await account_manager.get_accounts(user_id, is_active=False)
+            accounts = await account_manager.get_accounts(user_id, is_active=True)
 
         now = datetime.now()
         return [await self._serialize_account(acc, now) for acc in accounts]
