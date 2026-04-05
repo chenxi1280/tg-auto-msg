@@ -35,7 +35,7 @@ from backend.h5_backend.services.auth.service import get_auth_service
 from backend.h5_backend.services.licensing.service import (
     get_account_authorization_summary,
     get_authorization_overview,
-    list_user_slots,
+    list_user_authorizations,
 )
 
 
@@ -258,12 +258,8 @@ class AdminLicenseService:
             data: List[Dict[str, Any]] = []
             for row in rows:
                 overview = await get_authorization_overview(int(row.id), session=session)
-                slots = await list_user_slots(int(row.id), session=session)
-                current = min(
-                    (slot for slot in slots if slot.status == "active"),
-                    key=lambda item: item.end_at,
-                    default=None,
-                )
+                authorizations = await list_user_authorizations(int(row.id), session=session)
+                current = authorizations[0] if authorizations else None
                 data.append(
                     {
                         "id": row.id,
@@ -272,7 +268,7 @@ class AdminLicenseService:
                         "is_active": row.is_active,
                         "created_at": row.created_at.isoformat() if row.created_at else None,
                         "account_count": int(row.account_count or 0),
-                        "authorization_count": overview.authorization_count,
+                        "authorization_count": 1 if current else 0,
                         "developer_app_id": user_app_map.get(row.id),
                         "current_authorization": {
                             "start_at": current.start_at.isoformat() if current else None,
