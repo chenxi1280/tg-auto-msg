@@ -9,10 +9,12 @@ from fastapi import BackgroundTasks, HTTPException
 
 from backend.bot.account.manager import get_account_manager
 from backend.bot.resources.manager import get_resource_manager
+from backend.database.runtime.session import get_async_session
 from backend.h5_backend.dependencies import check_account_permission
 from backend.h5_backend.services.licensing.service import (
     activate_card_for_user,
     get_account_authorization_summary,
+    get_authorization_overview,
 )
 
 _SYNCING_USERS: set[int] = set()

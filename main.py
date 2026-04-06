@@ -1,7 +1,6 @@
 """
 Telegram 定时消息推送管理系统 - 主入口
 """
-import uvicorn
 from loguru import logger
 
 from backend.h5_backend.app.factory import app
@@ -29,6 +28,13 @@ def setup_logger():
 
 
 if __name__ == "__main__":
+    try:
+        import uvicorn
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "缺少运行依赖 uvicorn，请在当前 Python 环境安装 requirements.txt 后再启动服务。"
+        ) from exc
+
     # 配置日志
     setup_logger()
 

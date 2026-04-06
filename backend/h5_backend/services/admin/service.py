@@ -14,8 +14,6 @@ from loguru import logger
 from sqlalchemy import Select, and_, func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import selectinload
-from openpyxl import Workbook
-from openpyxl.styles import Font
 
 from backend.bot.developer_apps import get_developer_app_service
 from backend.bot.proxy.pool import get_proxy_pool
@@ -1371,6 +1369,15 @@ class AdminLicenseService:
                 status_code=400,
                 detail=f"导出数量超过限制（最多 {max_rows} 条），请缩小筛选范围后重试",
             )
+
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font
+        except ModuleNotFoundError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="当前环境缺少 openpyxl，暂时无法导出 XLSX；但服务其他功能可正常使用。",
+            ) from exc
 
         workbook = Workbook()
         sheet = workbook.active
