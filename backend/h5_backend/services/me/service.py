@@ -1,6 +1,7 @@
 """Profile, current authorization overview and card renewal service."""
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
@@ -30,6 +31,8 @@ from backend.h5_backend.services.licensing.service import (
 
 DEFAULT_PURCHASE_URL = "https://t.me/"
 DEFAULT_PURCHASE_BUTTON_TEXT = "联系 Telegram 购买"
+DEFAULT_BOT_NOTICE_ENTRY_BUTTON_TEXT = "📢 公告栏"
+_NOTICE_URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
 
 
 class MeService:
@@ -82,6 +85,24 @@ class MeService:
             "remain_days": overview.get("remain_days"),
         }
 
+    @staticmethod
+    def _extract_first_url(text: str) -> str:
+        match = _NOTICE_URL_PATTERN.search(text or "")
+        return match.group(0).strip() if match else ""
+
+    @classmethod
+    def _remove_first_url(cls, text: str) -> str:
+        if not text:
+            return ""
+        return _NOTICE_URL_PATTERN.sub("", text, count=1).strip()
+
+    @staticmethod
+    def _build_notice_version(*, enabled: bool, message_text: str, target_url: str) -> str:
+        import hashlib
+
+        payload = f"{1 if enabled else 0}\n{message_text.strip()}\n{target_url.strip()}"
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
     async def get_current_authorization(self, user_id: int) -> Optional[Dict[str, Any]]:
         status = await self.get_authorization_status(user_id)
         return status.get("current_authorization")
@@ -118,6 +139,58 @@ class MeService:
             return {
                 "url": (values.get("purchase_url") or DEFAULT_PURCHASE_URL).strip(),
                 "button_text": (values.get("purchase_button_text") or DEFAULT_PURCHASE_BUTTON_TEXT).strip(),
+            }
+
+    async def get_public_notice_entry(self) -> Dict[str, Any]:
+        async with get_async_session() as session:
+            rows = (
+                await session.execute(
+                    select(AppSetting).where(
+                        AppSetting.key.in_(
+                            [
+                                "bot_notice_enabled",
+                                "bot_notice_entry_button_text",
+                                "bot_notice_message_text",
+                                "bot_notice_target_url",
+                                # 兼容旧版配置键
+                                "bot_notice_title",
+                                "bot_notice_content",
+                                "bot_notice_button_text",
+                            ]
+                        )
+                    )
+                )
+            ).scalars().all()
+            values = {row.key: row.value for row in rows}
+            updated_at = None
+            for row in rows:
+                if row.updated_at and (updated_at is None or row.updated_at > updated_at):
+                    updated_at = row.updated_at
+            enabled_raw = (values.get("bot_notice_enabled") or "").strip().lower()
+            message_text = (values.get("bot_notice_message_text") or "").strip()
+            legacy_content = (values.get("bot_notice_content") or "").strip()
+            if not message_text and legacy_content:
+                message_text = self._remove_first_url(legacy_content) or legacy_content
+            target_url = (values.get("bot_notice_target_url") or "").strip()
+            if not target_url and legacy_content:
+                target_url = self._extract_first_url(legacy_content)
+            entry_button_text = (
+                values.get("bot_notice_entry_button_text")
+                or values.get("bot_notice_button_text")
+                or DEFAULT_BOT_NOTICE_ENTRY_BUTTON_TEXT
+            )
+            enabled = enabled_raw in {"1", "true", "yes", "on"}
+            return {
+                "enabled": enabled,
+                "entry_button_text": str(entry_button_text).strip() or DEFAULT_BOT_NOTICE_ENTRY_BUTTON_TEXT,
+                "message_text": message_text,
+                "target_url": target_url,
+                "updated_at": updated_at.isoformat() if updated_at else None,
+                "notice_version": self._build_notice_version(
+                    enabled=enabled,
+                    message_text=message_text,
+                    target_url=target_url,
+                ),
             }
 
     async def get_profile(self, user_id: int) -> Dict[str, Any]:

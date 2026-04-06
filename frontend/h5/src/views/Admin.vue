@@ -19,12 +19,12 @@
                   <el-card shadow="hover">
                     <template #header>
                       <div class="card-header card-header-between">
-                        <span>Key规格配置</span>
-                        <el-button type="primary" size="small" @click="openCreatePlanDialog">新增Key规格</el-button>
+                        <span>卡密规格配置</span>
+                        <el-button type="primary" size="small" @click="openCreatePlanDialog">新增卡密规格</el-button>
                       </div>
                     </template>
                     <el-table :data="plans" stripe>
-                      <el-table-column prop="display_name" label="Key规格" min-width="120" />
+                      <el-table-column prop="display_name" label="卡密规格" min-width="120" />
                       <el-table-column label="价格" width="110">
                         <template #default="{ row }">¥{{ row.price_yuan }}</template>
                       </el-table-column>
@@ -75,14 +75,53 @@
                       </el-button>
                     </el-form>
                   </el-card>
+
+                  <el-card class="mt12" shadow="hover">
+                    <template #header>
+                      <div class="card-header">Bot 公告栏配置</div>
+                    </template>
+                    <el-form label-position="top">
+                      <el-form-item label="是否启用">
+                        <el-switch v-model="noticeSettings.enabled" />
+                      </el-form-item>
+                      <el-form-item label="Bot 入口按钮文案">
+                        <el-input v-model.trim="noticeSettings.entry_button_text" placeholder="📢 公告栏" maxlength="20" show-word-limit />
+                      </el-form-item>
+                      <el-form-item label="公告正文">
+                        <el-input
+                          v-model="noticeSettings.message_text"
+                          type="textarea"
+                          :rows="7"
+                          maxlength="3000"
+                          show-word-limit
+                          placeholder="填写用户在 Bot 中看到的公告正文，支持换行和 emoji，也可写轻量 HTML"
+                        />
+                      </el-form-item>
+                      <el-form-item label="跳转链接（用于 TG 原生预览卡片）">
+                        <el-input
+                          v-model.trim="noticeSettings.target_url"
+                          placeholder="https://example.com/landing-page"
+                          maxlength="500"
+                          show-word-limit
+                        />
+                      </el-form-item>
+                      <div class="form-tip">
+                        公告会在 Telegram Bot 中作为单独消息展示，并依赖链接本身的预览图生成卡片效果。用户点击按钮或发送 <code>/notice</code> 时，会刷新这条公告消息。
+                        <span v-if="noticeSettings.updated_at">上次更新：{{ formatDateTime(noticeSettings.updated_at) }}</span>
+                      </div>
+                      <el-button type="primary" :loading="noticeSaving" @click="saveNoticeSettings">
+                        保存并刷新公告
+                      </el-button>
+                    </el-form>
+                  </el-card>
                 </el-col>
               </el-row>
             </el-tab-pane>
 
-            <el-tab-pane label="Key与授权数据" name="data">
+            <el-tab-pane label="卡密与授权数据" name="data">
               <el-card shadow="hover">
                 <template #header>
-                  <div class="card-header">Key列表</div>
+                  <div class="card-header">卡密列表</div>
                 </template>
                 <div class="stats-row">
                   <div class="stats-item">
@@ -99,7 +138,7 @@
                   </div>
                 </div>
                 <div class="toolbar">
-                  <el-select v-model="cardFilter.plan_code" clearable placeholder="Key规格" style="width: 140px">
+                  <el-select v-model="cardFilter.plan_code" clearable placeholder="卡密规格" style="width: 140px">
                     <el-option v-for="p in plans" :key="p.plan_code" :label="p.display_name" :value="p.plan_code" />
                   </el-select>
                   <el-select v-model="cardFilter.is_used" clearable placeholder="使用状态" style="width: 130px">
@@ -515,7 +554,7 @@
       </el-tabs>
     </div>
 
-    <el-dialog v-model="planDialog.visible" title="编辑Key规格" width="420px">
+    <el-dialog v-model="planDialog.visible" title="编辑卡密规格" width="420px">
         <el-form label-position="top">
         <el-form-item label="名称">
           <el-input v-model.trim="planDialog.form.display_name" />
@@ -539,13 +578,13 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="planCreateDialog.visible" title="新增Key规格" width="440px">
+    <el-dialog v-model="planCreateDialog.visible" title="新增卡密规格" width="440px">
       <el-form label-position="top">
-        <el-form-item label="Key规格编码">
+        <el-form-item label="卡密规格编码">
           <el-input v-model.trim="planCreateDialog.form.plan_code" placeholder="例如 quarterly_90d" />
         </el-form-item>
         <el-form-item label="显示名称">
-          <el-input v-model.trim="planCreateDialog.form.display_name" placeholder="例如 90天Key" />
+          <el-input v-model.trim="planCreateDialog.form.display_name" placeholder="例如 90天卡密" />
         </el-form-item>
         <el-form-item label="计费周期">
           <el-input v-model.trim="planCreateDialog.form.billing_cycle" placeholder="monthly/yearly/custom" />
@@ -571,7 +610,7 @@
 
     <el-dialog v-model="generateCardDialogVisible" title="生成卡密" width="460px">
       <el-form label-position="top">
-        <el-form-item label="Key规格">
+        <el-form-item label="卡密规格">
           <el-select v-model="genForm.plan_code" style="width: 100%">
             <el-option v-for="p in plans" :key="p.plan_code" :label="p.display_name" :value="p.plan_code" />
           </el-select>
@@ -582,7 +621,7 @@
         <el-alert
           type="info"
           :closable="false"
-          title="卡密时长统一使用所选Key规格配置，不再支持覆盖时长。"
+          title="卡密时长统一使用所选卡密规格配置，不再支持覆盖时长。"
         />
         <el-form-item label="卡密有效期(天，可选)">
           <el-input-number v-model="genForm.valid_days" :min="1" :max="3650" style="width: 100%" />
@@ -741,6 +780,7 @@ import type {
   AdminCard,
   AdminDeveloperApp,
   AdminDeveloperAppSettings,
+  AdminNoticeSettings,
   AdminPlan,
   AdminPurchaseSettings,
   AdminProxy,
@@ -759,6 +799,7 @@ import {
   adminDisableCard,
   adminEnableCard,
   adminExportCardsXlsx,
+  adminGetNoticeSettings,
   adminGetPurchaseSettings,
   adminGenerateCards,
   adminListDeveloperApps,
@@ -776,6 +817,7 @@ import {
   adminUnassignProxy,
   adminUpdateDeveloperApp,
   adminUpdateDeveloperAppSettings,
+  adminUpdateNoticeSettings,
   adminUpdatePurchaseSettings,
   adminUpdatePlan,
   hasAdminToken,
@@ -806,6 +848,7 @@ const proxyHealthChecking = ref<Record<number, boolean>>({})
 const developerAppHealthChecking = ref<Record<number, boolean>>({})
 const userDeveloperAppSaving = ref<Record<number, boolean>>({})
 const purchaseSaving = ref(false)
+const noticeSaving = ref(false)
 const cardsPagination = reactive({
   currentPage: 1,
   pageSize: 20,
@@ -846,6 +889,14 @@ const proxyAssignDraft = reactive<Record<number, string>>({})
 const purchaseSettings = reactive<AdminPurchaseSettings>({
   purchase_url: '',
   purchase_button_text: '联系 Telegram 购买',
+})
+
+const noticeSettings = reactive<AdminNoticeSettings>({
+  enabled: false,
+  entry_button_text: '📢 公告栏',
+  message_text: '',
+  target_url: '',
+  updated_at: null,
 })
 
 const userDeveloperAppDraft = reactive<Record<number, number | null>>({})
@@ -961,6 +1012,15 @@ const loadPurchaseSettings = async () => {
   purchaseSettings.purchase_button_text = res.data?.purchase_button_text || '联系 Telegram 购买'
 }
 
+const loadNoticeSettings = async () => {
+  const res = await adminGetNoticeSettings()
+  noticeSettings.enabled = Boolean(res.data?.enabled)
+  noticeSettings.entry_button_text = res.data?.entry_button_text || '📢 公告栏'
+  noticeSettings.message_text = res.data?.message_text || ''
+  noticeSettings.target_url = res.data?.target_url || ''
+  noticeSettings.updated_at = res.data?.updated_at || null
+}
+
 const loadCards = async () => {
   const res = await adminListCards({
     plan_code: cardFilter.plan_code || undefined,
@@ -997,8 +1057,8 @@ const handleCardsSizeChange = async (size: number) => {
 const deletePlan = async (row: AdminPlan) => {
   try {
     await ElMessageBox.confirm(
-      `将删除 Key规格「${row.display_name}」，并自动停用该规格下所有未使用卡密；已使用卡密仅保留历史记录。确认继续吗？`,
-      '删除Key规格',
+      `将删除卡密规格「${row.display_name}」，并自动停用该规格下所有未使用卡密；已使用卡密仅保留历史记录。确认继续吗？`,
+      '删除卡密规格',
       {
         type: 'warning',
         confirmButtonText: '确认删除',
@@ -1011,7 +1071,7 @@ const deletePlan = async (row: AdminPlan) => {
 
   const res = await adminDeletePlan(row.plan_code)
   ElMessage.success(
-    `Key规格已删除，已停用未使用卡密 ${res.data?.disabled_unused_cards || 0} 个，保留已使用卡密 ${res.data?.used_cards_kept || 0} 个`,
+    `卡密规格已删除，已停用未使用卡密 ${res.data?.disabled_unused_cards || 0} 个，保留已使用卡密 ${res.data?.used_cards_kept || 0} 个`,
   )
   await Promise.all([loadPlans(), loadCards(), loadAuditLogs()])
 }
@@ -1069,6 +1129,7 @@ const loadAll = async () => {
   await Promise.all([
     loadPlans(),
     loadPurchaseSettings(),
+    loadNoticeSettings(),
     loadCards(),
     loadDeveloperApps(),
     loadDeveloperAppSettings(),
@@ -1097,9 +1158,34 @@ const savePurchaseSettings = async () => {
   }
 }
 
+const saveNoticeSettings = async () => {
+  if (noticeSettings.enabled && !noticeSettings.message_text.trim()) {
+    ElMessage.warning('启用公告时，请填写公告正文')
+    return
+  }
+  if (noticeSettings.enabled && !noticeSettings.target_url.trim()) {
+    ElMessage.warning('启用公告时，请填写跳转链接')
+    return
+  }
+  noticeSaving.value = true
+  try {
+    const res = await adminUpdateNoticeSettings({
+      enabled: noticeSettings.enabled,
+      entry_button_text: noticeSettings.entry_button_text.trim() || '📢 公告栏',
+      message_text: noticeSettings.message_text.trim(),
+      target_url: noticeSettings.target_url.trim(),
+    })
+    noticeSettings.updated_at = res.data?.updated_at || null
+    ElMessage.success('Bot 公告已更新，并已尝试刷新到用户聊天')
+    await loadAuditLogs()
+  } finally {
+    noticeSaving.value = false
+  }
+}
+
 const handleGenerateCards = async () => {
   if (!genForm.plan_code) {
-    ElMessage.warning('请选择Key规格')
+    ElMessage.warning('请选择卡密规格')
     return
   }
   generating.value = true
@@ -1189,7 +1275,7 @@ const savePlan = async () => {
       duration_days: planDialog.form.duration_days,
       is_active: planDialog.form.is_active,
     })
-    ElMessage.success('Key规格已更新')
+    ElMessage.success('卡密规格已更新')
     planDialog.visible = false
     await loadPlans()
     await loadAuditLogs()
@@ -1211,7 +1297,7 @@ const openCreatePlanDialog = () => {
 
 const createPlan = async () => {
   if (!planCreateDialog.form.plan_code.trim()) {
-    ElMessage.warning('请填写Key规格编码')
+    ElMessage.warning('请填写卡密规格编码')
     return
   }
   if (!planCreateDialog.form.display_name.trim()) {
@@ -1229,7 +1315,7 @@ const createPlan = async () => {
       sort_order: Number(planCreateDialog.form.sort_order || 0),
       is_active: Boolean(planCreateDialog.form.is_active),
     })
-    ElMessage.success('Key规格已创建')
+    ElMessage.success('卡密规格已创建')
     planCreateDialog.visible = false
     await loadPlans()
     await loadAuditLogs()
@@ -1596,6 +1682,18 @@ h1 {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.form-tip {
+  margin: -6px 0 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #909399;
+}
+
+.form-tip span {
+  display: block;
+  margin-top: 4px;
 }
 
 .mt12 {

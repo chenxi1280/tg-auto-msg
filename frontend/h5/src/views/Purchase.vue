@@ -6,7 +6,7 @@
         <div class="brand-line">
           <img class="brand-logo" src="/quanqiu.png" alt="全球通" />
           <div>
-            <h1>全球通 Key 购买</h1>
+            <h1>全球通卡密购买</h1>
             <p class="sub-title">一个系统账号只绑定 1 个 TG 账号。首次成功绑定 TG 账号会赠送 7 天试用，之后可通过卡密续费当前授权。</p>
           </div>
         </div>
@@ -30,10 +30,10 @@
 
       <el-card shadow="hover" class="mt16">
         <template #header>
-          <div class="card-title">可选 Key 规格</div>
+          <div class="card-title">可选卡密规格</div>
         </template>
 
-        <el-empty v-if="plans.length === 0" description="暂无可购买 Key 规格" />
+        <el-empty v-if="plans.length === 0" description="暂无可购买卡密规格" />
 
         <div v-else class="plan-grid">
           <div v-for="plan in plans" :key="plan.plan_code" class="plan-card">

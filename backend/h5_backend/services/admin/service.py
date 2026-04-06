@@ -1,6 +1,7 @@
 """Admin-side key-spec, card and license-slot management service."""
 from __future__ import annotations
 
+import re
 import secrets
 import string
 from io import BytesIO
@@ -18,6 +19,7 @@ from openpyxl.styles import Font
 
 from backend.bot.developer_apps import get_developer_app_service
 from backend.bot.proxy.pool import get_proxy_pool
+from backend.bot.handlers.core.helpers import is_valid_button_url
 from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import (
     Account,
@@ -41,8 +43,8 @@ from backend.h5_backend.services.licensing.service import (
 
 CARD_ALPHABET = string.ascii_uppercase + string.digits
 AUDIT_ACTION_LABELS = {
-    "admin.update_plan": "更新Key规格配置",
-    "admin.delete_plan": "删除Key规格",
+    "admin.update_plan": "更新卡密规格配置",
+    "admin.delete_plan": "删除卡密规格",
     "admin.generate_cards": "批量生成卡密",
     "admin.set_card_active": "修改卡密状态",
     "admin.reset_user_password": "重置用户密码",
@@ -53,6 +55,7 @@ AUDIT_ACTION_LABELS = {
     "admin.assign_proxy": "分配代理",
     "admin.unassign_proxy": "解绑代理",
     "admin.update_purchase_settings": "更新购买入口配置",
+    "admin.update_bot_notice_settings": "更新 Bot 公告栏配置",
     "admin.create_developer_app": "新增开发者应用",
     "admin.update_developer_app": "更新开发者应用",
     "admin.set_default_developer_app": "设置默认开发者应用",
@@ -65,7 +68,7 @@ AUDIT_ACTION_LABELS = {
 AUDIT_TARGET_TYPE_LABELS = {
     "user": "用户",
     "account": "账号",
-    "plan": "Key规格",
+    "plan": "卡密规格",
     "card": "卡密",
     "proxy": "代理",
     "settings": "配置",
@@ -74,11 +77,24 @@ AUDIT_TARGET_TYPE_LABELS = {
 
 DEFAULT_PURCHASE_URL = "https://t.me/"
 DEFAULT_PURCHASE_BUTTON_TEXT = "联系 Telegram 购买"
+DEFAULT_BOT_NOTICE_ENTRY_BUTTON_TEXT = "📢 公告栏"
+_NOTICE_URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
 MAX_CARD_EXPORT_ROWS = 5000
 
 
 class AdminLicenseService:
     """Admin-only operations for key specs, activation cards and slot authorization."""
+
+    @staticmethod
+    def _extract_first_url(text: str) -> str:
+        match = _NOTICE_URL_PATTERN.search(text or "")
+        return match.group(0).strip() if match else ""
+
+    @classmethod
+    def _remove_first_url(cls, text: str) -> str:
+        if not text:
+            return ""
+        return _NOTICE_URL_PATTERN.sub("", text, count=1).strip()
 
     @staticmethod
     def _to_price_yuan(price_cents: int) -> str:
@@ -338,6 +354,52 @@ class AdminLicenseService:
                 ).strip(),
             }
 
+    async def get_bot_notice_settings(self) -> Dict[str, Any]:
+        async with get_async_session() as session:
+            rows = (
+                await session.execute(
+                    select(AppSetting).where(
+                        AppSetting.key.in_(
+                            [
+                                "bot_notice_enabled",
+                                "bot_notice_entry_button_text",
+                                "bot_notice_message_text",
+                                "bot_notice_target_url",
+                                # 兼容旧版配置
+                                "bot_notice_title",
+                                "bot_notice_content",
+                                "bot_notice_button_text",
+                            ]
+                        )
+                    )
+                )
+            ).scalars().all()
+            values = {row.key: row.value for row in rows}
+            updated_at = None
+            for row in rows:
+                if row.updated_at and (updated_at is None or row.updated_at > updated_at):
+                    updated_at = row.updated_at
+            enabled_raw = (values.get("bot_notice_enabled") or "").strip().lower()
+            message_text = (values.get("bot_notice_message_text") or "").strip()
+            legacy_content = (values.get("bot_notice_content") or "").strip()
+            if not message_text and legacy_content:
+                message_text = self._remove_first_url(legacy_content) or legacy_content
+            target_url = (values.get("bot_notice_target_url") or "").strip()
+            if not target_url and legacy_content:
+                target_url = self._extract_first_url(legacy_content)
+            entry_button_text = (
+                values.get("bot_notice_entry_button_text")
+                or values.get("bot_notice_button_text")
+                or DEFAULT_BOT_NOTICE_ENTRY_BUTTON_TEXT
+            )
+            return {
+                "enabled": enabled_raw in {"1", "true", "yes", "on"},
+                "entry_button_text": str(entry_button_text).strip() or DEFAULT_BOT_NOTICE_ENTRY_BUTTON_TEXT,
+                "message_text": message_text,
+                "target_url": target_url,
+                "updated_at": updated_at.isoformat() if updated_at else None,
+            }
+
     async def update_purchase_settings(
         self,
         *,
@@ -382,6 +444,63 @@ class AdminLicenseService:
             await session.commit()
 
         return {"purchase_url": url, "purchase_button_text": button_text}
+
+    async def update_bot_notice_settings(
+        self,
+        *,
+        enabled: bool,
+        entry_button_text: str,
+        message_text: str,
+        target_url: str,
+        actor: str = "admin",
+        ip_address: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        normalized_entry_button_text = (entry_button_text or "").strip() or DEFAULT_BOT_NOTICE_ENTRY_BUTTON_TEXT
+        normalized_message_text = (message_text or "").strip()
+        normalized_target_url = (target_url or "").strip()
+
+        if enabled and not normalized_message_text:
+            raise HTTPException(status_code=400, detail="启用公告时，公告正文不能为空")
+        if enabled and not normalized_target_url:
+            raise HTTPException(status_code=400, detail="启用公告时，跳转链接不能为空")
+        if normalized_target_url and not is_valid_button_url(normalized_target_url):
+            raise HTTPException(status_code=400, detail="公告链接格式无效，请填写可公网访问的 http/https 链接")
+
+        async with get_async_session() as session:
+            values = {
+                "bot_notice_enabled": "1" if enabled else "0",
+                "bot_notice_entry_button_text": normalized_entry_button_text,
+                "bot_notice_message_text": normalized_message_text,
+                "bot_notice_target_url": normalized_target_url,
+            }
+            for key, value in values.items():
+                row = await session.get(AppSetting, key)
+                if row is None:
+                    session.add(AppSetting(key=key, value=value))
+                else:
+                    row.value = value
+
+            await self._append_audit(
+                session,
+                actor=actor,
+                action="admin.update_bot_notice_settings",
+                target_type="settings",
+                target_id="bot_notice",
+                detail={
+                    "enabled": enabled,
+                    "entry_button_text": normalized_entry_button_text,
+                    "message_length": len(normalized_message_text),
+                    "target_url": normalized_target_url,
+                },
+                ip_address=ip_address,
+            )
+            await session.commit()
+        from backend.bot.notice_manager import get_bot_notice_manager
+
+        refresh_summary = await get_bot_notice_manager().refresh_all_linked_users()
+        result = await self.get_bot_notice_settings()
+        result["refresh_summary"] = refresh_summary
+        return result
 
     async def list_developer_apps(self) -> Dict[str, Any]:
         service = get_developer_app_service()
@@ -956,7 +1075,7 @@ class AdminLicenseService:
                 )
             ).scalar_one_or_none()
             if exists:
-                raise HTTPException(status_code=409, detail="Key规格编码已存在")
+                raise HTTPException(status_code=409, detail="卡密规格编码已存在")
             plan = PricingPlan(
                 plan_code=normalized_code,
                 display_name=display_name.strip(),
@@ -1016,7 +1135,7 @@ class AdminLicenseService:
                 raise HTTPException(status_code=404, detail="套餐不存在")
             resolved_duration_days = int(plan.duration_days)
             if resolved_duration_days <= 0:
-                raise HTTPException(status_code=400, detail="套餐时长无效，请检查 Key 规格配置")
+                raise HTTPException(status_code=400, detail="套餐时长无效，请检查卡密规格配置")
             generated_codes: set[str] = set()
             max_attempts = quantity * 20
             attempts = 0
@@ -1176,7 +1295,7 @@ class AdminLicenseService:
         async with get_async_session() as session:
             plan = await session.get(PricingPlan, normalized_code)
             if plan is None:
-                raise HTTPException(status_code=404, detail="Key规格不存在")
+                raise HTTPException(status_code=404, detail="卡密规格不存在")
 
             unused_stmt = select(func.count(ActivationCard.id)).where(
                 ActivationCard.plan_code == normalized_code,
@@ -1218,12 +1337,12 @@ class AdminLicenseService:
                 await session.commit()
             except IntegrityError as exc:
                 await session.rollback()
-                logger.warning("删除Key规格冲突: plan_code={}, error={}", normalized_code, exc)
-                raise HTTPException(status_code=409, detail="删除Key规格失败，请稍后重试") from exc
+                logger.warning("删除卡密规格冲突: plan_code={}, error={}", normalized_code, exc)
+                raise HTTPException(status_code=409, detail="删除卡密规格失败，请稍后重试") from exc
             except SQLAlchemyError as exc:
                 await session.rollback()
-                logger.exception("删除Key规格异常: plan_code={}, error={}", normalized_code, exc)
-                raise HTTPException(status_code=500, detail="删除Key规格失败，请稍后重试") from exc
+                logger.exception("删除卡密规格异常: plan_code={}, error={}", normalized_code, exc)
+                raise HTTPException(status_code=500, detail="删除卡密规格失败，请稍后重试") from exc
 
         return {
             "plan_code": normalized_code,

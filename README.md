@@ -5,6 +5,7 @@
 ## ✨ 功能特性
 
 ### 🤖 Bot 界面
+- 📢 公告卡片（由 admin 统一配置正文和链接，Bot 内展示 TG 原生预览）
 - 📢 任务列表管理（查看所有任务）
 - ⚙️ 任务快速配置（启停、删除、基础设置）
 - 🔘 FSM 流程式编辑（文本、媒体、按钮）
@@ -47,6 +48,7 @@
 
 - 文档索引：`docs/README.md`
 - 快速上手：`docs/setup/QUICKSTART.md`
+- Bot 使用说明：`docs/setup/BOT_USAGE.md`
 - 项目结构：`docs/setup/PROJECT_STRUCTURE.md`
 - 数据库迁移：`docs/setup/MIGRATIONS.md`
 - 生产部署：`docs/deployment/DEPLOYMENT.md`

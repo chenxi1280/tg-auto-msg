@@ -54,7 +54,7 @@
           <div class="feature-card">
             <div class="feature-icon">🔐</div>
             <h3>Bot 注册激活</h3>
-            <p>关注管理 Bot 后即可完成注册、Key 激活和账号绑定</p>
+            <p>关注管理 Bot 后即可完成注册、卡密激活和账号绑定</p>
           </div>
           <div class="feature-card">
             <div class="feature-icon">👥</div>

@@ -115,7 +115,7 @@
                 <span class="value">{{ formatDateTime(account.authorization_end_at) }}</span>
               </div>
               <div v-if="account.authorization_card_count" class="detail-row">
-                <span class="label">已用Key数:</span>
+                <span class="label">已用卡密数:</span>
                 <span class="value">{{ account.authorization_card_count }}</span>
               </div>
               <div v-if="account.authorization_status !== 'unlicensed'" class="detail-row">
@@ -168,7 +168,7 @@
                   :disabled="isAccountSyncing(account.account_id)"
                   @click="openRenewDialog(account)"
                 >
-                  续费Key
+                  续费卡密
                 </el-button>
               </template>
               <el-button
@@ -225,7 +225,7 @@
         </div>
         <el-input
           v-model.trim="renewDialog.cardCode"
-          placeholder="请输入新的续费 Key"
+          placeholder="请输入新的续费卡密"
           @keyup.enter="confirmRenewSlot"
         />
       </div>

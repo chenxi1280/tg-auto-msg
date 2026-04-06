@@ -8,6 +8,7 @@ from loguru import logger
 from sqlalchemy import func, select
 
 from backend.bot.state.fsm import fsm_storage
+from backend.bot.notice_manager import get_bot_notice_manager
 from backend.bot.handlers.core.auth_gate import require_db_user_id
 from backend.bot.handlers.task.management import create_new_task, show_task_list
 from backend.bot.handlers.task.queries import resolve_db_user_id as _resolve_db_user_id
@@ -31,6 +32,11 @@ async def handle_start_command(event):
         bind_token = bind_match.group(1)
         await get_onboarding_service().bind_system_account(event, actor_user_id, bind_token)
         return
+
+    try:
+        await get_bot_notice_manager().ensure_notice_for_user(actor_user_id, force_repost=False)
+    except Exception as exc:
+        logger.warning("启动时刷新公告失败: sender={}, error_type={}", actor_user_id, type(exc).__name__)
 
     async with get_async_session() as session:
         linked_user_id = await _resolve_db_user_id(session, actor_user_id)
@@ -166,6 +172,11 @@ async def _run_help_command(event, user_id: int, args: str):
     await get_onboarding_service().show_help(event, user_id)
 
 
+async def _run_notice_command(event, user_id: int, args: str):
+    del args
+    await get_onboarding_service().show_notice(event, user_id)
+
+
 async def _run_login_command(event, user_id: int, args: str):
     del args
     await get_onboarding_service().start_phone_account_login(event, user_id)
@@ -182,6 +193,7 @@ async def _run_newtask_command(event, user_id: int, args: str):
 
 _SHORT_COMMAND_HANDLERS = {
     "help": _run_help_command,
+    "notice": _run_notice_command,
     "login": _run_login_command,
     "newtask": _run_newtask_command,
     "tasks": _run_tasks_command,

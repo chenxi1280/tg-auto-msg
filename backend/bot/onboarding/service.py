@@ -20,6 +20,7 @@ from telethon.tl.functions.auth import CheckPasswordRequest
 
 from backend.bot.account.manager import get_account_manager
 from backend.bot.client_runtime.manager import bot_client
+from backend.bot.notice_manager import get_bot_notice_manager
 from backend.bot.client_runtime.qr_login import wait_for_qr_login as _wait_for_qr_login_flow
 from backend.bot.developer_apps import get_developer_app_service
 from backend.bot.handlers.core.helpers import is_valid_button_url
@@ -185,8 +186,13 @@ def _friendly_login_error(message: str) -> str:
 class BotOnboardingService:
     """Bot-first user onboarding service."""
 
-    @staticmethod
-    def _build_primary_quick_buttons(*, include_bind: bool = True, include_task: bool = True) -> list[list[Any]]:
+    async def _build_primary_quick_buttons(
+        self,
+        *,
+        include_bind: bool = True,
+        include_task: bool = True,
+        include_notice: bool = True,
+    ) -> list[list[Any]]:
         buttons: list[list[Any]] = [
             [Button.inline("🚀 开始使用", data="bot_home"), Button.inline("📖 帮助", data="bot_help")]
         ]
@@ -197,7 +203,34 @@ class BotOnboardingService:
             second_row.append(Button.inline("📝 创建任务", data="add_task"))
         if second_row:
             buttons.append(second_row)
+        if include_notice:
+            notice = await get_me_service().get_public_notice_entry()
+            if notice.get("enabled") and notice.get("message_text") and is_valid_button_url((notice.get("target_url") or "").strip()):
+                buttons.append([Button.inline(notice.get("entry_button_text") or "📢 公告栏", data="bot_notice")])
         return buttons
+
+    @staticmethod
+    def _format_notice_updated_at(raw_value: Optional[str]) -> str:
+        if not raw_value:
+            return "-"
+        try:
+            return datetime.fromisoformat(raw_value).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            return raw_value
+
+    async def show_notice(self, event, tg_user_id: int) -> None:
+        result = await get_bot_notice_manager().ensure_notice_for_user(
+            tg_user_id,
+            force_repost=True,
+        )
+        if result.get("status") == "disabled":
+            if hasattr(event, "answer"):
+                await event.answer("当前暂无公告内容", alert=True)
+                return
+            await event.respond("📢 当前暂无公告内容。")
+            return
+        if hasattr(event, "answer"):
+            await event.answer("公告已刷新，请查看最新公告消息")
 
     async def delete_sensitive_input_message(self, event, state: FSMState) -> None:
         await _delete_message_safely(event, state=state)
@@ -536,6 +569,7 @@ class BotOnboardingService:
     async def build_home_view(self, tg_user_id: int) -> tuple[str, list]:
         access_ctx = await self._get_actor_access_context(tg_user_id)
         db_user_id = access_ctx.system_user_id
+        me_service = get_me_service()
         if db_user_id is None:
             text = (
                 "👋 **欢迎使用全球通**\n\n"
@@ -554,9 +588,13 @@ class BotOnboardingService:
                     Button.inline("手动注册", data="bot_reg_manual"),
                 ]
             ]
+            notice = await me_service.get_public_notice_entry()
+            extra_row: list[Any] = [Button.inline("📖 帮助", data="bot_help")]
+            if notice.get("enabled") and notice.get("message_text") and is_valid_button_url((notice.get("target_url") or "").strip()):
+                extra_row.insert(0, Button.inline(notice.get("entry_button_text") or "📢 公告栏", data="bot_notice"))
+            buttons.append(extra_row)
             return text, buttons
 
-        me_service = get_me_service()
         profile = await me_service.get_profile(db_user_id)
         authorization_status = profile["authorization_status"]
         plans = profile["plans"]
@@ -577,13 +615,13 @@ class BotOnboardingService:
             text = (
                 "⚠️ **全球通账号已注册，当前还没有可用授权**\n\n"
                 f"用户名：`{user['username']}`\n"
-                f"可选Key规格：{plans_text}\n\n"
+                f"可选卡密规格：{plans_text}\n\n"
                 f"当前已绑定账号：{account_count}/{max_account_count}\n"
-                "未激活 Key 时，系统仍支持绑定 1 个 TG 账号用于查看和管理，但不能执行自动发送任务。\n\n"
+                "未输入卡密续费时，系统仍支持绑定 1 个 TG 账号用于查看和管理，但不能执行自动发送任务。\n\n"
                 "首次成功绑定 TG 账号时，系统会自动赠送 7 天试用；试用结束后需输入卡密续费当前唯一授权。\n\n"
                 "下一步：可先绑定 TG 账号，或点击下方「🎟️ 激活卡密」为当前授权续费。"
             )
-            buttons = self._build_primary_quick_buttons()
+            buttons = await self._build_primary_quick_buttons()
             buttons.extend([
                 [Button.inline("🧾 查看授权", data="bot_authorization"), Button.inline("🛒 立即购买", data="bot_purchase")],
                 [Button.inline("🎟️ 激活卡密", data="bot_activate"), Button.inline("🛒 立即购买", data="bot_purchase")],
@@ -604,7 +642,7 @@ class BotOnboardingService:
                 "你当前只能管理自己的 TG 账号与其任务。\n"
                 "可续费自己的当前授权，但不能绑定其他 TG 账号。"
             )
-            buttons = self._build_primary_quick_buttons()
+            buttons = await self._build_primary_quick_buttons()
             buttons.extend([
                 [Button.inline("👥 查看账号", data="accounts_list"), Button.inline("🗂️ 查看任务", data="task_list")],
                 [Button.inline("🧾 查看授权", data="bot_authorization")],
@@ -620,7 +658,7 @@ class BotOnboardingService:
             f"账号数量：{account_summary}\n\n"
             "下一步：可先查看账号，或输入新的卡密续费当前授权。"
         )
-        buttons = self._build_primary_quick_buttons()
+        buttons = await self._build_primary_quick_buttons()
         buttons.extend([
             [Button.inline("👥 查看账号", data="accounts_list"), Button.inline("🗂️ 查看任务", data="task_list")],
             [Button.inline("🧾 查看授权", data="bot_authorization")],
@@ -637,6 +675,8 @@ class BotOnboardingService:
     async def show_help(self, event, tg_user_id: int) -> None:
         text = (
             "📖 **全球通使用帮助**\n\n"
+            "0. 查看公告栏\n"
+            "点击「📢 公告栏」可查看管理员配置的最新公告、活动说明和使用提示。\n\n"
             "1. 系统账号绑定\n"
             "如果你已经在 Web 注册，可在 Web 首页点击“系统账号绑定到 TG Bot”，将当前系统账号绑定到这个 Bot。\n\n"
             "2. 绑定 TG 账号\n"
@@ -647,13 +687,16 @@ class BotOnboardingService:
             "`/start` 开始使用\n"
             "`/help` 查看帮助\n"
             "`/login` 绑定账号\n"
-            "`/newtask` 创建任务\n\n"
+            "`/newtask` 创建任务\n"
+            "`/notice` 查看公告栏\n\n"
             "下一步：请选择下方操作继续。"
         )
-        buttons = [
-            [Button.inline("📱 绑定账号", data="bot_login_account"), Button.inline("📝 创建任务", data="add_task")],
-            [Button.inline("🏠 返回主菜单", data="bot_home")],
-        ]
+        buttons = []
+        notice = await get_me_service().get_public_notice_entry()
+        if notice.get("enabled") and notice.get("message_text") and is_valid_button_url((notice.get("target_url") or "").strip()):
+            buttons.append([Button.inline(notice.get("entry_button_text") or "📢 公告栏", data="bot_notice")])
+        buttons.append([Button.inline("📱 绑定账号", data="bot_login_account"), Button.inline("📝 创建任务", data="add_task")])
+        buttons.append([Button.inline("🏠 返回主菜单", data="bot_home")])
         await _send_or_edit(event, text, buttons=buttons)
 
     async def _respond_license_error(self, event, message: str) -> None:
@@ -679,7 +722,7 @@ class BotOnboardingService:
         plans_text = "\n".join(
             f"• {plan['display_name']}：{plan['price_yuan']} 元 / {plan['duration_days']} 天"
             for plan in status["plans"]
-        ) or "• 暂无可用 Key 规格"
+        ) or "• 暂无可用卡密规格"
 
         text = (
             "💳 **全球通购买指引**\n\n"
@@ -1241,7 +1284,7 @@ class BotOnboardingService:
         except TgAccountLimitExceededError as exc:
             await bot_client.send_message(
                 tg_user_id,
-                f"⚠️ {exc}\n\n下一步：可删除闲置账号，或购买并激活新的 Key。",
+                f"⚠️ {exc}\n\n下一步：可删除闲置账号，或购买并输入新的卡密。",
             )
             return
         except HTTPException as exc:
@@ -1257,7 +1300,7 @@ class BotOnboardingService:
         fsm_storage.reset_state(tg_user_id)
 
     async def _respond_limit_error(self, event, tg_user_id: int, *, limit_message: str) -> None:
-        text = f"⚠️ {limit_message}\n\n下一步：可删除已绑定账号，或购买并激活新的 Key。"
+        text = f"⚠️ {limit_message}\n\n下一步：可删除已绑定账号，或购买并输入新的卡密。"
         if hasattr(event, "answer"):
             await event.answer("已达账号上限")
         await bot_client.send_message(

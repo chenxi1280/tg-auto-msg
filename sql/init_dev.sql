@@ -65,7 +65,7 @@ COMMENT ON COLUMN users.email IS '电子邮箱';
 COMMENT ON COLUMN users.is_active IS '是否激活';
 
 -- ============================================
--- 表: Key 规格表 (pricing_plans)
+-- 表: 卡密规格表 (pricing_plans)
 -- ============================================
 CREATE TABLE IF NOT EXISTS pricing_plans (
     plan_code VARCHAR(32) PRIMARY KEY,
@@ -83,7 +83,7 @@ CREATE INDEX IF NOT EXISTS idx_pricing_plans_is_active ON pricing_plans(is_activ
 
 INSERT INTO pricing_plans (plan_code, display_name, billing_cycle, price_cents, duration_days, is_active, sort_order)
 VALUES
-    ('monthly', '月付Key', 'monthly', 10000, 30, TRUE, 10)
+    ('monthly', '月付卡密', 'monthly', 10000, 30, TRUE, 10)
 ON CONFLICT (plan_code) DO UPDATE
 SET
     display_name = EXCLUDED.display_name,
@@ -97,7 +97,7 @@ UPDATE pricing_plans
 SET is_active = FALSE
 WHERE plan_code <> 'monthly';
 
-COMMENT ON TABLE pricing_plans IS 'Key规格配置表';
+COMMENT ON TABLE pricing_plans IS '卡密规格配置表';
 
 -- ============================================
 -- 表: 卡密表 (activation_cards)

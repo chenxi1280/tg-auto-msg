@@ -63,6 +63,15 @@ class UpdatePurchaseSettingsRequest(BaseModel):
     purchase_button_text: str = Field(default="联系 Telegram 购买", min_length=1, max_length=50)
 
 
+class UpdateBotNoticeSettingsRequest(BaseModel):
+    """Bot notice settings payload."""
+
+    enabled: bool = False
+    entry_button_text: str = Field(default="📢 公告栏", max_length=20)
+    message_text: str = Field(default="", max_length=3000)
+    target_url: str = Field(default="", max_length=500)
+
+
 class CreateDeveloperAppRequest(BaseModel):
     """Create Telegram developer app payload."""
 
@@ -130,7 +139,7 @@ async def admin_create_plan(payload: UpdatePlanRequest, request: Request):
         actor=request.headers.get("X-Admin-Token", ""),
         ip_address=request.client.host if request.client else None,
     )
-    return {"success": True, "message": "Key规格已创建", "data": data}
+    return {"success": True, "message": "卡密规格已创建", "data": data}
 
 
 @router.get("/developer-apps", dependencies=[Depends(require_admin_token)])
@@ -243,6 +252,29 @@ async def admin_update_purchase_settings(payload: UpdatePurchaseSettingsRequest,
     return {"success": True, "message": "购买入口已更新", "data": data}
 
 
+@router.get("/settings/bot-notice", dependencies=[Depends(require_admin_token)])
+async def admin_get_bot_notice_settings():
+    """管理员获取 Bot 公告栏配置。"""
+    service = get_admin_license_service()
+    data = await service.get_bot_notice_settings()
+    return {"success": True, "data": data}
+
+
+@router.put("/settings/bot-notice", dependencies=[Depends(require_admin_token)])
+async def admin_update_bot_notice_settings(payload: UpdateBotNoticeSettingsRequest, request: Request):
+    """管理员更新 Bot 公告栏配置。"""
+    service = get_admin_license_service()
+    data = await service.update_bot_notice_settings(
+        enabled=payload.enabled,
+        entry_button_text=payload.entry_button_text,
+        message_text=payload.message_text,
+        target_url=payload.target_url,
+        actor=request.headers.get("X-Admin-Token", ""),
+        ip_address=request.client.host if request.client else None,
+    )
+    return {"success": True, "message": "Bot 公告栏已更新", "data": data}
+
+
 @router.put("/plans/{plan_code}", dependencies=[Depends(require_admin_token)])
 async def admin_update_plan(plan_code: str, payload: UpdatePlanRequest, request: Request):
     """管理员更新套餐价格和时长。"""
@@ -258,7 +290,7 @@ async def admin_update_plan(plan_code: str, payload: UpdatePlanRequest, request:
         actor=request.headers.get("X-Admin-Token", ""),
         ip_address=request.client.host if request.client else None,
     )
-    return {"success": True, "message": "Key规格已更新", "data": data}
+    return {"success": True, "message": "卡密规格已更新", "data": data}
 
 
 @router.delete("/plans/{plan_code}", dependencies=[Depends(require_admin_token)])
@@ -270,7 +302,7 @@ async def admin_delete_plan(plan_code: str, request: Request):
         actor=request.headers.get("X-Admin-Token", ""),
         ip_address=request.client.host if request.client else None,
     )
-    return {"success": True, "message": "Key规格已删除", "data": data}
+    return {"success": True, "message": "卡密规格已删除", "data": data}
 
 
 @router.post("/cards/generate", dependencies=[Depends(require_admin_token)])

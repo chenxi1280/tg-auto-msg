@@ -301,6 +301,10 @@ async def _handle_bot_help(event, user_id: int):
     await get_onboarding_service().show_help(event, user_id)
 
 
+async def _handle_bot_notice(event, user_id: int):
+    await get_onboarding_service().show_notice(event, user_id)
+
+
 async def _handle_bot_show_initial_password(event, user_id: int):
     await get_onboarding_service().show_initial_password(event, user_id)
 
@@ -413,12 +417,14 @@ _SIMPLE_ACTION_HANDLERS = {
 _PREAUTH_SIMPLE_ACTION_HANDLERS = {
     "bot_home": _handle_bot_home,
     "bot_help": _handle_bot_help,
+    "bot_notice": _handle_bot_notice,
     "bot_reg_auto": _handle_bot_reg_auto,
     "bot_reg_manual": _handle_bot_reg_manual,
 }
 
 _BOT_ACTION_HANDLERS = {
     "bot_help": _handle_bot_help,
+    "bot_notice": _handle_bot_notice,
     "bot_activate": _handle_bot_activate,
     "bot_activate_renew": _handle_bot_activate_renew,
     "bot_purchase": _handle_bot_purchase,

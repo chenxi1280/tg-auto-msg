@@ -27,7 +27,7 @@ ON users ((LOWER(email)))
 WHERE email IS NOT NULL;
 
 -- ========================================
--- 2) Key 规格配置
+-- 2) 卡密规格配置
 -- ========================================
 CREATE TABLE IF NOT EXISTS pricing_plans (
     plan_code VARCHAR(32) PRIMARY KEY,
@@ -54,7 +54,7 @@ INSERT INTO pricing_plans (
     sort_order
 )
 VALUES
-    ('monthly', '月付Key', 'monthly', 10000, 30, TRUE, 10)
+    ('monthly', '月付卡密', 'monthly', 10000, 30, TRUE, 10)
 ON CONFLICT (plan_code) DO UPDATE
 SET
     display_name = EXCLUDED.display_name,

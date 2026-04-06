@@ -189,6 +189,14 @@ export interface AdminPurchaseSettings {
   purchase_button_text: string
 }
 
+export interface AdminNoticeSettings {
+  enabled: boolean
+  entry_button_text: string
+  message_text: string
+  target_url: string
+  updated_at: string | null
+}
+
 export const adminListPlans = (): Promise<{ success: boolean; data: AdminPlan[] }> =>
   adminApi.get('/admin/plans')
 
@@ -198,6 +206,13 @@ export const adminGetPurchaseSettings = (): Promise<{ success: boolean; data: Ad
 export const adminUpdatePurchaseSettings = (
   payload: AdminPurchaseSettings,
 ): Promise<{ success: boolean; data: AdminPurchaseSettings }> => adminApi.put('/admin/settings/purchase', payload)
+
+export const adminGetNoticeSettings = (): Promise<{ success: boolean; data: AdminNoticeSettings }> =>
+  adminApi.get('/admin/settings/bot-notice')
+
+export const adminUpdateNoticeSettings = (
+  payload: Omit<AdminNoticeSettings, 'updated_at'>,
+): Promise<{ success: boolean; data: AdminNoticeSettings }> => adminApi.put('/admin/settings/bot-notice', payload)
 
 export const adminUpdatePlan = (
   planCode: string,

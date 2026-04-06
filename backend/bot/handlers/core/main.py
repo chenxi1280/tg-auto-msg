@@ -46,9 +46,9 @@ async def bind_handler(event):
     await handle_bind_command(event)
 
 
-@bot_client.on(events.NewMessage(pattern=r'(?i)^/(help|login|newtask|tasks|accounts|sync|proxy)(?:@[\w\d_]+)?(?:\s+.*)?$'))
+@bot_client.on(events.NewMessage(pattern=r'(?i)^/(help|notice|login|newtask|tasks|accounts|sync|proxy)(?:@[\w\d_]+)?(?:\s+.*)?$'))
 async def short_commands_handler(event):
-    """短命令入口：/help /login /newtask /tasks /accounts /sync /proxy"""
+    """短命令入口：/help /notice /login /newtask /tasks /accounts /sync /proxy"""
     await dispatch_short_command(event)
 
 
@@ -73,7 +73,7 @@ async def callback_handler(event):
                 fsm_storage.reset_state(user_id)
                 task_id = data.split(":")[1]
                 await show_task_settings(event, user_id, task_id)
-            elif data in {"bot_home", "bot_purchase", "bot_authorization"}:
+            elif data in {"bot_home", "bot_notice", "bot_purchase", "bot_authorization"}:
                 fsm_storage.reset_state(user_id)
                 await handle_callback(event, user_id, data)
             elif current_state in {
@@ -82,7 +82,7 @@ async def callback_handler(event):
                 FSMState.WAIT_REGISTER_EMAIL,
                 FSMState.WAIT_ACTIVATION_CODE,
                 FSMState.WAIT_LOGIN_PASSWORD,
-            } and data in {"bot_home"}:
+            } and data in {"bot_home", "bot_notice"}:
                 fsm_storage.reset_state(user_id)
                 await handle_callback(event, user_id, data)
             elif current_state == FSMState.WAIT_LOGIN_PASSWORD and data.startswith("bot_cancel_login:"):
@@ -118,7 +118,7 @@ async def handle_callback(event, user_id: int, data: str):
     await dispatch_callback(event, user_id, data)
 
 
-_RECOGNIZED_COMMANDS = {"start", "bind", "help", "login", "newtask", "tasks", "accounts", "sync", "proxy"}
+_RECOGNIZED_COMMANDS = {"start", "bind", "help", "notice", "login", "newtask", "tasks", "accounts", "sync", "proxy"}
 
 
 def _extract_command_name(text: str) -> str:

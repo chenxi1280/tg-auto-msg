@@ -72,7 +72,7 @@ const routes: RouteRecordRaw[] = [
     path: '/purchase',
     name: 'Purchase',
     component: () => import('@/views/Purchase.vue'),
-    meta: { title: '购买Key', requiresAuth: true }
+    meta: { title: '购买卡密', requiresAuth: true }
   },
   {
     path: '/admin',

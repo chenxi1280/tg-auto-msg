@@ -31,7 +31,7 @@ class UpdateProfileRequest(BaseModel):
 
 @router.get("/api/me")
 async def get_me(current_user: User = Depends(get_current_user)):
-    """获取我的信息（基础信息 + 当前授权概览 + Key规格）"""
+    """获取我的信息（基础信息 + 当前授权概览 + 卡密规格）"""
     service = get_me_service()
     data = await service.get_profile(current_user.id)
     return {"success": True, "data": data}
@@ -47,7 +47,7 @@ async def get_authorization_status(current_user: User = Depends(get_current_user
 
 @router.get("/api/me/plans")
 async def get_plans(active_only: bool = True, current_user: User = Depends(get_current_user)):
-    """获取可购买的 Key 规格列表。"""
+    """获取可购买的卡密规格列表。"""
     service = get_me_service()
     if active_only:
         data = await service.list_active_plans()

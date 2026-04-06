@@ -81,7 +81,7 @@
               class="buy-btn"
               @click="goPurchase"
             >
-              去购买 Key
+              去购买卡密
             </el-button>
             <el-button class="bind-bot-btn" @click="goBindBot">
               系统账号绑定到 TG Bot
@@ -137,7 +137,7 @@
                 <div class="plan-sub">
                   <span>累计 {{ profile.current_authorization.duration_days }} 天</span>
                   <span>剩余 {{ profile.current_authorization.remaining_days ?? 0 }} 天</span>
-                  <span>已用Key {{ profile.current_authorization.card_count }}</span>
+                  <span>已用卡密 {{ profile.current_authorization.card_count }}</span>
                 </div>
                 <div class="plan-sub">
                   <span>来源 {{ profile.current_authorization.grant_source_label || (profile.current_authorization.grant_source === 'bot_trial' ? '首次绑定 TG 赠送试用' : '卡密续费') }}</span>
@@ -146,7 +146,7 @@
                 </div>
                 <div class="slot-actions">
                   <el-button type="warning" plain size="small" @click="openRenewDialog(profile.current_authorization)">
-                    续费Key
+                    续费卡密
                   </el-button>
                 </div>
               </div>
@@ -167,7 +167,7 @@
           <p class="password-hint">当前到期：{{ formatDateTime(renewTargetSlot.end_at) }}</p>
           <el-input
             v-model.trim="renewCardCode"
-            placeholder="请输入新的续费 Key"
+            placeholder="请输入新的续费卡密"
             @keyup.enter="handleRenewSlot"
           />
         </div>
