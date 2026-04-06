@@ -47,7 +47,10 @@ export const useAccountStore = defineStore('account', () => {
   const syncAccount = async (accountId: string, wait = false) => {
     try {
       const res = await accountApi.syncAccountResources(accountId, wait)
-      return res.message
+      return {
+        message: res.message || '',
+        alreadyRunning: Boolean((res as any).already_running)
+      }
     } catch (err: any) {
       const message = extractErrorMessage(err, '同步账号资源失败')
       console.error('同步账号资源失败:', err)

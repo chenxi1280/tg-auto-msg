@@ -983,6 +983,7 @@ class BotOnboardingService:
         tg_user_id: int,
         db_user_id: int,
         account_id: str,
+        sync_queue_status: Optional[str] = None,
         trial_authorization: Optional[dict[str, Any]] = None,
     ) -> None:
         account_manager = get_account_manager()
@@ -1000,12 +1001,16 @@ class BotOnboardingService:
                 f"🎁 已自动开通 **7 天试用授权**\n"
                 f"试用到期：{trial_authorization.get('end_at') or '-'}\n\n"
             )
+        sync_text = "⏳ 已加入自动同步队列，系统会依次同步账号资料和资源。\n\n"
+        if sync_queue_status in {"queued", "running"}:
+            sync_text = "⏳ 该账号正在同步中，系统会继续自动完成账号资料和资源刷新。\n\n"
         await bot_client.send_message(
             tg_user_id,
             "✅ **全球通登录并绑定成功**\n\n"
             f"账号：{_account_display_name(account)}\n"
             f"Telegram UID：`{account.tg_user_id or '-'}`\n"
             f"{trial_text}"
+            f"{sync_text}"
             f"剩余天数：{status.get('remain_days') if status.get('remain_days') is not None else '-'}\n"
             f"到期时间：{current.get('end_at') or '-'}\n\n"
             "下一步：可继续查看账号、创建任务或查看当前授权状态。",
@@ -1386,6 +1391,7 @@ class BotOnboardingService:
             tg_user_id=tg_user_id,
             db_user_id=db_user_id,
             account_id=str(finalized["account_id"]),
+            sync_queue_status=finalized.get("sync_queue_status"),
             trial_authorization=finalized.get("trial_authorization"),
         )
         await _clear_tracked_login_messages(tg_user_id, delete=False)

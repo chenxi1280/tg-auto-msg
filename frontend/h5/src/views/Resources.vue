@@ -220,9 +220,8 @@ const syncResources = async () => {
   if (!selectedAccountId.value) return
 
   try {
-    await accountStore.syncAccount(selectedAccountId.value, true)
-    ElMessage.success('资源同步完成')
-    await loadResources()
+    const result = await accountStore.syncAccount(selectedAccountId.value, true)
+    ElMessage.success(result.message || '该账号已加入同步队列')
   } catch (err: any) {
     ElMessage.error(err.message || '同步失败')
   }

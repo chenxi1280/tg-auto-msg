@@ -83,14 +83,19 @@ async def _clear_bind_failures(redis_client, actor_key: str) -> None:
 
 
 async def sync_resources_after_bind(account_id: str) -> None:
-    """Async resource sync hook after successful binding."""
+    """Enqueue serialized account sync after successful binding."""
     try:
-        from backend.bot.resources.manager import get_resource_manager
+        from backend.h5_backend.services.account.auto_sync import (
+            SYNC_TRIGGER_LOGIN_SUCCESS,
+            account_auto_sync_runtime,
+        )
 
-        resource_manager = get_resource_manager()
-        await resource_manager.full_sync(account_id)
+        await account_auto_sync_runtime.enqueue_account(
+            account_id,
+            trigger_source=SYNC_TRIGGER_LOGIN_SUCCESS,
+        )
     except Exception as e:
-        logger.error(f"绑定后资源同步失败: {e}")
+        logger.error(f"绑定后加入同步队列失败: {e}")
 
 
 async def bind_account(

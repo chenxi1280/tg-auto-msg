@@ -6,22 +6,29 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import BackgroundTasks, HTTPException
+from loguru import logger
 
 from backend.bot.account.manager import get_account_manager
 from backend.bot.resources.manager import get_resource_manager
+from backend.bot.resources.sync_ops import diagnose_client_unavailable
 from backend.database.runtime.session import get_async_session
+from backend.database.schema.models import HealthStatus
 from backend.h5_backend.dependencies import check_account_permission
+from backend.h5_backend.services.account.auto_sync import (
+    SYNC_TRIGGER_MANUAL,
+    account_auto_sync_runtime,
+)
 from backend.h5_backend.services.licensing.service import (
     activate_card_for_user,
     get_account_authorization_summary,
     get_authorization_overview,
 )
 
-_SYNCING_USERS: set[int] = set()
-
 
 class AccountService:
     """Account and resource business service."""
+    PROFILE_SYNC_TIMEOUT_SECONDS = 30
+    RESOURCE_SYNC_TIMEOUT_SECONDS = 5 * 60
 
     async def list_accounts(self, user_id: int, probe: bool = False) -> List[Dict[str, Any]]:
         account_manager = get_account_manager()
@@ -53,41 +60,18 @@ class AccountService:
         background_tasks: BackgroundTasks,
         wait: bool = False,
     ) -> Dict[str, Any]:
+        del background_tasks, wait
         await check_account_permission(account_id, user_id)
-        resource_manager = get_resource_manager()
-
-        if wait:
-            result = await resource_manager.full_sync(account_id)
-            if result.error:
-                raise HTTPException(status_code=400, detail=f"资源同步失败: {result.error}")
-            if result.synced == 0 and result.failed > 0:
-                raise HTTPException(status_code=400, detail=f"资源同步失败: 全部 {result.failed} 项同步失败")
-
-            message = "资源同步完成"
-            if result.failed > 0:
-                message = f"资源同步部分成功：失败 {result.failed} 条"
-            return {
-                "message": message,
-                "data": {
-                    "synced": result.synced,
-                    "new": result.new,
-                    "updated": result.updated,
-                    "deleted": result.deleted,
-                    "failed": result.failed,
-                    "error": result.error or None,
-                },
-            }
-
-        async def run_sync() -> None:
-            from loguru import logger
-
-            try:
-                await resource_manager.full_sync(account_id)
-            except Exception as exc:
-                logger.error(f"资源同步失败: {exc}")
-
-        background_tasks.add_task(run_sync)
-        return {"message": "资源同步已启动，请稍后查看结果"}
+        enqueue_result = await account_auto_sync_runtime.enqueue_account(
+            account_id,
+            trigger_source=SYNC_TRIGGER_MANUAL,
+            user_id=int(user_id),
+        )
+        if enqueue_result["status"] == "missing":
+            raise HTTPException(status_code=404, detail="账号不存在或未启用")
+        if enqueue_result["status"] in {"queued", "running"}:
+            return {"message": "该账号正在同步中，请稍后查看结果", "already_running": True}
+        return {"message": "该账号已加入同步队列", "already_running": False}
 
     async def sync_all_resources(
         self,
@@ -95,49 +79,154 @@ class AccountService:
         background_tasks: Optional[BackgroundTasks] = None,
         wait: bool = False,
     ) -> Dict[str, Any]:
-        if int(user_id) in _SYNCING_USERS:
-            return {"message": "资源同步已在进行中，请稍后查看结果", "already_running": True}
+        del background_tasks, wait
+        account_manager = get_account_manager()
+        accounts = await account_manager.get_accounts(user_id, is_active=True)
+        if not accounts:
+            return {"message": "当前没有可同步的账号", "already_running": False}
 
-        async def run_sync_all() -> Dict[str, Any]:
-            _SYNCING_USERS.add(int(user_id))
+        queued_accounts = 0
+        already_running_accounts = 0
+        for account in accounts:
+            enqueue_result = await account_auto_sync_runtime.enqueue_account(
+                account.account_id,
+                trigger_source=SYNC_TRIGGER_MANUAL,
+                user_id=int(user_id),
+            )
+            if enqueue_result["status"] == "enqueued":
+                queued_accounts += 1
+            elif enqueue_result["status"] in {"queued", "running"}:
+                already_running_accounts += 1
+
+        if queued_accounts == 0 and already_running_accounts > 0:
+            return {"message": "账号正在同步中，请稍后查看结果", "already_running": True}
+        return {
+            "message": f"账号已加入同步队列：新增排队 {queued_accounts} 个，已在同步中 {already_running_accounts} 个",
+            "already_running": False,
+            "data": {
+                "queued_accounts": queued_accounts,
+                "already_running_accounts": already_running_accounts,
+                "total_accounts": len(accounts),
+            },
+        }
+
+    async def sync_account_snapshot(
+        self,
+        account_id: str,
+        *,
+        trigger_source: str,
+    ) -> Dict[str, Any]:
+        account_manager = get_account_manager()
+        resource_manager = get_resource_manager()
+        account = await account_manager.get_account(account_id)
+        if not account or not account.is_active:
+            return {
+                "account_id": account_id,
+                "user_id": getattr(account, "user_id", None),
+                "trigger_source": trigger_source,
+                "profile_sync_ok": False,
+                "resource_sync_ok": False,
+                "resource_synced_count": 0,
+                "error": "账号不存在或未启用",
+            }
+
+        profile_sync_ok = False
+        resource_sync_ok = False
+        resource_synced_count = 0
+        error: Optional[str] = None
+
+        client = await account_manager.get_client(account_id)
+        if not client:
+            error = await diagnose_client_unavailable(account_manager, account_id)
+            await account_manager.update_account(account_id, health_status=HealthStatus.OFFLINE.value)
+            return {
+                "account_id": account_id,
+                "user_id": int(account.user_id),
+                "trigger_source": trigger_source,
+                "profile_sync_ok": False,
+                "resource_sync_ok": False,
+                "resource_synced_count": 0,
+                "error": error,
+            }
+
+        try:
+            me = await asyncio.wait_for(
+                client.get_me(),
+                timeout=self.PROFILE_SYNC_TIMEOUT_SECONDS,
+            )
+            if me is not None:
+                await account_manager.update_account(
+                    account_id,
+                    tg_user_id=int(me.id),
+                    username=getattr(me, "username", None),
+                    first_name=getattr(me, "first_name", None),
+                    phone=getattr(me, "phone", None),
+                    health_status=HealthStatus.ONLINE.value,
+                )
+                profile_sync_ok = True
+        except TimeoutError:
+            error = f"账号资料同步超时: {self.PROFILE_SYNC_TIMEOUT_SECONDS}s"
+            logger.warning(
+                "account profile sync timed out: account_id={}, user_id={}, trigger_source={}, timeout_seconds={}",
+                account_id,
+                int(account.user_id),
+                trigger_source,
+                self.PROFILE_SYNC_TIMEOUT_SECONDS,
+            )
+            await account_manager.update_account(account_id, health_status=HealthStatus.OFFLINE.value)
+        except Exception as exc:
+            error = f"账号资料同步失败: {type(exc).__name__}: {exc}"
+            logger.warning(
+                "account profile sync failed: account_id={}, user_id={}, trigger_source={}, error={}",
+                account_id,
+                int(account.user_id),
+                trigger_source,
+                exc,
+            )
+            await account_manager.update_account(account_id, health_status=HealthStatus.OFFLINE.value)
+
+        if profile_sync_ok:
             try:
-                account_manager = get_account_manager()
-                resource_manager = get_resource_manager()
-                accounts = await account_manager.get_accounts(user_id, is_active=True)
-
-                total_new = 0
-                total_updated = 0
-                total_failed = 0
-                synced_accounts = 0
-
-                for account in accounts:
-                    try:
-                        result = await resource_manager.full_sync(account.account_id)
-                        total_new += int(result.new or 0)
-                        total_updated += int(result.updated or 0)
-                        total_failed += int(result.failed or 0)
-                        synced_accounts += 1
-                    except Exception:
-                        total_failed += 1
-
+                result = await asyncio.wait_for(
+                    resource_manager.full_sync(account_id),
+                    timeout=self.RESOURCE_SYNC_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                error = f"资源同步超时: {self.RESOURCE_SYNC_TIMEOUT_SECONDS}s"
+                logger.warning(
+                    "account resource sync timed out: account_id={}, user_id={}, trigger_source={}, timeout_seconds={}",
+                    account_id,
+                    int(account.user_id),
+                    trigger_source,
+                    self.RESOURCE_SYNC_TIMEOUT_SECONDS,
+                )
                 return {
-                    "synced_accounts": synced_accounts,
-                    "new": total_new,
-                    "updated": total_updated,
-                    "failed": total_failed,
+                    "account_id": account_id,
+                    "user_id": int(account.user_id),
+                    "trigger_source": trigger_source,
+                    "profile_sync_ok": profile_sync_ok,
+                    "resource_sync_ok": False,
+                    "resource_synced_count": 0,
+                    "error": error,
                 }
-            finally:
-                _SYNCING_USERS.discard(int(user_id))
+            resource_synced_count = int(result.synced or 0)
+            resource_sync_ok = not bool(result.error) and not (
+                int(result.synced or 0) == 0 and int(result.failed or 0) > 0
+            )
+            if result.error:
+                error = result.error
+            elif int(result.synced or 0) == 0 and int(result.failed or 0) > 0:
+                error = f"资源同步失败: 全部 {result.failed} 项同步失败"
 
-        if wait:
-            data = await run_sync_all()
-            return {"message": "账号资源同步完成", "data": data, "already_running": False}
-
-        if background_tasks is not None:
-            background_tasks.add_task(run_sync_all)
-        else:
-            asyncio.create_task(run_sync_all())
-        return {"message": "账号资源同步已在后台启动", "already_running": False}
+        return {
+            "account_id": account_id,
+            "user_id": int(account.user_id),
+            "trigger_source": trigger_source,
+            "profile_sync_ok": profile_sync_ok,
+            "resource_sync_ok": resource_sync_ok,
+            "resource_synced_count": resource_synced_count,
+            "error": error,
+        }
 
     async def list_resources(
         self,

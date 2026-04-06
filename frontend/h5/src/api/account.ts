@@ -55,7 +55,7 @@ export const getAccounts = (
 export const syncAccountResources = (
   accountId: string,
   wait = false
-): Promise<ApiResponse<{ message: string; data?: Record<string, any> }>> => {
+): Promise<(ApiResponse<{ data?: Record<string, any> }> & { already_running?: boolean })> => {
   return request.post(`/accounts/${accountId}/sync`, null, {
     params: { wait }
   })

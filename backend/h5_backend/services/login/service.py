@@ -43,6 +43,10 @@ from backend.h5_backend.services.licensing.service import (
     bind_current_authorization_to_account_if_possible,
     grant_trial_authorization_if_eligible,
 )
+from backend.h5_backend.services.account.auto_sync import (
+    SYNC_TRIGGER_LOGIN_SUCCESS,
+    account_auto_sync_runtime,
+)
 from backend.h5_backend.services.me.service import get_me_service
 from backend.utils.security.crypto import decrypt_string_session, encrypt_string_session
 
@@ -247,10 +251,16 @@ class LoginService:
             account.account_id,
             account.tg_user_id,
         )
+        sync_queue_result = await account_auto_sync_runtime.enqueue_account(
+            account.account_id,
+            trigger_source=SYNC_TRIGGER_LOGIN_SUCCESS,
+            user_id=int(user_id),
+        )
         return {
             "account_id": account.account_id,
             "tg_user_id": int(account.tg_user_id or 0),
             "username": account.username or account.first_name or "",
+            "sync_queue_status": sync_queue_result.get("status"),
             "trial_authorization": (
                 {
                     "authorization_id": trial_authorization.authorization_id,

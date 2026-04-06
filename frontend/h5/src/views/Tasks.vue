@@ -441,12 +441,8 @@ const loadResources = async (autoSyncIfEmpty = false, preserveTargets = true) =>
 
     if (autoSyncIfEmpty && resources.value.length === 0) {
       ElMessage.info('正在同步聊天资源，请稍候...')
-      await accountStore.syncAccount(form.accountId, true)
-      const retried = await accountStore.getAccountResources(form.accountId, query)
-      resources.value = (retried || []) as ResourceOption[]
-      if (resources.value.length === 0) {
-        ElMessage.warning('该账号暂无可用聊天，请确认账号已加入群组/频道')
-      }
+      const syncResult = await accountStore.syncAccount(form.accountId, true)
+      ElMessage.info(syncResult.message || '该账号已加入同步队列，请稍后刷新资源列表')
     }
 
     if (preserveTargets && previousTargetKeys.length > 0) {

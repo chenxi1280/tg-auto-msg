@@ -403,8 +403,8 @@ const goBindAccount = async () => {
 const syncAllAccountsOnEntry = async () => {
   try {
     const res = await syncAllAccountResources(false)
-    if (!(res as any).already_running) {
-      ElMessage.success(res.message || '已开始同步当前系统账号下的全部资源')
+    if ((res as any).message) {
+      ElMessage.success((res as any).message)
     }
   } catch (err: any) {
     ElMessage.warning(err.message || '已进入账号页，但后台资源同步启动失败')
@@ -442,8 +442,8 @@ const syncAccount = async (accountId: string) => {
   if (syncLoading[accountId]) return
   syncLoading[accountId] = true
   try {
-    await accountStore.syncAccount(accountId, true)
-    ElMessage.success('资源同步完成')
+    const result = await accountStore.syncAccount(accountId, true)
+    ElMessage.success(result.message || '该账号已加入同步队列')
   } catch (err: any) {
     ElMessage.error(err.message || '同步失败')
   } finally {
@@ -538,7 +538,9 @@ onMounted(() => {
   // 恢复用户状态
   userStore.restoreUser()
   if (userStore.userId) {
-    syncAllAccountsOnEntry()
+    if (userStore.consumePendingAccountsEntrySync()) {
+      syncAllAccountsOnEntry()
+    }
     refreshAccounts()
   } else {
     ElMessage.warning('请先登录')

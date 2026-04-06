@@ -11,6 +11,9 @@ const STORAGE_KEYS = {
   token: 'token'
 }
 
+const pendingAccountsEntrySyncKey = (userId: number | null) =>
+  userId && userId > 0 ? `accounts_first_entry_sync_pending:${userId}` : ''
+
 export const useUserStore = defineStore(
   'user',
   () => {
@@ -30,10 +33,12 @@ export const useUserStore = defineStore(
       localStorage.setItem(STORAGE_KEYS.userId, String(id))
       localStorage.setItem(STORAGE_KEYS.username, name)
       localStorage.setItem(STORAGE_KEYS.token, tkn)
+      sessionStorage.setItem(pendingAccountsEntrySyncKey(id), '1')
     }
 
     // 清除用户
     const clearUser = () => {
+      const syncKey = pendingAccountsEntrySyncKey(userId.value)
       userId.value = null
       username.value = null
       token.value = null
@@ -41,6 +46,9 @@ export const useUserStore = defineStore(
       localStorage.removeItem(STORAGE_KEYS.userId)
       localStorage.removeItem(STORAGE_KEYS.username)
       localStorage.removeItem(STORAGE_KEYS.token)
+      if (syncKey) {
+        sessionStorage.removeItem(syncKey)
+      }
     }
 
     // 从 localStorage 恢复用户状态
@@ -76,6 +84,16 @@ export const useUserStore = defineStore(
       clearUser()
     }
 
+    const consumePendingAccountsEntrySync = () => {
+      const syncKey = pendingAccountsEntrySyncKey(userId.value)
+      if (!syncKey) return false
+      const pending = sessionStorage.getItem(syncKey) === '1'
+      if (pending) {
+        sessionStorage.removeItem(syncKey)
+      }
+      return pending
+    }
+
     return {
       userId,
       username,
@@ -85,7 +103,8 @@ export const useUserStore = defineStore(
       clearUser,
       restoreUser,
       login,
-      logout
+      logout,
+      consumePendingAccountsEntrySync
     }
   }
 )

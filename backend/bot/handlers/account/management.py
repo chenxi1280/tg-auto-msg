@@ -198,9 +198,12 @@ async def show_accounts_list(event, user_id: int):
 async def sync_account_resources(event, user_id: int, account_id: Optional[str]):
     """同步账号资源（群组/频道）"""
     from backend.bot.onboarding import get_onboarding_service
-    from backend.bot.resources.manager import get_resource_manager
-    resource_manager = get_resource_manager()
     from backend.bot.account.manager import get_account_manager
+    from backend.h5_backend.services.account.auto_sync import (
+        SYNC_TRIGGER_MANUAL,
+        account_auto_sync_runtime,
+    )
+
     account_manager = get_account_manager()
 
     if await get_onboarding_service().ensure_registered_user(event, user_id) is None:
@@ -223,34 +226,35 @@ async def sync_account_resources(event, user_id: int, account_id: Optional[str])
         if account_id not in allowed_account_ids:
             await event.respond("❌ 该账号不可操作，可能未启用或不属于当前用户。")
             return
-        # 同步指定账号
-        result = await resource_manager.full_sync(account_id)
-        await event.respond(
-            f"✅ 同步完成\n"
-            f"新增: {result.new}\n"
-            f"更新: {result.updated}\n"
-            f"失败: {result.failed}\n\n"
-            "下一步：可继续查看账号详情或创建任务。"
+        queue_result = await account_auto_sync_runtime.enqueue_account(
+            account_id,
+            trigger_source=SYNC_TRIGGER_MANUAL,
+            user_id=int(db_user_id),
         )
+        if queue_result["status"] in {"queued", "running"}:
+            await event.respond("⏳ 该账号正在同步中，请稍后查看账号详情。")
+            return
+        await event.respond("✅ 该账号已加入同步队列\n\n下一步：系统会自动同步账号资料和资源。")
     else:
-        # 同步所有账号
-        total_new = 0
-        total_updated = 0
-        total_failed = 0
-
+        queued_accounts = 0
+        already_running_accounts = 0
         for acc in accounts:
-            result = await resource_manager.full_sync(acc.account_id)
-            total_new += result.new
-            total_updated += result.updated
-            total_failed += result.failed
+            queue_result = await account_auto_sync_runtime.enqueue_account(
+                acc.account_id,
+                trigger_source=SYNC_TRIGGER_MANUAL,
+                user_id=int(db_user_id),
+            )
+            if queue_result["status"] == "enqueued":
+                queued_accounts += 1
+            elif queue_result["status"] in {"queued", "running"}:
+                already_running_accounts += 1
 
         await event.respond(
-            f"✅ 全部同步完成\n"
+            f"✅ 同步队列已更新\n"
             f"账号数: {len(accounts)}\n"
-            f"新增: {total_new}\n"
-            f"更新: {total_updated}\n"
-            f"失败: {total_failed}\n\n"
-            "下一步：可进入账号详情查看具体账号状态。"
+            f"新增排队: {queued_accounts}\n"
+            f"同步中: {already_running_accounts}\n\n"
+            "下一步：系统会依次自动同步这些账号。"
         )
 
 
