@@ -369,18 +369,23 @@ async def sync_single_account(event, user_id: int, account_id: str):
 
 
 async def relogin_account(event, user_id: int, account_id: str):
-    """给出重新绑定入口。"""
+    """重新绑定前先确认解除当前绑定。"""
     db_user_id, account = await _get_owned_account(user_id, account_id)
     if db_user_id is None or not account:
         await event.answer("账号不存在或无权限", alert=True)
         return
     from backend.bot.onboarding import get_onboarding_service
 
-    await event.answer("已进入重新绑定流程，请查看最新消息。")
-    await get_onboarding_service().start_account_login(
+    await event.answer("请先确认是否解除当前绑定。")
+    await get_onboarding_service().prompt_replace_account_before_login(
         event,
         user_id,
-        existing_tg_user_id=int(account.tg_user_id) if account.tg_user_id else None,
+        account_id=str(account.account_id),
+        account_label=(
+            f"@{account.username}"
+            if account.username
+            else (account.phone or str(account.tg_user_id or account.account_id))
+        ),
     )
 
 

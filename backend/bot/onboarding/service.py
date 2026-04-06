@@ -1023,11 +1023,103 @@ class BotOnboardingService:
         *,
         existing_tg_user_id: Optional[int] = None,
     ) -> None:
+        access_ctx = await self._get_actor_access_context(tg_user_id)
+        db_user_id = access_ctx.system_user_id
+        if db_user_id is None:
+            await self.show_home(event, tg_user_id)
+            return
+        if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED and existing_tg_user_id is None:
+            existing_tg_user_id = int(tg_user_id)
+        elif existing_tg_user_id is None:
+            existing_account = await self._get_latest_bound_account_snapshot(db_user_id)
+            if existing_account is not None:
+                await self.prompt_replace_account_before_login(
+                    event,
+                    tg_user_id,
+                    account_id=str(existing_account["account_id"]),
+                    account_label=str(existing_account["label"]),
+                )
+                return
         await self.start_phone_account_login(
             event,
             tg_user_id,
             existing_tg_user_id=existing_tg_user_id,
         )
+
+    async def _get_latest_bound_account_snapshot(self, db_user_id: int, *, account_id: Optional[str] = None) -> Optional[dict[str, Any]]:
+        async with get_async_session() as session:
+            stmt = (
+                select(Account)
+                .where(
+                    Account.user_id == int(db_user_id),
+                    Account.is_active.is_(True),
+                )
+                .order_by(Account.updated_at.desc(), Account.created_at.desc())
+                .limit(1)
+            )
+            if account_id:
+                stmt = stmt.where(Account.account_id == str(account_id))
+            account = (await session.execute(stmt)).scalar_one_or_none()
+            if account is None:
+                return None
+            label = f"@{account.username}" if account.username else (account.phone or str(account.tg_user_id or account.account_id))
+            return {
+                "account_id": str(account.account_id),
+                "label": label,
+                "tg_user_id": int(account.tg_user_id or 0),
+            }
+
+    async def prompt_replace_account_before_login(
+        self,
+        event,
+        tg_user_id: int,
+        *,
+        account_id: str,
+        account_label: Optional[str] = None,
+    ) -> None:
+        db_user_id = await self._get_db_user_id(tg_user_id)
+        if db_user_id is None:
+            await self.show_home(event, tg_user_id)
+            return
+        snapshot = await self._get_latest_bound_account_snapshot(db_user_id, account_id=account_id)
+        if snapshot is None:
+            await self.start_phone_account_login(event, tg_user_id)
+            return
+
+        label = account_label or str(snapshot["label"])
+        text = (
+            "⚠️ **确认更换绑定账号**\n\n"
+            f"当前已绑定账号：{label}\n"
+            f"账号ID：`{snapshot['account_id']}`\n\n"
+            "继续前需要先解除当前绑定。解除后，该账号及相关任务会被删除，然后立即进入新的手机号绑定流程。\n\n"
+            "是否继续？"
+        )
+        buttons = [
+            [Button.inline("确认解除并继续绑定", data=f"bot_login_replace_confirm:{snapshot['account_id']}")],
+            [Button.inline("查看当前账号", data=f"acc_menu:{snapshot['account_id']}"), Button.inline("⬅️ 返回主菜单", data="bot_home")],
+        ]
+        await _send_or_edit(event, text, buttons=buttons)
+
+    async def replace_account_and_start_login(self, event, tg_user_id: int, *, account_id: str) -> None:
+        db_user_id = await self._get_db_user_id(tg_user_id)
+        if db_user_id is None:
+            await self.show_home(event, tg_user_id)
+            return
+        snapshot = await self._get_latest_bound_account_snapshot(db_user_id, account_id=account_id)
+        if snapshot is None:
+            await self.start_phone_account_login(event, tg_user_id)
+            return
+
+        manager = get_account_manager()
+        ok = await manager.delete_account(str(snapshot["account_id"]))
+        if not ok:
+            if hasattr(event, "answer"):
+                await event.answer("解除绑定失败，请刷新后重试。", alert=True)
+            return
+
+        if hasattr(event, "answer"):
+            await event.answer("已解除当前绑定，开始新的绑定流程。")
+        await self.start_phone_account_login(event, tg_user_id)
 
     async def start_qr_account_login(
         self,

@@ -313,6 +313,13 @@ async def _handle_bot_login_account(event, user_id: int):
     await get_onboarding_service().start_account_login(event, user_id)
 
 
+async def _handle_bot_login_replace_confirm(event, user_id: int, parts: list[str]):
+    if len(parts) < 2:
+        await event.answer("参数错误", alert=True)
+        return
+    await get_onboarding_service().replace_account_and_start_login(event, user_id, account_id=parts[1])
+
+
 async def _handle_bot_login_qr(event, user_id: int, parts: list[str]):
     existing_tg_user_id = int(parts[1]) if len(parts) > 1 and parts[1] else None
     await get_onboarding_service().start_phone_account_login(
@@ -481,6 +488,7 @@ _CUSTOM_ACTION_HANDLERS = {
     "acc_add_task": _handle_acc_add_task_callback,
     "acc_renew_authorization": _handle_acc_renew_authorization_callback,
     "authorization_renew": _handle_authorization_renew_callback,
+    "bot_login_replace_confirm": _handle_bot_login_replace_confirm,
     "bot_login_qr": _handle_bot_login_qr,
     "bot_login_phone": _handle_bot_login_phone,
     "bot_cancel_login": _handle_bot_cancel_login,

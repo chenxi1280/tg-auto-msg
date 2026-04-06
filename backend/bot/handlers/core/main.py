@@ -1,5 +1,6 @@
 """Bot 主处理器：命令、回调按钮、消息处理。"""
 
+from fastapi import HTTPException
 from loguru import logger
 from telethon import events
 from telethon.errors.rpcerrorlist import MessageNotModifiedError
@@ -108,6 +109,10 @@ async def callback_handler(event):
             await event.answer("已是最新内容")
         except Exception:
             pass
+    except HTTPException as e:
+        detail = str(e.detail or "操作失败，请稍后重试。")
+        logger.warning(f"回调处理业务失败: status={e.status_code}, detail={detail!r}")
+        await event.answer(detail, alert=True)
     except Exception as e:
         logger.exception(f"回调处理失败: {type(e).__name__}: {e!r}")
         await event.answer("操作失败，请稍后重试。\n如果当前正在输入内容，可先取消后重新进入。", alert=True)

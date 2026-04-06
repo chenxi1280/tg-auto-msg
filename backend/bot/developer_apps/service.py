@@ -731,7 +731,16 @@ class DeveloperAppService:
         if target_id is not None:
             row = await session.get(TelegramDeveloperApp, int(target_id))
             if row and row.is_active and self._is_row_healthy(row):
-                api_hash = decrypt_proxy_password(row.api_hash_encrypted)
+                try:
+                    api_hash = decrypt_proxy_password(row.api_hash_encrypted)
+                except ValueError as exc:
+                    logger.error(
+                        "开发者应用凭证解密失败: app_id={}, app_name={}, error={}",
+                        row.id,
+                        row.app_name,
+                        exc,
+                    )
+                    raise HTTPException(status_code=503, detail="开发者应用凭证异常，请联系管理员重新配置") from exc
                 return DeveloperAppCredentials(
                     app_id=int(row.id),
                     api_id=int(row.api_id),
@@ -1002,23 +1011,28 @@ class DeveloperAppService:
             return DeveloperAppHealthStatus.DISABLED.value, None, None
 
         start = time.perf_counter()
-        client = TelegramClient(
-            StringSession(),
-            api_id=int(row.api_id),
-            api_hash=decrypt_proxy_password(row.api_hash_encrypted),
-            timeout=HEALTH_CHECK_TIMEOUT_SECONDS,
-            connection_retries=1,
-            retry_delay=1,
-            auto_reconnect=False,
-        )
+        client: Optional[TelegramClient] = None
         try:
+            api_hash = decrypt_proxy_password(row.api_hash_encrypted)
+            client = TelegramClient(
+                StringSession(),
+                api_id=int(row.api_id),
+                api_hash=api_hash,
+                timeout=HEALTH_CHECK_TIMEOUT_SECONDS,
+                connection_retries=1,
+                retry_delay=1,
+                auto_reconnect=False,
+            )
             await client.connect()
             await client(GetConfigRequest())
             latency_ms = int((time.perf_counter() - start) * 1000)
             return DeveloperAppHealthStatus.HEALTHY.value, None, latency_ms
         except Exception as exc:
             latency_ms = int((time.perf_counter() - start) * 1000)
-            logger.warning(
+            log_fn = logger.warning
+            if isinstance(exc, ValueError):
+                log_fn = logger.error
+            log_fn(
                 "开发者应用健康检查失败: app_id={}, app_name={}, error={}",
                 row.id,
                 row.app_name,
@@ -1026,10 +1040,11 @@ class DeveloperAppService:
             )
             return DeveloperAppHealthStatus.UNHEALTHY.value, f"{type(exc).__name__}: {exc}", latency_ms
         finally:
-            try:
-                await client.disconnect()
-            except Exception:
-                pass
+            if client is not None:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
 
     async def _append_health_audit(
         self,
