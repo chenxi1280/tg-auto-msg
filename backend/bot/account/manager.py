@@ -31,6 +31,7 @@ from backend.utils.security.crypto import (
     encrypt_string_session,
 )
 from backend.bot.developer_apps import get_developer_app_service
+from backend.bot.developer_apps.service import ASSIGNMENT_CONTEXT_NEW
 
 
 class AccountSelectionStrategy(str, Enum):
@@ -105,6 +106,8 @@ class AccountManager:
                         user_id=int(user_id),
                         preferred_app_id=None,
                         exclude_account_id=None,
+                        assignment_context=ASSIGNMENT_CONTEXT_NEW,
+                        existing_app_id=None,
                     )
                 except Exception as e:
                     raise RuntimeError(f"开发者凭证分配失败: {e}") from e
@@ -334,8 +337,9 @@ class AccountManager:
                     reason="account_deleted",
                 )
 
-                from backend.bot.handlers.core.user_link import cleanup_active_account_refs
+                from backend.bot.handlers.core.user_link import cleanup_active_account_refs, cleanup_scoped_account_refs
                 await cleanup_active_account_refs(session, account_id)
+                await cleanup_scoped_account_refs(session, account_id)
 
                 # 解绑占用中的代理，避免留下脏的 assigned_account_id
                 await session.execute(

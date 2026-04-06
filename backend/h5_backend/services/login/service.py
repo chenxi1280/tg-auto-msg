@@ -25,6 +25,10 @@ from telethon.tl.functions.auth import CheckPasswordRequest
 
 from backend.bot.account.manager import get_account_manager
 from backend.bot.developer_apps import get_developer_app_service
+from backend.bot.developer_apps.service import (
+    ASSIGNMENT_CONTEXT_EXISTING_REASSIGN,
+    ASSIGNMENT_CONTEXT_NEW,
+)
 from backend.bot.client_runtime.manager import _wait_for_qr_login, is_userbot_ready
 from backend.bot.handlers.core.user_link import (
     clear_active_account_id,
@@ -148,6 +152,8 @@ class LoginService:
                 user_id=int(user_id),
                 preferred_app_id=preferred_app_id,
                 exclude_account_id=account.account_id if account else None,
+                assignment_context=ASSIGNMENT_CONTEXT_EXISTING_REASSIGN if account else ASSIGNMENT_CONTEXT_NEW,
+                existing_app_id=int(account.developer_app_id) if account and account.developer_app_id is not None else None,
             )
             resolved_app_version = 1
             if resolved_app_id is not None:

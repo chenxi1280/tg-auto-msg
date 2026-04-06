@@ -316,7 +316,7 @@
                   class="mt12"
                   type="info"
                   :closable="false"
-                  title="新账号默认按“轮询主选、权重兜底”分配开发者应用；已绑定账号保持粘性。"
+                  title="轮询分配会作用于新账号首次分配，以及已有账号重绑/更新时的重新分配；若设置了用户首选应用，则优先使用用户首选。"
                 />
                 <div class="toolbar">
                   <el-button type="primary" @click="developerAppCreateDialogVisible = true">新增开发者应用</el-button>
@@ -1445,7 +1445,15 @@ const checkDeveloperApp = async (appId: number) => {
     const res = await adminCheckDeveloperAppHealth(appId)
     const migrated = res.data?.migrated_account_ids?.length || 0
     const stalled = res.data?.stalled_account_ids?.length || 0
-    ElMessage.success(`检测完成：${res.data?.current_status || 'unknown'}，迁移 ${migrated} 个，待处理 ${stalled} 个`)
+    const status = res.data?.current_status || 'unknown'
+    const errorText = res.data?.last_health_error || '无错误详情'
+    if (res.data?.probe_failed_without_downgrade) {
+      ElMessage.warning(`探测失败但未降级：${errorText}`)
+    } else if (res.data?.migration_executed || status === 'unhealthy') {
+      ElMessage.warning(`检测异常：${status}，迁移 ${migrated} 个，待处理 ${stalled} 个`)
+    } else {
+      ElMessage.success(`检测完成：${status}，迁移 ${migrated} 个，待处理 ${stalled} 个`)
+    }
     await Promise.all([loadDeveloperApps(), loadUsers(), loadAuditLogs()])
   } finally {
     developerAppHealthChecking.value[appId] = false

@@ -44,6 +44,15 @@ def _authorization_status_label(status: Optional[str]) -> str:
     return "未开通"
 
 
+def _account_authorization_status_label(status: Optional[str], *, authorization_id: Optional[str]) -> str:
+    normalized = str(status or "").strip().lower()
+    if normalized == "licensed":
+        return "已开通"
+    if normalized == "expired":
+        return "已到期"
+    return "已开通" if authorization_id else "未开通"
+
+
 async def show_accounts_list(event, user_id: int):
     """显示账号列表"""
     from backend.bot.onboarding import get_onboarding_service
@@ -126,7 +135,10 @@ async def show_accounts_list(event, user_id: int):
                 f"@{acc.username}" if acc.username
                 else (acc.phone or f"ID:{acc.tg_user_id}" if acc.tg_user_id else acc.account_id[:8])
             )
-            authorization_status = "已开通" if auth_summary.authorization_id else "未开通"
+            authorization_status = _account_authorization_status_label(
+                auth_summary.authorization_status,
+                authorization_id=auth_summary.authorization_id,
+            )
             slot_expiry = (
                 f" / 到期 {auth_summary.authorization_end_at.strftime('%Y-%m-%d %H:%M')}"
                 if auth_summary.authorization_end_at

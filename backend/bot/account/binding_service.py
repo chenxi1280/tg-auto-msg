@@ -16,6 +16,10 @@ from backend.bot.handlers.core.user_link import (
     set_linked_system_user_id,
 )
 from backend.bot.developer_apps import get_developer_app_service
+from backend.bot.developer_apps.service import (
+    ASSIGNMENT_CONTEXT_EXISTING_REASSIGN,
+    ASSIGNMENT_CONTEXT_NEW,
+)
 from backend.config.core.settings import settings
 from backend.database.schema.models import Account, AccountBindLog, HealthStatus, TelegramDeveloperApp
 from backend.database.runtime.session import get_async_session
@@ -187,16 +191,14 @@ async def bind_account(
         )
         existing_account = existing.scalar_one_or_none()
         if existing_account:
-            preferred_app_id = (
-                developer_app_id
-                if developer_app_id is not None
-                else existing_account.developer_app_id
-            )
+            preferred_app_id = developer_app_id if developer_app_id is not None else None
             try:
                 resolved_app_id = await developer_service.resolve_assignable_app_id(
                     user_id=int(owner_user_id),
                     preferred_app_id=preferred_app_id,
                     exclude_account_id=existing_account.account_id,
+                    assignment_context=ASSIGNMENT_CONTEXT_EXISTING_REASSIGN,
+                    existing_app_id=int(existing_account.developer_app_id) if existing_account.developer_app_id is not None else None,
                 )
             except Exception as exc:
                 raise RuntimeError(f"开发者凭证分配失败: {exc}") from exc
@@ -261,6 +263,8 @@ async def bind_account(
                 user_id=int(owner_user_id),
                 preferred_app_id=developer_app_id,
                 exclude_account_id=None,
+                assignment_context=ASSIGNMENT_CONTEXT_NEW,
+                existing_app_id=None,
             )
         except Exception as exc:
             raise RuntimeError(f"开发者凭证分配失败: {exc}") from exc

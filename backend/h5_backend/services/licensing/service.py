@@ -361,6 +361,7 @@ async def _normalize_single_authorization_model(
             select(UserAuthorization).where(UserAuthorization.user_id == int(user_id)).order_by(UserAuthorization.created_at.asc())
         )
     ).scalars().all()
+    user = await session.get(User, int(user_id))
     accounts_by_id = {str(account.account_id): account for account in accounts}
     original_active_account_count = sum(1 for account in accounts if account.is_active)
     original_slot_count = len(slots)
@@ -374,6 +375,14 @@ async def _normalize_single_authorization_model(
 
     changed = False
     deleted_slot_ids: List[str] = []
+    bot_trial_ref_repaired = False
+    existing_slot_ids = {str(slot.authorization_id) for slot in slots}
+    if user is not None and user.bot_trial_authorization_id and str(user.bot_trial_authorization_id) not in existing_slot_ids:
+        user.bot_trial_authorization_id = str(primary_slot.authorization_id) if primary_slot is not None else None
+        if primary_slot is None:
+            user.bot_trial_granted_at = None
+        bot_trial_ref_repaired = True
+        changed = True
     if primary_account is not None and not primary_account.is_active:
         primary_account.is_active = True
         changed = True
@@ -433,6 +442,14 @@ async def _normalize_single_authorization_model(
     for slot in slots:
         if primary_slot is not None and str(slot.authorization_id) == str(primary_slot.authorization_id):
             continue
+        if user is not None and str(user.bot_trial_authorization_id or "") == str(slot.authorization_id):
+            if primary_slot is not None:
+                user.bot_trial_authorization_id = str(primary_slot.authorization_id)
+            else:
+                user.bot_trial_authorization_id = None
+                user.bot_trial_granted_at = None
+            bot_trial_ref_repaired = True
+            changed = True
         if slot.current_account_id:
             open_bindings = (
                 await session.execute(
@@ -454,7 +471,7 @@ async def _normalize_single_authorization_model(
     if changed:
         await session.flush()
         logger.info(
-            "single authorization normalized: user_id={}, original_active_accounts={}, original_slots={}, kept_account_id={}, kept_authorization_id={}, disabled_accounts={}, deleted_slots={}",
+            "single authorization normalized: user_id={}, original_active_accounts={}, original_slots={}, kept_account_id={}, kept_authorization_id={}, disabled_accounts={}, deleted_slots={}, bot_trial_ref_repaired={}",
             int(user_id),
             int(original_active_account_count),
             int(original_slot_count),
@@ -462,6 +479,7 @@ async def _normalize_single_authorization_model(
             str(primary_slot.authorization_id) if primary_slot is not None else None,
             len(disabled_account_ids),
             len(deleted_slot_ids),
+            bool(bot_trial_ref_repaired),
         )
     return primary_slot, primary_account
 

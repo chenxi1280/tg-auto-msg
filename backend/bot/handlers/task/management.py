@@ -21,7 +21,10 @@ from backend.bot.handlers.task.queries import (
     get_user_task as _get_user_task,
     resolve_actor_access_context as _resolve_actor_access_context,
 )
-from backend.bot.handlers.core.user_link import get_active_account_id as _get_active_account_id
+from backend.bot.handlers.core.user_link import (
+    get_active_account_id as _get_active_account_id,
+    normalize_operator_account_refs as _normalize_operator_account_refs,
+)
 from backend.bot.ui.keyboards import (
     get_confirm_delete_keyboard,
     get_task_list_keyboard,
@@ -254,7 +257,24 @@ async def create_new_task(event, user_id: int):
             await event.answer("当前 Telegram 账号还未绑定系统账号，请先发送 /start，或回到 Web 首页点击“系统账号绑定到 TG Bot”。", alert=True)
             return
 
-        preferred_account_id = await _get_active_account_id(session, user_id, db_user_id)
+        active_accounts = (
+            await session.execute(
+                select(Account.account_id)
+                .where(
+                    Account.user_id == int(db_user_id),
+                    Account.is_active == True,
+                )
+                .order_by(Account.updated_at.desc(), Account.last_used_at.desc(), Account.created_at.desc())
+            )
+        ).scalars().all()
+        ref_state = await _normalize_operator_account_refs(
+            session,
+            user_id,
+            db_user_id,
+            valid_account_ids=[str(item) for item in active_accounts],
+            preferred_account_id=str(active_accounts[0]) if len(active_accounts) == 1 else None,
+        )
+        preferred_account_id = ref_state.get("active_account_id") or await _get_active_account_id(session, user_id, db_user_id)
         if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED and access_ctx.scoped_account_id:
             preferred_account_id = str(access_ctx.scoped_account_id)
         if preferred_account_id:

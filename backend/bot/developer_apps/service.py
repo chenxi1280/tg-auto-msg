@@ -33,6 +33,9 @@ ALERT_TG_USER_IDS_SETTING_KEY = "developer_app_alert_tg_user_ids"
 DEFAULT_ASSIGNMENT_MODE = "round_robin"
 DEFAULT_SELECTION_WEIGHT = 100
 HEALTH_CHECK_TIMEOUT_SECONDS = 20
+HEALTH_FAILURE_THRESHOLD = 2
+ASSIGNMENT_CONTEXT_NEW = "new_account_initial_assign"
+ASSIGNMENT_CONTEXT_EXISTING_REASSIGN = "existing_account_reassign"
 
 
 @dataclass
@@ -53,6 +56,7 @@ class DeveloperAppHealthCheckResult:
     app_id: int
     app_name: str
     previous_status: str
+    probe_status: str
     current_status: str
     checked_at: datetime
     latency_ms: Optional[int]
@@ -60,6 +64,10 @@ class DeveloperAppHealthCheckResult:
     migrated_account_ids: List[str]
     stalled_account_ids: List[str]
     notified_recipients: List[int]
+    probe_ok: bool
+    status_changed: bool
+    migration_executed: bool
+    probe_failed_without_downgrade: bool
 
 
 def _user_app_key(user_id: int) -> str:
@@ -126,6 +134,95 @@ class DeveloperAppService:
     @staticmethod
     def _is_row_healthy(row: TelegramDeveloperApp) -> bool:
         return bool(row.is_active) and (row.health_status or "") == DeveloperAppHealthStatus.HEALTHY.value
+
+    @staticmethod
+    def _resolve_health_transition(
+        *,
+        previous_status: str,
+        probe_status: str,
+        next_fail_count: int,
+        is_manual_check: bool,
+    ) -> tuple[str, bool]:
+        """Convert one probe result into a persisted health status."""
+        normalized_previous = previous_status or DeveloperAppHealthStatus.HEALTHY.value
+        if probe_status in {
+            DeveloperAppHealthStatus.HEALTHY.value,
+            DeveloperAppHealthStatus.DISABLED.value,
+        }:
+            return probe_status, False
+
+        if normalized_previous == DeveloperAppHealthStatus.UNHEALTHY.value:
+            return DeveloperAppHealthStatus.UNHEALTHY.value, False
+
+        should_downgrade = int(next_fail_count) >= HEALTH_FAILURE_THRESHOLD
+        if is_manual_check and not should_downgrade:
+            return normalized_previous, True
+        if should_downgrade:
+            return DeveloperAppHealthStatus.UNHEALTHY.value, False
+        return normalized_previous, True
+
+    @staticmethod
+    def _log_assignment_result(
+        *,
+        assignment_reason: str,
+        assignment_context: str,
+        user_id: int,
+        account_id: Optional[str],
+        selected_app_id: Optional[int],
+        previous_app_id: Optional[int],
+        assignment_mode: str,
+        candidate_app_ids: Sequence[int],
+        round_robin_cursor_before: Optional[int],
+        round_robin_cursor_after: Optional[int],
+    ) -> None:
+        logger.info(
+            "developer app assignment resolved: context={}, reason={}, user_id={}, account_id={}, selected_app_id={}, previous_app_id={}, assignment_mode={}, candidate_app_ids={}, round_robin_cursor_before={}, round_robin_cursor_after={}",
+            assignment_context,
+            assignment_reason,
+            int(user_id),
+            account_id,
+            selected_app_id,
+            previous_app_id,
+            assignment_mode,
+            list(candidate_app_ids),
+            round_robin_cursor_before,
+            round_robin_cursor_after,
+        )
+
+    @staticmethod
+    def _log_manual_health_check(
+        *,
+        app_id: int,
+        app_name: str,
+        probe_status: str,
+        current_status: str,
+        health_fail_count: int,
+        probe_failed_without_downgrade: bool,
+        migration_executed: bool,
+        migrated_count: int,
+        stalled_count: int,
+        last_health_error: Optional[str],
+        actor: str,
+        ip_address: Optional[str],
+    ) -> None:
+        log_fn = logger.info
+        if probe_failed_without_downgrade or migration_executed or current_status == DeveloperAppHealthStatus.UNHEALTHY.value:
+            log_fn = logger.warning
+        log_fn(
+            "developer app manual check: app_id={}, app_name={}, probe_status={}, current_status={}, health_fail_count={}, probe_failed_without_downgrade={}, migration_executed={}, migrated_count={}, stalled_count={}, last_health_error={}, actor={}, ip_address={}",
+            int(app_id),
+            app_name,
+            probe_status,
+            current_status,
+            int(health_fail_count),
+            bool(probe_failed_without_downgrade),
+            bool(migration_executed),
+            int(migrated_count),
+            int(stalled_count),
+            last_health_error,
+            actor,
+            ip_address,
+        )
 
     async def _ensure_core_settings(self, session: Any) -> None:
         defaults = {
@@ -309,20 +406,24 @@ class DeveloperAppService:
         )[0]
         return int(picked["row"].id)
 
-    async def _pick_round_robin_candidate(self, session: Any, candidates: Sequence[Dict[str, Any]]) -> Optional[int]:
+    async def _pick_round_robin_candidate(
+        self,
+        session: Any,
+        candidates: Sequence[Dict[str, Any]],
+    ) -> tuple[Optional[int], Optional[int], Optional[int]]:
         if not candidates:
-            return None
+            return None, None, None
         candidate_ids = sorted(int(item["row"].id) for item in candidates)
-        cursor = await self._get_round_robin_cursor(session)
-        if cursor is None:
+        cursor_before = await self._get_round_robin_cursor(session)
+        if cursor_before is None:
             selected = candidate_ids[0]
-        elif cursor not in candidate_ids:
+        elif cursor_before not in candidate_ids:
             fallback = await self._pick_weight_candidate(candidates)
             selected = int(fallback) if fallback is not None else candidate_ids[0]
         else:
-            selected = next((app_id for app_id in candidate_ids if app_id > cursor), candidate_ids[0])
+            selected = next((app_id for app_id in candidate_ids if app_id > cursor_before), candidate_ids[0])
         await self._set_round_robin_cursor(session, selected)
-        return selected
+        return selected, cursor_before, selected
 
     async def _resolve_assignable_app_id_with_session(
         self,
@@ -332,8 +433,11 @@ class DeveloperAppService:
         preferred_app_id: Optional[int] = None,
         exclude_account_id: Optional[str] = None,
         disallowed_app_ids: Optional[Iterable[int]] = None,
+        assignment_context: str = ASSIGNMENT_CONTEXT_NEW,
+        existing_app_id: Optional[int] = None,
     ) -> Optional[int]:
         blocked = {int(item) for item in (disallowed_app_ids or [])}
+        assignment_mode = await self._get_assignment_mode(session)
 
         async def _candidate_available(app_id: Optional[int]) -> Optional[int]:
             if app_id is None:
@@ -344,34 +448,102 @@ class DeveloperAppService:
                 return int(app_id)
             return None
 
-        chosen = await _candidate_available(preferred_app_id)
-        if chosen is not None:
-            return chosen
-
-        user_preferred = await self.get_user_preferred_app_id(session, int(user_id))
-        chosen = await _candidate_available(user_preferred)
-        if chosen is not None:
-            return chosen
-
         candidates = await self._list_assignable_candidates(
             session,
             exclude_account_id=exclude_account_id,
             disallowed_app_ids=blocked,
         )
+        candidate_app_ids = [int(item["row"].id) for item in candidates]
+        cursor_before: Optional[int] = None
+        cursor_after: Optional[int] = None
+
+        chosen = await _candidate_available(preferred_app_id)
+        if chosen is not None:
+            self._log_assignment_result(
+                assignment_reason="user_preferred",
+                assignment_context=assignment_context,
+                user_id=int(user_id),
+                account_id=str(exclude_account_id) if exclude_account_id else None,
+                selected_app_id=int(chosen),
+                previous_app_id=int(existing_app_id) if existing_app_id is not None else None,
+                assignment_mode=assignment_mode,
+                candidate_app_ids=candidate_app_ids,
+                round_robin_cursor_before=None,
+                round_robin_cursor_after=None,
+            )
+            return chosen
+
+        user_preferred = await self.get_user_preferred_app_id(session, int(user_id))
+        chosen = await _candidate_available(user_preferred)
+        if chosen is not None:
+            self._log_assignment_result(
+                assignment_reason="user_preferred",
+                assignment_context=assignment_context,
+                user_id=int(user_id),
+                account_id=str(exclude_account_id) if exclude_account_id else None,
+                selected_app_id=int(chosen),
+                previous_app_id=int(existing_app_id) if existing_app_id is not None else None,
+                assignment_mode=assignment_mode,
+                candidate_app_ids=candidate_app_ids,
+                round_robin_cursor_before=None,
+                round_robin_cursor_after=None,
+            )
+            return chosen
+
         if candidates:
-            mode = await self._get_assignment_mode(session)
-            if mode == "weight":
+            if assignment_mode == "weight":
                 chosen = await self._pick_weight_candidate(candidates)
             else:
-                chosen = await self._pick_round_robin_candidate(session, candidates)
+                chosen, cursor_before, cursor_after = await self._pick_round_robin_candidate(session, candidates)
                 if chosen is None:
                     chosen = await self._pick_weight_candidate(candidates)
             if chosen is not None:
+                self._log_assignment_result(
+                    assignment_reason="weight" if assignment_mode == "weight" else "round_robin",
+                    assignment_context=assignment_context,
+                    user_id=int(user_id),
+                    account_id=str(exclude_account_id) if exclude_account_id else None,
+                    selected_app_id=int(chosen),
+                    previous_app_id=int(existing_app_id) if existing_app_id is not None else None,
+                    assignment_mode=assignment_mode,
+                    candidate_app_ids=candidate_app_ids,
+                    round_robin_cursor_before=cursor_before,
+                    round_robin_cursor_after=cursor_after,
+                )
                 return int(chosen)
+
+        if assignment_context == ASSIGNMENT_CONTEXT_EXISTING_REASSIGN:
+            chosen = await _candidate_available(existing_app_id)
+            if chosen is not None:
+                self._log_assignment_result(
+                    assignment_reason="existing_account_fallback",
+                    assignment_context=assignment_context,
+                    user_id=int(user_id),
+                    account_id=str(exclude_account_id) if exclude_account_id else None,
+                    selected_app_id=int(chosen),
+                    previous_app_id=int(existing_app_id) if existing_app_id is not None else None,
+                    assignment_mode=assignment_mode,
+                    candidate_app_ids=candidate_app_ids,
+                    round_robin_cursor_before=None,
+                    round_robin_cursor_after=None,
+                )
+                return chosen
 
         default_app_id = await self.get_default_app_id(session)
         chosen = await _candidate_available(default_app_id)
         if chosen is not None:
+            self._log_assignment_result(
+                assignment_reason="default_fallback",
+                assignment_context=assignment_context,
+                user_id=int(user_id),
+                account_id=str(exclude_account_id) if exclude_account_id else None,
+                selected_app_id=int(chosen),
+                previous_app_id=int(existing_app_id) if existing_app_id is not None else None,
+                assignment_mode=assignment_mode,
+                candidate_app_ids=candidate_app_ids,
+                round_robin_cursor_before=None,
+                round_robin_cursor_after=None,
+            )
             return chosen
 
         active_count = int(
@@ -391,6 +563,8 @@ class DeveloperAppService:
         preferred_app_id: Optional[int] = None,
         exclude_account_id: Optional[str] = None,
         disallowed_app_ids: Optional[Iterable[int]] = None,
+        assignment_context: str = ASSIGNMENT_CONTEXT_NEW,
+        existing_app_id: Optional[int] = None,
     ) -> Optional[int]:
         async with get_async_session() as session:
             return await self._resolve_assignable_app_id_with_session(
@@ -399,6 +573,8 @@ class DeveloperAppService:
                 preferred_app_id=preferred_app_id,
                 exclude_account_id=exclude_account_id,
                 disallowed_app_ids=disallowed_app_ids,
+                assignment_context=assignment_context,
+                existing_app_id=existing_app_id,
             )
 
     async def ensure_env_default_app(self) -> Optional[int]:
@@ -596,6 +772,7 @@ class DeveloperAppService:
     ) -> DeveloperAppCredentials:
         preferred_app_id: Optional[int] = None
         exclude_account_id: Optional[str] = None
+        existing_account: Optional[Account] = None
         async with get_async_session() as session:
             if existing_tg_user_id is not None:
                 existing_account = (
@@ -609,7 +786,7 @@ class DeveloperAppService:
                     )
                 ).scalar_one_or_none()
                 if existing_account is not None:
-                    preferred_app_id = existing_account.developer_app_id
+                    preferred_app_id = None
                     exclude_account_id = existing_account.account_id
 
             assignable_app_id = await self._resolve_assignable_app_id_with_session(
@@ -617,6 +794,12 @@ class DeveloperAppService:
                 user_id=int(user_id),
                 preferred_app_id=preferred_app_id,
                 exclude_account_id=exclude_account_id,
+                assignment_context=(
+                    ASSIGNMENT_CONTEXT_EXISTING_REASSIGN
+                    if existing_account is not None
+                    else ASSIGNMENT_CONTEXT_NEW
+                ),
+                existing_app_id=int(existing_account.developer_app_id) if existing_account and existing_account.developer_app_id is not None else None,
             )
             return await self.resolve_credentials(
                 session=session,
@@ -1007,23 +1190,38 @@ class DeveloperAppService:
             api_hash_encrypted=api_hash_encrypted,
             is_active=is_active,
         )
-        current_status, error, latency_ms = await self._probe_app(temp_row)
+        probe_status, error, latency_ms = await self._probe_app(temp_row)
         checked_at = datetime.now()
         migrated_account_ids: List[str] = []
         stalled_account_ids: List[str] = []
+        is_manual_check = actor != "system"
 
         async with get_async_session() as session:
             row = await session.get(TelegramDeveloperApp, int(app_id))
             if not row:
                 raise HTTPException(status_code=404, detail="开发者应用不存在")
             previous_status = row.health_status or DeveloperAppHealthStatus.HEALTHY.value
+            next_fail_count = (
+                0
+                if probe_status in {DeveloperAppHealthStatus.HEALTHY.value, DeveloperAppHealthStatus.DISABLED.value}
+                else int(row.health_fail_count or 0) + 1
+            )
+            current_status, probe_failed_without_downgrade = self._resolve_health_transition(
+                previous_status=previous_status,
+                probe_status=probe_status,
+                next_fail_count=next_fail_count,
+                is_manual_check=is_manual_check,
+            )
             row.health_status = current_status
             row.last_health_check_at = checked_at
             row.last_health_error = error
             row.last_health_latency_ms = latency_ms
-            row.health_fail_count = 0 if current_status == DeveloperAppHealthStatus.HEALTHY.value else int(row.health_fail_count or 0) + 1
+            row.health_fail_count = next_fail_count if probe_status == DeveloperAppHealthStatus.UNHEALTHY.value else 0
 
-            if current_status == DeveloperAppHealthStatus.UNHEALTHY.value:
+            if (
+                current_status == DeveloperAppHealthStatus.UNHEALTHY.value
+                and probe_status == DeveloperAppHealthStatus.UNHEALTHY.value
+            ):
                 migrated_account_ids, stalled_account_ids = await self._migrate_accounts_from_unhealthy_app(
                     session,
                     app_id=int(app_id),
@@ -1047,9 +1245,12 @@ class DeveloperAppService:
                     new_value=new_snapshot,
                     detail={
                         "previous_status": previous_status,
+                        "probe_status": probe_status,
                         "current_status": current_status,
                         "last_health_error": error,
                         "last_health_latency_ms": latency_ms,
+                        "health_fail_count": int(row.health_fail_count or 0),
+                        "probe_failed_without_downgrade": probe_failed_without_downgrade,
                         "migrated_account_ids": migrated_account_ids,
                         "stalled_account_ids": stalled_account_ids,
                     },
@@ -1058,10 +1259,12 @@ class DeveloperAppService:
             await session.commit()
 
         await self._close_cached_clients([*migrated_account_ids, *stalled_account_ids])
+        migration_executed = bool(migrated_account_ids or stalled_account_ids)
         result = DeveloperAppHealthCheckResult(
             app_id=int(app_id),
             app_name=app_name,
             previous_status=previous.get("health_status") or DeveloperAppHealthStatus.HEALTHY.value,
+            probe_status=probe_status,
             current_status=current_status,
             checked_at=checked_at,
             latency_ms=latency_ms,
@@ -1069,20 +1272,45 @@ class DeveloperAppService:
             migrated_account_ids=migrated_account_ids,
             stalled_account_ids=stalled_account_ids,
             notified_recipients=[],
+            probe_ok=probe_status in {DeveloperAppHealthStatus.HEALTHY.value, DeveloperAppHealthStatus.DISABLED.value},
+            status_changed=previous.get("health_status") != current_status,
+            migration_executed=migration_executed,
+            probe_failed_without_downgrade=probe_failed_without_downgrade,
         )
+        if is_manual_check:
+            self._log_manual_health_check(
+                app_id=result.app_id,
+                app_name=result.app_name,
+                probe_status=result.probe_status,
+                current_status=result.current_status,
+                health_fail_count=int(next_fail_count),
+                probe_failed_without_downgrade=result.probe_failed_without_downgrade,
+                migration_executed=result.migration_executed,
+                migrated_count=len(result.migrated_account_ids),
+                stalled_count=len(result.stalled_account_ids),
+                last_health_error=result.error,
+                actor=actor,
+                ip_address=ip_address,
+            )
         if notify_admins and result.previous_status != result.current_status:
             result.notified_recipients = await self._notify_admins_for_health_change(result)
         return {
             "app_id": result.app_id,
             "app_name": result.app_name,
             "previous_status": result.previous_status,
+            "probe_status": result.probe_status,
             "current_status": result.current_status,
             "checked_at": result.checked_at.isoformat(),
             "last_health_error": result.error,
             "last_health_latency_ms": result.latency_ms,
+            "health_fail_count": next_fail_count,
             "migrated_account_ids": result.migrated_account_ids,
             "stalled_account_ids": result.stalled_account_ids,
             "notified_recipients": result.notified_recipients,
+            "probe_ok": result.probe_ok,
+            "status_changed": result.status_changed,
+            "migration_executed": result.migration_executed,
+            "probe_failed_without_downgrade": result.probe_failed_without_downgrade,
         }
 
     async def run_health_check_cycle(self) -> List[Dict[str, Any]]:

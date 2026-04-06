@@ -281,13 +281,19 @@ export const adminCheckDeveloperAppHealth = (
     app_id: number
     app_name: string
     previous_status: string
+    probe_status: string
     current_status: string
     checked_at: string
     last_health_error: string | null
     last_health_latency_ms: number | null
+    health_fail_count: number
     migrated_account_ids: string[]
     stalled_account_ids: string[]
     notified_recipients: number[]
+    probe_ok: boolean
+    status_changed: boolean
+    migration_executed: boolean
+    probe_failed_without_downgrade: boolean
   }
 }> => adminApi.post(`/admin/developer-apps/${appId}/check`)
 

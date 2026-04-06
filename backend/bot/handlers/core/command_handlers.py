@@ -12,7 +12,10 @@ from backend.bot.notice_manager import get_bot_notice_manager
 from backend.bot.handlers.core.auth_gate import require_db_user_id
 from backend.bot.handlers.task.management import create_new_task, show_task_list
 from backend.bot.handlers.task.queries import resolve_db_user_id as _resolve_db_user_id
-from backend.bot.handlers.core.user_link import get_active_account_id as _get_active_account_id
+from backend.bot.handlers.core.user_link import (
+    get_active_account_id as _get_active_account_id,
+    normalize_operator_account_refs as _normalize_operator_account_refs,
+)
 from backend.bot.handlers.account.management import show_accounts_list, show_proxy_management, sync_account_resources
 from backend.bot.onboarding import get_onboarding_service
 from backend.database.runtime.session import get_async_session
@@ -145,7 +148,24 @@ async def _run_sync_command(event, user_id: int, args: str):
     account_id = args.split()[0] if args else None
     if not account_id:
         async with get_async_session() as session:
-            active_account_id = await _get_active_account_id(session, user_id, db_user_id)
+            active_accounts = (
+                await session.execute(
+                    select(Account.account_id)
+                    .where(
+                        Account.user_id == int(db_user_id),
+                        Account.is_active == True,
+                    )
+                    .order_by(Account.updated_at.desc(), Account.last_used_at.desc(), Account.created_at.desc())
+                )
+            ).scalars().all()
+            ref_state = await _normalize_operator_account_refs(
+                session,
+                user_id,
+                db_user_id,
+                valid_account_ids=[str(item) for item in active_accounts],
+                preferred_account_id=str(active_accounts[0]) if len(active_accounts) == 1 else None,
+            )
+            active_account_id = ref_state.get("active_account_id") or await _get_active_account_id(session, user_id, db_user_id)
             if active_account_id:
                 exists = await session.execute(
                     select(Account.account_id).where(
