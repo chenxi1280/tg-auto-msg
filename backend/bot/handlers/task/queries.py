@@ -6,11 +6,13 @@ from typing import Optional
 
 from sqlalchemy import select
 
+from backend.h5_backend.services.licensing.service import list_user_authorizations
 from backend.database.schema.models import Account, ScheduledMessageTask, User
 from backend.bot.handlers.core.user_link import (
     USER_MODE_ACCOUNT_SCOPED,
     USER_MODE_OWNER,
     get_linked_system_user_id as _get_linked_system_user_id,
+    normalize_operator_account_refs as _normalize_operator_account_refs,
     get_scoped_account_id as _get_scoped_account_id,
     get_user_mode as _get_user_mode,
 )
@@ -55,11 +57,32 @@ async def resolve_actor_access_context(session, actor_user_id: int) -> ActorAcce
     if db_user_id is None:
         return ActorAccessContext(system_user_id=None, mode=USER_MODE_OWNER, scoped_account_id=None)
 
-    mode = await _get_user_mode(session, actor_user_id)
+    await list_user_authorizations(int(db_user_id), session=session)
+
+    active_account_ids = (
+        await session.execute(
+            select(Account.account_id)
+            .where(
+                Account.user_id == int(db_user_id),
+                Account.is_active.is_(True),
+            )
+            .order_by(Account.updated_at.desc(), Account.last_used_at.desc(), Account.created_at.desc())
+        )
+    ).scalars().all()
+    preferred_account_id = str(active_account_ids[0]) if len(active_account_ids) == 1 else None
+    ref_state = await _normalize_operator_account_refs(
+        session,
+        actor_user_id,
+        db_user_id,
+        valid_account_ids=[str(item) for item in active_account_ids],
+        preferred_account_id=preferred_account_id,
+    )
+
+    mode = str(ref_state.get("mode") or await _get_user_mode(session, actor_user_id))
     if mode != USER_MODE_ACCOUNT_SCOPED:
         return ActorAccessContext(system_user_id=db_user_id, mode=USER_MODE_OWNER, scoped_account_id=None)
 
-    scoped_account_id = await _get_scoped_account_id(session, actor_user_id, db_user_id)
+    scoped_account_id = str(ref_state.get("scoped_account_id") or "") or await _get_scoped_account_id(session, actor_user_id, db_user_id)
     if not scoped_account_id:
         return ActorAccessContext(system_user_id=db_user_id, mode=USER_MODE_OWNER, scoped_account_id=None)
 

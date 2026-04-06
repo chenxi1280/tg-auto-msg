@@ -3,10 +3,13 @@ from __future__ import annotations
 
 from typing import Optional
 
+from loguru import logger
+from sqlalchemy import select
 from telethon import Button
 
 from backend.bot.handlers.core.user_link import (
     get_active_account_id as _get_active_account_id,
+    normalize_operator_account_refs as _normalize_operator_account_refs,
     set_active_account_id as _set_active_account_id,
 )
 from backend.bot.handlers.task.queries import (
@@ -32,6 +35,15 @@ async def _send_or_reply(event, text: str, *, buttons=None):
     await event.respond(text, buttons=buttons, parse_mode="markdown")
 
 
+def _authorization_status_label(status: Optional[str]) -> str:
+    normalized = str(status or "").strip().lower()
+    if normalized == "active":
+        return "已开通"
+    if normalized == "expired":
+        return "已到期"
+    return "未开通"
+
+
 async def show_accounts_list(event, user_id: int):
     """显示账号列表"""
     from backend.bot.onboarding import get_onboarding_service
@@ -41,101 +53,134 @@ async def show_accounts_list(event, user_id: int):
         return
 
     account_manager = get_account_manager()
-    async with get_async_session() as session:
-        access_ctx = await _resolve_actor_access_context(session, user_id)
-        db_user_id = access_ctx.system_user_id
-        active_account_id = (
-            await _get_active_account_id(session, user_id, db_user_id)
-            if db_user_id is not None
-            else None
-        )
-    if db_user_id:
-        await list_user_authorizations(db_user_id)
-    accounts = await account_manager.get_accounts(db_user_id, is_active=True) if db_user_id else []
-    if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED and access_ctx.scoped_account_id:
-        accounts = [item for item in accounts if str(item.account_id) == str(access_ctx.scoped_account_id)]
-    authorization_items = await list_user_authorizations(db_user_id) if db_user_id else []
-    current_authorization = authorization_items[0] if authorization_items else None
+    db_user_id = None
+    active_account_id = None
+    current_authorization = None
+    try:
+        async with get_async_session() as session:
+            access_ctx = await _resolve_actor_access_context(session, user_id)
+            db_user_id = access_ctx.system_user_id
 
-    if not accounts:
-        text = (
-            "⚠️ 你还没有可用的 Telegram 账号\n\n"
-            f"当前授权：{'已开通' if current_authorization and current_authorization.status == 'active' else '未开通'}\n\n"
-            "请先点击下方“绑定账号”，直接在 Bot 内完成 Telegram 手机号绑定。"
-        )
-        keyboard = [
-            [Button.inline("📱 绑定账号", data="bot_login_account")],
-            [Button.inline("🧾 查看授权", data="bot_authorization"), Button.inline("🛒 立即购买", data="bot_purchase")],
-            [Button.inline("⬅️ 返回主菜单", data="bot_home")],
-        ]
-        await event.respond(text, buttons=keyboard, parse_mode='markdown')
-        return
+        authorization_items = await list_user_authorizations(db_user_id) if db_user_id else []
+        current_authorization = authorization_items[0] if authorization_items else None
+        accounts = await account_manager.get_accounts(db_user_id, is_active=True) if db_user_id else []
+        if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED and access_ctx.scoped_account_id:
+            accounts = [item for item in accounts if str(item.account_id) == str(access_ctx.scoped_account_id)]
 
-    # 构建账号列表文本
-    account_lines = []
-    for i, acc in enumerate(accounts, 1):
-        auth_summary = await get_account_authorization_summary(acc.account_id)
-        if not acc.is_active:
-            status = "⚪️"
-        elif str(acc.health_status) == "online":
-            status = "🟢"
-        else:
-            status = "🟠"
-        proxy = f"代理#{acc.proxy_id}" if acc.proxy_id else "无代理"
-        flooding = "🚨 Flood" if acc.is_flooding else ""
-        current = "⭐ 当前账号" if active_account_id and str(acc.account_id) == str(active_account_id) else "备用账号"
-        display_name = (
-            f"@{acc.username}" if acc.username
-            else (acc.phone or f"ID:{acc.tg_user_id}" if acc.tg_user_id else acc.account_id[:8])
-        )
-        authorization_status = "已开通" if auth_summary.authorization_id else "未开通"
-        slot_expiry = (
-            f" / 到期 {auth_summary.authorization_end_at.strftime('%Y-%m-%d %H:%M')}"
-            if auth_summary.authorization_end_at
-            else ""
-        )
+        preferred_account_id = None
+        if current_authorization and current_authorization.account_id:
+            preferred_account_id = str(current_authorization.account_id)
+        elif len(accounts) == 1:
+            preferred_account_id = str(accounts[0].account_id)
 
-        account_lines.append(
-            f"{i}. {status} {display_name}\n"
-            f"   账号ID: `{acc.account_id}`\n"
-            f"   代理: {proxy}\n"
-            f"   状态: {current} {flooding}\n"
-            f"   自动发送: {'已授权' if auth_summary.can_create_tasks else ('已到期' if auth_summary.authorization_status == 'expired' else '未授权')}\n"
-            f"   当前授权: {authorization_status}{slot_expiry}"
-        )
+        if db_user_id is not None:
+            async with get_async_session() as session:
+                ref_state = await _normalize_operator_account_refs(
+                    session,
+                    user_id,
+                    db_user_id,
+                    valid_account_ids=[str(item.account_id) for item in accounts],
+                    preferred_account_id=preferred_account_id,
+                )
+                active_account_id = ref_state.get("active_account_id")
+                if ref_state.get("active_changed") or ref_state.get("scoped_changed") or ref_state.get("mode_changed"):
+                    logger.info(
+                        "bot account refs repaired before list render: tg_user_id={}, system_user_id={}, active_account_id={}, scoped_account_id={}, mode={}",
+                        int(user_id),
+                        int(db_user_id),
+                        active_account_id,
+                        ref_state.get("scoped_account_id"),
+                        ref_state.get("mode"),
+                    )
 
-    auth_expiry_text = ""
-    if current_authorization and current_authorization.end_at:
-        auth_expiry_text = f" / 到期 {current_authorization.end_at.strftime('%Y-%m-%d %H:%M')}"
-    text = (
-        f"👥 **账号列表**（{len(accounts)}）\n\n"
-        f"当前授权：{current_authorization.status if current_authorization else '未开通'}{auth_expiry_text}\n\n"
-        f"{chr(10).join(account_lines)}\n\n"
-        "下一步：请选择要查看的账号，或使用下方快捷操作。"
-    )
+        if not active_account_id and len(accounts) == 1:
+            active_account_id = str(accounts[0].account_id)
 
-    # 按钮
-    if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED:
-        keyboard = [[Button.inline("🔄 同步全部资源", data="sync_all")]]
-    else:
-        keyboard = [[Button.inline("📱 绑定账号", data="bot_login_account"), Button.inline("🔄 同步全部资源", data="sync_all")]]
-    keyboard.append([Button.inline("🗂️ 查看任务", data="task_list"), Button.inline("➕ 新建任务", data="add_task")])
-
-    for idx, acc in enumerate(accounts[:8], 1):
-        display = acc.username or acc.phone or (f"ID:{acc.tg_user_id}" if acc.tg_user_id else acc.account_id[:8])
-        prefix = "⭐" if active_account_id and str(acc.account_id) == str(active_account_id) else "▫️"
-        keyboard.append([Button.inline(f"{prefix} 账号{idx}: {display[:22]}", data=f"acc_menu:{acc.account_id}")])
-
-    keyboard.append([Button.inline("🧾 查看授权", data="bot_authorization"), Button.inline("⬅️ 返回主菜单", data="bot_home")])
-
-    # 避免 callback 编辑失败（同内容触发 MessageNotModified）
-    if hasattr(event, "edit"):
-        try:
-            await event.edit(text, buttons=keyboard, parse_mode='markdown')
+        if not accounts:
+            text = (
+                "⚠️ 你还没有可用的 Telegram 账号\n\n"
+                f"当前授权：{_authorization_status_label(current_authorization.status if current_authorization else None)}\n\n"
+                "请先点击下方“绑定账号”，直接在 Bot 内完成 Telegram 手机号绑定。"
+            )
+            keyboard = [
+                [Button.inline("📱 绑定账号", data="bot_login_account")],
+                [Button.inline("🧾 查看授权", data="bot_authorization"), Button.inline("🛒 立即购买", data="bot_purchase")],
+                [Button.inline("⬅️ 返回主菜单", data="bot_home")],
+            ]
+            await event.respond(text, buttons=keyboard, parse_mode='markdown')
             return
-        except Exception:
-            pass
-    await event.respond(text, buttons=keyboard, parse_mode='markdown')
+
+        account_lines = []
+        for i, acc in enumerate(accounts, 1):
+            auth_summary = await get_account_authorization_summary(acc.account_id)
+            if not acc.is_active:
+                status = "⚪️"
+            elif str(acc.health_status) == "online":
+                status = "🟢"
+            else:
+                status = "🟠"
+            proxy = f"代理#{acc.proxy_id}" if acc.proxy_id else "无代理"
+            flooding = "🚨 Flood" if acc.is_flooding else ""
+            current = "⭐ 当前账号" if str(acc.account_id) == str(active_account_id or "") else "备用账号"
+            display_name = (
+                f"@{acc.username}" if acc.username
+                else (acc.phone or f"ID:{acc.tg_user_id}" if acc.tg_user_id else acc.account_id[:8])
+            )
+            authorization_status = "已开通" if auth_summary.authorization_id else "未开通"
+            slot_expiry = (
+                f" / 到期 {auth_summary.authorization_end_at.strftime('%Y-%m-%d %H:%M')}"
+                if auth_summary.authorization_end_at
+                else ""
+            )
+
+            account_lines.append(
+                f"{i}. {status} {display_name}\n"
+                f"   账号ID: `{acc.account_id}`\n"
+                f"   代理: {proxy}\n"
+                f"   状态: {current} {flooding}\n"
+                f"   自动发送: {'已授权' if auth_summary.can_create_tasks else ('已到期' if auth_summary.authorization_status == 'expired' else '未授权')}\n"
+                f"   当前授权: {authorization_status}{slot_expiry}"
+            )
+
+        auth_expiry_text = ""
+        if current_authorization and current_authorization.end_at:
+            auth_expiry_text = f" / 到期 {current_authorization.end_at.strftime('%Y-%m-%d %H:%M')}"
+        text = (
+            f"👥 **账号列表**（{len(accounts)}）\n\n"
+            f"当前授权：{_authorization_status_label(current_authorization.status if current_authorization else None)}{auth_expiry_text}\n\n"
+            f"{chr(10).join(account_lines)}\n\n"
+            "下一步：请选择要查看的账号，或使用下方快捷操作。"
+        )
+
+        if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED:
+            keyboard = [[Button.inline("🔄 同步全部资源", data="sync_all")]]
+        else:
+            keyboard = [[Button.inline("📱 绑定账号", data="bot_login_account"), Button.inline("🔄 同步全部资源", data="sync_all")]]
+        keyboard.append([Button.inline("🗂️ 查看任务", data="task_list"), Button.inline("➕ 新建任务", data="add_task")])
+
+        for idx, acc in enumerate(accounts[:8], 1):
+            display = acc.username or acc.phone or (f"ID:{acc.tg_user_id}" if acc.tg_user_id else acc.account_id[:8])
+            prefix = "⭐" if str(acc.account_id) == str(active_account_id or "") else "▫️"
+            keyboard.append([Button.inline(f"{prefix} 账号{idx}: {display[:22]}", data=f"acc_menu:{acc.account_id}")])
+
+        keyboard.append([Button.inline("🧾 查看授权", data="bot_authorization"), Button.inline("⬅️ 返回主菜单", data="bot_home")])
+
+        if hasattr(event, "edit"):
+            try:
+                await event.edit(text, buttons=keyboard, parse_mode='markdown')
+                return
+            except Exception:
+                pass
+        await event.respond(text, buttons=keyboard, parse_mode='markdown')
+    except Exception:
+        logger.exception(
+            "bot account list render failed: tg_user_id={}, system_user_id={}, active_account_id={}, authorization_id={}",
+            int(user_id),
+            int(db_user_id) if db_user_id is not None else None,
+            active_account_id,
+            str(current_authorization.authorization_id) if current_authorization is not None else None,
+        )
+        raise
 
 
 async def sync_account_resources(event, user_id: int, account_id: Optional[str]):
@@ -233,7 +278,24 @@ async def show_account_menu(event, user_id: int, account_id: str):
         return
 
     async with get_async_session() as session:
-        active_account_id = await _get_active_account_id(session, user_id, db_user_id)
+        active_account_ids = (
+            await session.execute(
+                select(Account.account_id)
+                .where(
+                    Account.user_id == int(db_user_id),
+                    Account.is_active == True,
+                )
+                .order_by(Account.updated_at.desc(), Account.last_used_at.desc(), Account.created_at.desc())
+            )
+        ).scalars().all()
+        ref_state = await _normalize_operator_account_refs(
+            session,
+            user_id,
+            db_user_id,
+            valid_account_ids=[str(item) for item in active_account_ids],
+            preferred_account_id=str(active_account_ids[0]) if len(active_account_ids) == 1 else None,
+        )
+        active_account_id = ref_state.get("active_account_id") or await _get_active_account_id(session, user_id, db_user_id)
     auth_summary = await get_account_authorization_summary(account.account_id)
     auth_text = "已授权" if auth_summary.can_create_tasks else ("已到期" if auth_summary.authorization_status == "expired" else "未授权")
 

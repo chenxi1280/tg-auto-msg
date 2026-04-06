@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, status
+from loguru import logger
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -361,6 +362,8 @@ async def _normalize_single_authorization_model(
         )
     ).scalars().all()
     accounts_by_id = {str(account.account_id): account for account in accounts}
+    original_active_account_count = sum(1 for account in accounts if account.is_active)
+    original_slot_count = len(slots)
 
     primary_slot = max(slots, key=lambda item: _slot_priority(item, now=now, accounts_by_id=accounts_by_id)) if slots else None
     primary_account: Optional[Account] = None
@@ -370,6 +373,7 @@ async def _normalize_single_authorization_model(
         primary_account = max(accounts, key=_account_priority)
 
     changed = False
+    deleted_slot_ids: List[str] = []
     if primary_account is not None and not primary_account.is_active:
         primary_account.is_active = True
         changed = True
@@ -440,17 +444,25 @@ async def _normalize_single_authorization_model(
             ).scalars().all()
             for binding in open_bindings:
                 binding.unbind_at = now
-                binding.unbind_reason = "single_authorization_archived"
-            slot.current_account_id = None
-            changed = True
-        if slot.status != "disabled":
-            slot.status = "disabled"
-            changed = True
+                binding.unbind_reason = "single_authorization_deleted"
+        deleted_slot_ids.append(str(slot.authorization_id))
+        await session.delete(slot)
+        changed = True
 
     if disabled_account_ids:
         await _disable_tasks_for_accounts(account_ids=disabled_account_ids, session=session)
     if changed:
         await session.flush()
+        logger.info(
+            "single authorization normalized: user_id={}, original_active_accounts={}, original_slots={}, kept_account_id={}, kept_authorization_id={}, disabled_accounts={}, deleted_slots={}",
+            int(user_id),
+            int(original_active_account_count),
+            int(original_slot_count),
+            str(primary_account.account_id) if primary_account is not None else None,
+            str(primary_slot.authorization_id) if primary_slot is not None else None,
+            len(disabled_account_ids),
+            len(deleted_slot_ids),
+        )
     return primary_slot, primary_account
 
 
