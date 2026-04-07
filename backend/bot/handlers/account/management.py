@@ -7,6 +7,10 @@ from loguru import logger
 from sqlalchemy import select
 from telethon import Button
 
+from backend.bot.account.reauth import (
+    get_reauth_required_message,
+    is_reauth_required_account,
+)
 from backend.bot.handlers.core.user_link import (
     get_active_account_id as _get_active_account_id,
     normalize_operator_account_refs as _normalize_operator_account_refs,
@@ -131,6 +135,8 @@ async def show_accounts_list(event, user_id: int):
             proxy = f"代理#{acc.proxy_id}" if acc.proxy_id else "无代理"
             flooding = "🚨 Flood" if acc.is_flooding else ""
             current = "⭐ 当前账号" if str(acc.account_id) == str(active_account_id or "") else "备用账号"
+            if is_reauth_required_account(acc):
+                current = f"{current}（需要重新绑定）"
             display_name = (
                 f"@{acc.username}" if acc.username
                 else (acc.phone or f"ID:{acc.tg_user_id}" if acc.tg_user_id else acc.account_id[:8])
@@ -221,10 +227,14 @@ async def sync_account_resources(event, user_id: int, account_id: Optional[str])
         return
 
     allowed_account_ids = {acc.account_id for acc in accounts}
+    reauth_account_ids = {str(acc.account_id) for acc in accounts if is_reauth_required_account(acc)}
 
     if account_id:
         if account_id not in allowed_account_ids:
             await event.respond("❌ 该账号不可操作，可能未启用或不属于当前用户。")
+            return
+        if str(account_id) in reauth_account_ids:
+            await event.respond(get_reauth_required_message())
             return
         queue_result = await account_auto_sync_runtime.enqueue_account(
             account_id,
@@ -238,7 +248,11 @@ async def sync_account_resources(event, user_id: int, account_id: Optional[str])
     else:
         queued_accounts = 0
         already_running_accounts = 0
+        skipped_reauth_accounts = 0
         for acc in accounts:
+            if str(acc.account_id) in reauth_account_ids:
+                skipped_reauth_accounts += 1
+                continue
             queue_result = await account_auto_sync_runtime.enqueue_account(
                 acc.account_id,
                 trigger_source=SYNC_TRIGGER_MANUAL,
@@ -249,11 +263,15 @@ async def sync_account_resources(event, user_id: int, account_id: Optional[str])
             elif queue_result["status"] in {"queued", "running"}:
                 already_running_accounts += 1
 
+        if queued_accounts == 0 and already_running_accounts == 0 and skipped_reauth_accounts > 0:
+            await event.respond(get_reauth_required_message())
+            return
+        skipped_text = f"\n需重绑: {skipped_reauth_accounts}" if skipped_reauth_accounts > 0 else ""
         await event.respond(
             f"✅ 同步队列已更新\n"
             f"账号数: {len(accounts)}\n"
             f"新增排队: {queued_accounts}\n"
-            f"同步中: {already_running_accounts}\n\n"
+            f"同步中: {already_running_accounts}{skipped_text}\n\n"
             "下一步：系统会依次自动同步这些账号。"
         )
 
@@ -319,6 +337,8 @@ async def show_account_menu(event, user_id: int, account_id: str):
         "在线" if str(account.health_status) == "online"
         else ("离线" if str(account.health_status) == "offline" else str(account.health_status))
     )
+    if is_reauth_required_account(account):
+        status_text = f"{status_text}（需要重新绑定）"
     text = (
         "👤 **账号详情**\n\n"
         f"显示名：{('@' + account.username) if account.username else (account.phone or str(account.tg_user_id or '-'))}\n"

@@ -6,6 +6,10 @@ from datetime import datetime
 from telethon import Button, events
 from sqlalchemy import select
 
+from backend.bot.account.reauth import (
+    get_reauth_required_message,
+    is_reauth_required_account,
+)
 from backend.bot.handlers.core.helpers import (
     escape_markdown as _escape_markdown,
     format_timestamp as _format_timestamp,
@@ -286,14 +290,14 @@ async def create_new_task(event, user_id: int):
                 )
             )
             preferred_account = account_result.scalar_one_or_none()
-            if preferred_account:
+            if preferred_account and not is_reauth_required_account(preferred_account):
                 selected_account_id = preferred_account.account_id
         if (
             access_ctx.mode == USER_MODE_ACCOUNT_SCOPED
             and access_ctx.scoped_account_id
             and selected_account_id is None
         ):
-            await event.answer("当前账号不可用，请先重新绑定你的 Telegram 账号。", alert=True)
+            await event.answer(get_reauth_required_message(), alert=True)
             return
 
     draft_task_id = "__draft_new_task__"
@@ -345,7 +349,10 @@ async def create_new_task_for_account(event, user_id: int, account_id: str):
         )
         account = account_result.scalar_one_or_none()
         if not account:
-            await event.answer("账号不存在或不可用，请先检查账号状态。", alert=True)
+            await event.answer(get_reauth_required_message(), alert=True)
+            return
+        if is_reauth_required_account(account):
+            await event.answer(get_reauth_required_message(), alert=True)
             return
     draft_task_id = "__draft_new_task__"
     set_selector_context(

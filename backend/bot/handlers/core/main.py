@@ -5,6 +5,10 @@ from loguru import logger
 from telethon import events
 from telethon.errors.rpcerrorlist import MessageNotModifiedError
 
+from backend.bot.account.reauth import (
+    get_reauth_required_message,
+    is_reauth_required_error_message,
+)
 from backend.bot.client_runtime.manager import bot_client
 from backend.bot.state.fsm import FSMState, fsm_storage
 from backend.bot.handlers.task.selector_context import get_selector_context as _get_selector_context
@@ -112,9 +116,15 @@ async def callback_handler(event):
     except HTTPException as e:
         detail = str(e.detail or "操作失败，请稍后重试。")
         logger.warning(f"回调处理业务失败: status={e.status_code}, detail={detail!r}")
+        if is_reauth_required_error_message(detail):
+            await event.answer(get_reauth_required_message(), alert=True)
+            return
         await event.answer(detail, alert=True)
     except Exception as e:
         logger.exception(f"回调处理失败: {type(e).__name__}: {e!r}")
+        if is_reauth_required_error_message(str(e)):
+            await event.answer(get_reauth_required_message(), alert=True)
+            return
         await event.answer("操作失败，请稍后重试。\n如果当前正在输入内容，可先取消后重新进入。", alert=True)
 
 

@@ -8,6 +8,7 @@ from loguru import logger
 from telethon import events
 from sqlalchemy import select
 
+from backend.bot.account.reauth import get_reauth_required_message, is_reauth_required_account
 from backend.bot.state.fsm import FSMState, fsm_storage
 from backend.bot.handlers.core.helpers import (
     apply_task_targets as _apply_task_targets,
@@ -256,6 +257,9 @@ async def _handle_pick_account(event, user_id: int, account_id: str):
         account = account_result.scalar_one_or_none()
         if not account:
             await event.answer("账号不存在或不可用", alert=True)
+            return
+        if is_reauth_required_account(account):
+            await event.answer(get_reauth_required_message(), alert=True)
             return
 
         previous_account_id = str(ctx.get("account_id") or "") if ctx else ""

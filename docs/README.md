@@ -19,6 +19,7 @@
 - `architecture/BOT_ARCHITECTURE.md`：Bot 整体架构
 - `architecture/BOT_HANDLERS_ARCHITECTURE.md`：Bot Handler 分层与分发
 - `architecture/DATABASE_ARCHITECTURE.md`：数据库设计说明
+- `architecture/ADMIN_RESELLER_UPGRADE_PLAN.md`：管理员 / 总代理 / 子代理分销升级讨论稿
 - `architecture/H5_BACKEND_ARCHITECTURE.md`：H5 后端架构
 - `architecture/SCHEDULER_ARCHITECTURE.md`：调度器架构
 

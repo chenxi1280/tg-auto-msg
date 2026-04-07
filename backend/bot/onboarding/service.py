@@ -19,6 +19,10 @@ from telethon.tl.functions.account import GetPasswordRequest
 from telethon.tl.functions.auth import CheckPasswordRequest
 
 from backend.bot.account.manager import get_account_manager
+from backend.bot.account.reauth import (
+    REAUTH_REQUIRED_TITLE,
+    is_reauth_required_reason,
+)
 from backend.bot.client_runtime.manager import bot_client
 from backend.bot.notice_manager import get_bot_notice_manager
 from backend.bot.client_runtime.qr_login import wait_for_qr_login as _wait_for_qr_login_flow
@@ -1072,6 +1076,8 @@ class BotOnboardingService:
                 "account_id": str(account.account_id),
                 "label": label,
                 "tg_user_id": int(account.tg_user_id or 0),
+                "reauth_required": bool(getattr(account, "reauth_required", False)),
+                "reauth_reason": str(getattr(account, "reauth_reason", "") or ""),
             }
 
     async def prompt_replace_account_before_login(
@@ -1092,8 +1098,12 @@ class BotOnboardingService:
             return
 
         label = account_label or str(snapshot["label"])
+        needs_reauth = bool(snapshot.get("reauth_required")) or is_reauth_required_reason(str(snapshot.get("reauth_reason") or ""))
+        intro_text = ""
+        if needs_reauth:
+            intro_text = f"⚠️ **{REAUTH_REQUIRED_TITLE}**\n\n"
         text = (
-            "⚠️ **确认更换绑定账号**\n\n"
+            f"{intro_text}⚠️ **确认更换绑定账号**\n\n"
             f"当前已绑定账号：{label}\n"
             f"账号ID：`{snapshot['account_id']}`\n\n"
             "继续前需要先解除当前绑定。解除后，该账号及相关任务会被删除，然后立即进入新的手机号绑定流程。\n\n"

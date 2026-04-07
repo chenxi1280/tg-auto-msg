@@ -8,6 +8,10 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.bot.account.reauth import (
+    get_reauth_required_message,
+    is_reauth_required_account,
+)
 from backend.database.schema.models import Resource
 from backend.database.runtime.session import get_async_session
 from backend.utils.security.crypto import decrypt_string_session
@@ -26,10 +30,12 @@ async def diagnose_client_unavailable(account_manager, account_id: str) -> str:
         return "账号不存在"
     if not account.is_active:
         return "账号已禁用，请先启用账号"
+    if is_reauth_required_account(account):
+        return get_reauth_required_message()
     try:
         decrypt_string_session(account.string_session_encrypted)
     except Exception:
-        return "StringSession 解密失败，请重新在 Bot 中绑定该账号"
+        return get_reauth_required_message()
     return "无法获取客户端，请确认账号仍在线并检查代理配置"
 
 
