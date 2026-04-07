@@ -199,7 +199,7 @@ async def _run_notice_command(event, user_id: int, args: str):
 
 async def _run_login_command(event, user_id: int, args: str):
     del args
-    await get_onboarding_service().start_phone_account_login(event, user_id)
+    await get_onboarding_service().start_account_login(event, user_id)
 
 
 async def _run_newtask_command(event, user_id: int, args: str):

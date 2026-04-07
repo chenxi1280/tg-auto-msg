@@ -322,7 +322,7 @@ async def _handle_bot_login_replace_confirm(event, user_id: int, parts: list[str
 
 async def _handle_bot_login_qr(event, user_id: int, parts: list[str]):
     existing_tg_user_id = int(parts[1]) if len(parts) > 1 and parts[1] else None
-    await get_onboarding_service().start_phone_account_login(
+    await get_onboarding_service().start_account_login(
         event,
         user_id,
         existing_tg_user_id=existing_tg_user_id,
@@ -331,7 +331,7 @@ async def _handle_bot_login_qr(event, user_id: int, parts: list[str]):
 
 async def _handle_bot_login_phone(event, user_id: int, parts: list[str]):
     existing_tg_user_id = int(parts[1]) if len(parts) > 1 and parts[1] else None
-    await get_onboarding_service().start_phone_account_login(
+    await get_onboarding_service().start_account_login(
         event,
         user_id,
         existing_tg_user_id=existing_tg_user_id,

@@ -8,6 +8,7 @@ from loguru import logger
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
+from backend.bot.account.reauth import is_reauth_required_account
 from backend.config.core.settings import settings
 from backend.bot.developer_apps import get_developer_app_service
 from backend.database.schema.models import HealthStatus
@@ -76,7 +77,7 @@ async def get_client(manager, account_id: str) -> Optional[TelegramClient]:
         logger.error(f"账号不存在: {account_id}")
         return None
 
-    if bool(getattr(account, "reauth_required", False)):
+    if is_reauth_required_account(account):
         reason = getattr(account, "reauth_reason", "") or "unknown"
         logger.warning(f"账号 {account_id} 需要重新绑定后才能继续使用: reason={reason}")
         try:
