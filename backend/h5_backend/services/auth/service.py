@@ -57,6 +57,8 @@ class AuthService:
 
         try:
             payload = jwt.decode(token, self._secret_key, algorithms=[ALGORITHM])
+            if str(payload.get("scope") or "user") != "user":
+                raise credentials_exception
             user_id_raw = payload.get("sub")
             if user_id_raw is None:
                 raise credentials_exception
@@ -110,7 +112,7 @@ class AuthService:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="用户名或邮箱已存在") from exc
             await session.refresh(new_user)
 
-        access_token = self.create_access_token(data={"sub": new_user.id, "username": new_user.username})
+        access_token = self.create_access_token(data={"sub": new_user.id, "username": new_user.username, "scope": "user"})
         return access_token, new_user
 
     async def login_user(self, username: str, password: str) -> Tuple[str, User]:
@@ -129,7 +131,7 @@ class AuthService:
         if not user.is_active:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="用户已被禁用")
 
-        access_token = self.create_access_token(data={"sub": user.id, "username": user.username})
+        access_token = self.create_access_token(data={"sub": user.id, "username": user.username, "scope": "user"})
         return access_token, user
 
 

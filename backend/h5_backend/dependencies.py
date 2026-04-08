@@ -1,15 +1,16 @@
 """H5 API shared dependencies and permission checks."""
-import hmac
 
-from fastapi import Header
+from fastapi import Depends
 from fastapi import HTTPException
+from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import select
-
-from backend.config.core.settings import settings
 from backend.bot.account.manager import get_account_manager
 from backend.bot.proxy.pool import get_proxy_pool
-from backend.database.schema.models import Account, Proxy, ScheduledMessageTask
+from backend.database.schema.models import Account, AdminAccount, Proxy, ScheduledMessageTask
 from backend.database.runtime.session import get_async_session
+from backend.h5_backend.services.admin_auth.service import get_admin_auth_service
+
+admin_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/admin-auth/login")
 
 
 async def check_task_permission(task_id: str, user_id: int) -> ScheduledMessageTask:
@@ -48,15 +49,15 @@ async def check_proxy_permission(proxy_id: int, user_id: int) -> Proxy:
     return proxy
 
 
-def require_admin_token(x_admin_token: str = Header(default="", alias="X-Admin-Token")) -> bool:
-    """Simple admin API token guard for out-of-band admin backend."""
-    expected = (settings.admin_api_token or "").strip()
-    provided = (x_admin_token or "").strip()
+async def get_current_admin_account(token: str = Depends(admin_oauth2_scheme)) -> AdminAccount:
+    service = get_admin_auth_service()
+    return await service.get_current_admin(token)
 
-    if not expected:
-        raise HTTPException(status_code=503, detail="管理员接口未配置 ADMIN_API_TOKEN")
 
-    if not provided or not hmac.compare_digest(provided, expected):
-        raise HTTPException(status_code=401, detail="管理员鉴权失败")
+def require_admin_roles(*roles: str):
+    async def _dependency(current_admin: AdminAccount = Depends(get_current_admin_account)) -> AdminAccount:
+        if roles and current_admin.role_code not in set(roles):
+            raise HTTPException(status_code=403, detail="无权访问该后台资源")
+        return current_admin
 
-    return True
+    return _dependency

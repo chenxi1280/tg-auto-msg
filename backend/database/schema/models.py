@@ -49,6 +49,268 @@ class User(Base):
     )
 
 
+class AdminAccount(Base):
+    """后台管理员 / 代理账号。"""
+    __tablename__ = "admin_accounts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, comment="后台登录名")
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False, comment="密码哈希")
+    role_code: Mapped[str] = mapped_column(String(32), nullable=False, comment="角色代码")
+    province_code: Mapped[str] = mapped_column(String(32), nullable=False, comment="省份编码")
+    parent_account_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("admin_accounts.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="直接上级账号 ID",
+    )
+    root_master_account_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("admin_accounts.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="省总代账号 ID",
+    )
+    level_depth: Mapped[int] = mapped_column(Integer, default=0, nullable=False, comment="层级深度")
+    status: Mapped[str] = mapped_column(String(20), default="active", nullable=False, comment="状态")
+    settlement_mode: Mapped[str] = mapped_column(String(20), default="prepaid", nullable=False, comment="结算模式")
+    is_credit_whitelisted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, comment="是否授信白名单")
+    credit_limit_cents: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False, comment="总额度")
+    allocated_credit_limit_cents: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False, comment="已分配额度总和")
+    credit_used_cents: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False, comment="已使用额度")
+    balance_cents: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False, comment="余额")
+    force_password_change: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, comment="是否强制改密")
+    display_name: Mapped[str] = mapped_column(String(100), nullable=False, comment="展示名称")
+    contact_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, comment="联系人")
+    contact_phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, comment="联系电话")
+    created_by: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="创建人账号 ID")
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="最近登录时间")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    parent_account: Mapped[Optional["AdminAccount"]] = relationship(
+        "AdminAccount",
+        remote_side=[id],
+        foreign_keys=[parent_account_id],
+        back_populates="children",
+    )
+    children: Mapped[List["AdminAccount"]] = relationship(
+        "AdminAccount",
+        foreign_keys=[parent_account_id],
+        back_populates="parent_account",
+    )
+    tg_binding: Mapped[Optional["AdminAccountTgBinding"]] = relationship(
+        "AdminAccountTgBinding",
+        back_populates="admin_account",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+    __table_args__ = (
+        Index("idx_admin_accounts_role_status", "role_code", "status"),
+        Index("idx_admin_accounts_parent", "parent_account_id"),
+        Index("idx_admin_accounts_root_master", "root_master_account_id"),
+        Index("idx_admin_accounts_province_role", "province_code", "role_code"),
+    )
+
+
+class AdminAccountTgBinding(Base):
+    """后台账号 TG 绑定关系。"""
+    __tablename__ = "admin_account_tg_bindings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    admin_account_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("admin_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        comment="后台账号 ID",
+    )
+    tg_user_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, unique=True, comment="TG 用户 ID")
+    tg_username: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, comment="TG 用户名")
+    bind_status: Mapped[str] = mapped_column(String(20), default="unbound", nullable=False, comment="绑定状态")
+    bind_code: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, comment="绑定码")
+    bind_code_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="绑定码过期时间")
+    bound_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="绑定时间")
+    unbound_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="解绑时间")
+    bound_by_account_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="发起绑定的后台账号 ID")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    admin_account: Mapped["AdminAccount"] = relationship("AdminAccount", back_populates="tg_binding")
+
+    __table_args__ = (
+        Index("idx_admin_tg_bindings_account", "admin_account_id"),
+        Index("idx_admin_tg_bindings_tg_user", "tg_user_id"),
+        Index("idx_admin_tg_bindings_status", "bind_status"),
+    )
+
+
+class AgentCreditLimit(Base):
+    """代理上下级额度配置。"""
+    __tablename__ = "agent_credit_limits"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    parent_account_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("admin_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="直接上级账号 ID",
+    )
+    child_account_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("admin_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="直接下级账号 ID",
+    )
+    delegated_credit_limit_cents: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False, comment="受限额度")
+    delegated_credit_used_cents: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False, comment="已使用受限额度")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, comment="是否有效")
+    last_adjusted_by: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="最近调整人账号 ID")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("parent_account_id", "child_account_id", name="uq_agent_credit_limits_parent_child"),
+        Index("idx_agent_credit_limits_parent", "parent_account_id"),
+        Index("idx_agent_credit_limits_child", "child_account_id"),
+    )
+
+
+class AgentPlanPrice(Base):
+    """代理上下级计划价格。"""
+    __tablename__ = "agent_plan_prices"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    parent_account_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("admin_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="直接上级账号 ID",
+    )
+    child_account_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("admin_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="直接下级账号 ID",
+    )
+    plan_code: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("pricing_plans.plan_code", ondelete="CASCADE"),
+        nullable=False,
+        comment="规格编码",
+    )
+    settlement_price_cents: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False, comment="结算价")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, comment="是否有效")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("parent_account_id", "child_account_id", "plan_code", name="uq_agent_plan_prices_parent_child_plan"),
+        Index("idx_agent_plan_prices_parent", "parent_account_id"),
+        Index("idx_agent_plan_prices_child", "child_account_id"),
+    )
+
+
+class CardBatch(Base):
+    """卡密批次。"""
+    __tablename__ = "card_batches"
+
+    batch_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    province_code: Mapped[str] = mapped_column(String(32), nullable=False, comment="省份编码")
+    creator_account_id: Mapped[int] = mapped_column(Integer, ForeignKey("admin_accounts.id", ondelete="RESTRICT"), nullable=False)
+    owner_account_id: Mapped[int] = mapped_column(Integer, ForeignKey("admin_accounts.id", ondelete="RESTRICT"), nullable=False)
+    direct_parent_account_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("admin_accounts.id", ondelete="SET NULL"), nullable=True)
+    root_master_account_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("admin_accounts.id", ondelete="SET NULL"), nullable=True)
+    current_liability_account_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("admin_accounts.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="当前对上欠款责任账号 ID",
+    )
+    current_counterparty_account_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("admin_accounts.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="当前应结算到的上级账号 ID，为空表示平台侧",
+    )
+    plan_code: Mapped[str] = mapped_column(String(32), ForeignKey("pricing_plans.plan_code", ondelete="CASCADE"), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False, comment="数量")
+    duration_days: Mapped[int] = mapped_column(Integer, nullable=False, comment="时长天数")
+    unit_price_cents: Mapped[int] = mapped_column(BigInteger, nullable=False, comment="单价快照")
+    total_amount_cents: Mapped[int] = mapped_column(BigInteger, nullable=False, comment="总金额")
+    settlement_status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False, comment="结算状态")
+    payment_status: Mapped[str] = mapped_column(String(20), default="unpaid", nullable=False, comment="支付状态")
+    export_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False, comment="导出次数")
+    last_exported_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="最近导出时间")
+    remark: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="备注")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    cards: Mapped[List["ActivationCard"]] = relationship("ActivationCard", back_populates="batch")
+
+    __table_args__ = (
+        Index("idx_card_batches_owner", "owner_account_id"),
+        Index("idx_card_batches_parent", "direct_parent_account_id"),
+        Index("idx_card_batches_root_master", "root_master_account_id"),
+        Index("idx_card_batches_liability", "current_liability_account_id"),
+        Index("idx_card_batches_status", "settlement_status", "payment_status"),
+        Index("idx_card_batches_created_at", "created_at"),
+    )
+
+
+class AgentFundLedger(Base):
+    """代理资金与额度流水。"""
+    __tablename__ = "agent_fund_ledgers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ledger_scope: Mapped[str] = mapped_column(String(20), nullable=False, comment="platform/channel")
+    account_id: Mapped[int] = mapped_column(Integer, ForeignKey("admin_accounts.id", ondelete="CASCADE"), nullable=False)
+    counterparty_account_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("admin_accounts.id", ondelete="SET NULL"), nullable=True)
+    biz_type: Mapped[str] = mapped_column(String(32), nullable=False, comment="业务类型")
+    direction: Mapped[str] = mapped_column(String(16), nullable=False, comment="资金方向")
+    amount_cents: Mapped[int] = mapped_column(BigInteger, nullable=False, comment="金额")
+    balance_after_cents: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, comment="变更后余额")
+    credit_used_after_cents: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, comment="变更后额度占用")
+    related_batch_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("card_batches.batch_id", ondelete="SET NULL"), nullable=True)
+    related_request_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, comment="关联审批请求")
+    remark: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="备注")
+    operator_account_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("admin_accounts.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("idx_agent_fund_ledgers_account", "account_id"),
+        Index("idx_agent_fund_ledgers_scope", "ledger_scope"),
+        Index("idx_agent_fund_ledgers_batch", "related_batch_id"),
+        Index("idx_agent_fund_ledgers_created_at", "created_at"),
+    )
+
+
+class ApprovalRequest(Base):
+    """审批请求。"""
+    __tablename__ = "approval_requests"
+
+    request_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    province_code: Mapped[str] = mapped_column(String(32), nullable=False, comment="省份编码")
+    request_type: Mapped[str] = mapped_column(String(32), nullable=False, comment="审批类型")
+    requester_account_id: Mapped[int] = mapped_column(Integer, ForeignKey("admin_accounts.id", ondelete="CASCADE"), nullable=False)
+    subject_account_id: Mapped[int] = mapped_column(Integer, ForeignKey("admin_accounts.id", ondelete="CASCADE"), nullable=False)
+    approver_account_id: Mapped[int] = mapped_column(Integer, ForeignKey("admin_accounts.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False, comment="审批状态")
+    amount_cents: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, comment="金额")
+    credit_delta_cents: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, comment="额度变更")
+    payload_json: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True, comment="扩展负载")
+    approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="审批时间")
+    rejected_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="驳回时间")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("idx_approval_requests_subject", "subject_account_id"),
+        Index("idx_approval_requests_approver", "approver_account_id", "status"),
+        Index("idx_approval_requests_created_at", "created_at"),
+    )
+
+
 class PricingPlan(Base):
     """Key 规格配置"""
     __tablename__ = "pricing_plans"
@@ -93,12 +355,46 @@ class ActivationCard(Base):
         comment="使用者用户 ID",
     )
     used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="使用时间")
+    batch_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey("card_batches.batch_id", ondelete="SET NULL"),
+        nullable=True,
+        comment="所属批次",
+    )
+    creator_account_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("admin_accounts.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="生成人账号 ID",
+    )
+    owner_account_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("admin_accounts.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="归属账号 ID",
+    )
+    direct_parent_account_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("admin_accounts.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="直接上级账号 ID",
+    )
+    root_master_account_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("admin_accounts.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="省总代账号 ID",
+    )
+    settlement_unit_price_cents: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, comment="单张结算价")
+    card_source_type: Mapped[str] = mapped_column(String(20), default="platform", nullable=False, comment="来源类型")
+    copy_status: Mapped[str] = mapped_column(String(20), default="new", nullable=False, comment="复制状态")
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     plan: Mapped[Optional["PricingPlan"]] = relationship("PricingPlan", back_populates="activation_cards")
     used_by_user: Mapped[Optional["User"]] = relationship("User", back_populates="activated_cards")
+    batch: Mapped[Optional["CardBatch"]] = relationship("CardBatch", back_populates="cards")
     slot_usages: Mapped[List["UserAuthorizationCard"]] = relationship(
         "UserAuthorizationCard",
         back_populates="activation_card",
@@ -108,6 +404,8 @@ class ActivationCard(Base):
     __table_args__ = (
         Index("idx_activation_cards_is_used", "is_used", "is_active"),
         Index("idx_activation_cards_plan_code", "plan_code"),
+        Index("idx_activation_cards_batch_id", "batch_id"),
+        Index("idx_activation_cards_owner_account_id", "owner_account_id"),
     )
 
 

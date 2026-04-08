@@ -97,6 +97,9 @@ REDIS_URL=redis://localhost:6379/0
 # 安全配置
 JWT_SECRET_KEY=change_me
 ADMIN_API_TOKEN=change_me_admin_token
+ADMIN_BOOTSTRAP_USERNAME=admin
+ADMIN_BOOTSTRAP_PASSWORD=change_me_admin_password
+ADMIN_BOOTSTRAP_DISPLAY_NAME=超级管理员
 
 # 应用配置
 LOG_LEVEL=INFO
@@ -115,6 +118,13 @@ createdb tg_auto_msg
 # 初始化表结构（会自动执行 runtime migrations）
 python -m backend.database.init_db
 ```
+
+后台超管初始化说明：
+- 新版后台不再依赖固定默认账号密码。
+- 应用启动后会自动检查当前 `PROVINCE_CODE` 下是否存在 `super_admin`。
+- 如果不存在，并且 `.env` 中配置了 `ADMIN_BOOTSTRAP_USERNAME` / `ADMIN_BOOTSTRAP_PASSWORD`，系统会自动写入首个超管账号。
+- 首个超管账号首次登录后会被要求修改密码。
+- 如需手动补账号，仍可使用 `python scripts/init_admin_account.py <username> <password> [display_name]`。
 
 SQL 文件结构：
 - `sql/init.sql`：幂等全量建表脚本
@@ -184,8 +194,9 @@ sudo supervisorctl start tg-auto-msg
 # 1) 首次准备 shared 环境文件
 cp .env.docker.example /data/tgmsg/shared/.env
 # 编辑 /data/tgmsg/shared/.env，至少填写以下必填项：
-# TG_API_ID TG_API_HASH BOT_TOKEN JWT_SECRET_KEY ADMIN_API_TOKEN
+# TG_API_ID TG_API_HASH BOT_TOKEN JWT_SECRET_KEY
 # DATABASE_URL REDIS_URL
+# ADMIN_BOOTSTRAP_USERNAME ADMIN_BOOTSTRAP_PASSWORD
 # DATABASE_URL 推荐使用共享业务子账号，例如：
 # postgresql+asyncpg://app_user:shared_password@postgres:5432/tgmsg
 
@@ -297,25 +308,23 @@ ssh root@your-host "tail -f /data/tgmsg/shared/logs/service-health.log"
 
 说明：
 - 用户端 H5 只负责“卡密激活”，不提供卡密生成和管理。
-- 卡密与套餐管理通过管理员 API 完成，需在请求头传 `X-Admin-Token`。
+- 新版管理员后台使用“后台账号 + 密码 + JWT”登录，不再使用固定 `X-Admin-Token` 作为后台主入口。
+- 访问地址：`http://localhost:8000/admin/login`
+- 首次部署时，如果当前省份不存在 `super_admin`，系统会读取 `.env` 中的 `ADMIN_BOOTSTRAP_USERNAME` / `ADMIN_BOOTSTRAP_PASSWORD` 自动创建首个超管账号。
+- 登录成功后进入省级后台，可管理总代、下级代理、统一价格、充值审批、卡密批次和审计日志。
 
 示例：
 ```bash
-# 查询套餐
-curl -H "X-Admin-Token: $ADMIN_API_TOKEN" http://localhost:8000/api/admin/plans
+# 启动服务后打开后台登录页
+open http://localhost:8000/admin/login
 
-# 修改套餐价格（示例：月付 69 元）
-curl -X PUT -H "Content-Type: application/json" \
-  -H "X-Admin-Token: $ADMIN_API_TOKEN" \
-  -d '{"price_cents":6900}' \
-  http://localhost:8000/api/admin/plans/monthly
-
-# 生成卡密（20 个）
-curl -X POST -H "Content-Type: application/json" \
-  -H "X-Admin-Token: $ADMIN_API_TOKEN" \
-  -d '{"plan_code":"monthly","quantity":20,"prefix":"MTH-"}' \
-  http://localhost:8000/api/admin/cards/generate
+# 如需手动补建超管账号（可选）
+python scripts/init_admin_account.py admin StrongPass123 超级管理员
 ```
+
+说明：
+- `ADMIN_API_TOKEN` 仅用于旧版管理员接口兼容，不再作为新版分销后台的登录方式。
+- 新版后台推荐完全使用 `/admin/login` 入口。
 
 ### 时间设置示例
 

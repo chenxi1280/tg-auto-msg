@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     encryption_key: Optional[str] = Field(None, alias="ENCRYPTION_KEY", description="数据加密密钥（Base64 编码）")
     jwt_secret_key: str = Field(default="your-secret-key-change-in-production", alias="JWT_SECRET_KEY", description="JWT 签名密钥")
     admin_api_token: str = Field(default="", alias="ADMIN_API_TOKEN", description="管理员后台 API 令牌")
+    admin_bootstrap_username: str = Field(default="", alias="ADMIN_BOOTSTRAP_USERNAME", description="启动时自动初始化的超管账号")
+    admin_bootstrap_password: str = Field(default="", alias="ADMIN_BOOTSTRAP_PASSWORD", description="启动时自动初始化的超管密码")
+    admin_bootstrap_display_name: str = Field(default="超级管理员", alias="ADMIN_BOOTSTRAP_DISPLAY_NAME", description="启动时自动初始化的超管显示名")
 
     @property
     def secret_key(self) -> str:
@@ -37,6 +40,7 @@ class Settings(BaseSettings):
     # 应用配置
     log_level: str = Field(default="INFO", alias="LOG_LEVEL", description="日志级别")
     timezone: str = Field(default="Asia/Shanghai", alias="TIMEZONE", description="时区")
+    province_code: str = Field(default="default", alias="PROVINCE_CODE", description="当前部署省份编码")
     h5_base_url: str = Field(
         default="http://localhost:8000",
         alias="H5_BASE_URL",

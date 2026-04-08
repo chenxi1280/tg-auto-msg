@@ -22,6 +22,7 @@ from backend.bot.handlers.core.command_handlers import (
     handle_bind_command,
     handle_start_command,
 )
+from backend.h5_backend.services.admin_panel.service import get_admin_panel_service
 
 
 # ============ 命令处理 ============
@@ -65,6 +66,25 @@ async def callback_handler(event):
     try:
         user_id = event.sender_id
         data = event.data.decode()
+
+        if data.startswith("admapp:"):
+            parts = data.split(":")
+            if len(parts) < 3:
+                await event.answer("审批参数错误", alert=True)
+                return
+            decision = parts[1]
+            request_id = parts[2]
+            await get_admin_panel_service().handle_tg_approval_callback(
+                tg_user_id=int(user_id),
+                request_id=request_id,
+                decision="approve" if decision == "approve" else "reject",
+            )
+            await event.answer("审批已处理")
+            try:
+                await event.edit("该审批已通过 TG 完成处理。")
+            except Exception:
+                pass
+            return
 
         # 重置 FSM 状态
         current_state = fsm_storage.get_state(user_id)

@@ -18,6 +18,7 @@ from backend.bot.handlers.core.user_link import (
 )
 from backend.bot.handlers.account.management import show_accounts_list, show_proxy_management, sync_account_resources
 from backend.bot.onboarding import get_onboarding_service
+from backend.h5_backend.services.admin_auth.service import get_admin_auth_service
 from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import Account
 
@@ -29,6 +30,19 @@ async def handle_start_command(event):
     raw_text = (event.raw_text or event.message.message or "").replace("／", "/").strip()
     match = re.match(r"(?i)^/start(?:@[\w\d_]+)?(?:\s+(.+))?$", raw_text)
     payload = (match.group(1) or "").strip() if match else ""
+
+    admin_bind_match = re.match(r"(?i)^adminbind_([A-Za-z0-9]{6,32})$", payload)
+    if admin_bind_match:
+        sender = await event.get_sender()
+        account = await get_admin_auth_service().complete_tg_binding(
+            admin_bind_match.group(1),
+            tg_user_id=actor_user_id,
+            tg_username=getattr(sender, "username", None),
+        )
+        await event.respond(
+            f"✅ 后台 TG 绑定成功\n\n账号：{account.display_name}\n角色：{account.role_code}\n省份：{account.province_code}"
+        )
+        return
 
     bind_match = re.match(r"(?i)^link_([A-Za-z0-9]{8,32})$", payload)
     if bind_match:

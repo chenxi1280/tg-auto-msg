@@ -1,17 +1,21 @@
 import axios, { type AxiosInstance } from 'axios'
 import { ElMessage } from 'element-plus'
 
-const ADMIN_TOKEN_KEY = 'admin_token'
+const ADMIN_ACCESS_TOKEN_KEY = 'admin_access_token'
 
 const adminApi: AxiosInstance = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
   timeout: 30000,
 })
 
+const clearAdminStorage = () => {
+  localStorage.removeItem(ADMIN_ACCESS_TOKEN_KEY)
+}
+
 adminApi.interceptors.request.use((config) => {
-  const token = localStorage.getItem(ADMIN_TOKEN_KEY) || ''
+  const token = localStorage.getItem(ADMIN_ACCESS_TOKEN_KEY) || ''
   if (token && config.headers) {
-    config.headers['X-Admin-Token'] = token
+    config.headers.Authorization = `Bearer ${token}`
   }
   return config
 })
@@ -19,17 +23,63 @@ adminApi.interceptors.request.use((config) => {
 adminApi.interceptors.response.use(
   (response) => response.data,
   (error) => {
+    const status = error?.response?.status
     const message = error?.response?.data?.detail || error?.message || '请求失败'
+    if (status === 401) {
+      clearAdminStorage()
+      if (window.location.pathname !== '/admin/login') {
+        window.location.href = '/admin/login'
+      }
+    }
     ElMessage.error(message)
     return Promise.reject(error)
   },
 )
 
-export const getAdminToken = (): string => localStorage.getItem(ADMIN_TOKEN_KEY) || ''
-export const setAdminToken = (token: string) => localStorage.setItem(ADMIN_TOKEN_KEY, token)
-export const hasAdminToken = (): boolean => Boolean(getAdminToken())
+export const getAdminAccessToken = (): string => localStorage.getItem(ADMIN_ACCESS_TOKEN_KEY) || ''
+export const setAdminAccessToken = (token: string) => localStorage.setItem(ADMIN_ACCESS_TOKEN_KEY, token)
+export const clearAdminAccessToken = clearAdminStorage
+export const hasAdminSession = (): boolean => Boolean(getAdminAccessToken())
 
-export interface AdminPlan {
+export interface AdminBindingInfo {
+  bind_status: string
+  tg_user_id: number | null
+  tg_username: string | null
+  bound_at: string | null
+}
+
+export interface AdminProfileAccount {
+  id: number
+  username: string
+  display_name: string
+  role_code: string
+  province_code: string
+  parent_account_id: number | null
+  root_master_account_id: number | null
+  level_depth: number
+  status: string
+  settlement_mode: string
+  is_credit_whitelisted: boolean
+  credit_limit_cents: number
+  allocated_credit_limit_cents: number
+  credit_used_cents: number
+  balance_cents: number
+  force_password_change: boolean
+  contact_name: string | null
+  contact_phone: string | null
+  last_login_at: string | null
+  created_at: string | null
+  updated_at: string | null
+  tg_binding: AdminBindingInfo
+}
+
+export interface AdminProfile {
+  account: AdminProfileAccount
+  visible_account_count: number
+  province_code: string
+}
+
+export interface AgentPlan {
   plan_code: string
   display_name: string
   billing_cycle: string
@@ -40,7 +90,31 @@ export interface AdminPlan {
   sort_order: number
 }
 
-export interface AdminCard {
+export interface AgentAccount extends AdminProfileAccount {}
+
+export interface CardBatch {
+  batch_id: string
+  province_code: string
+  creator_account_id: number
+  owner_account_id: number
+  direct_parent_account_id: number | null
+  root_master_account_id: number | null
+  current_liability_account_id: number | null
+  current_counterparty_account_id: number | null
+  plan_code: string
+  quantity: number
+  duration_days: number
+  unit_price_cents: number
+  total_amount_cents: number
+  settlement_status: string
+  payment_status: string
+  export_count: number
+  last_exported_at: string | null
+  remark: string | null
+  created_at: string | null
+}
+
+export interface AgentCard {
   id: number
   card_code: string
   plan_code: string | null
@@ -50,106 +124,47 @@ export interface AdminCard {
   expires_at: string | null
   used_by_user_id: number | null
   used_at: string | null
-  authorization_id?: string | null
-  bound_account_id?: string | null
-  bound_account_name?: string | null
-  authorization_end_at?: string | null
+  batch_id: string | null
+  owner_account_id: number | null
+  direct_parent_account_id: number | null
+  root_master_account_id: number | null
+  settlement_unit_price_cents: number
+  card_source_type: string
+  copy_status: string
   created_at: string | null
 }
 
-export interface AdminCardsPage {
-  items: AdminCard[]
-  total: number
-  limit: number
-  offset: number
-  stats: {
-    total: number
-    used: number
-    unused: number
-  }
-}
-
-export interface AdminLicenseSlot {
-  authorization_id: string
-  user_id: number
-  owner_username: string
+export interface ApprovalRequest {
+  request_id: string
+  province_code: string
+  request_type: string
+  requester_account_id: number
+  subject_account_id: number
+  approver_account_id: number
   status: string
-  current_account_id: string | null
-  current_account_username: string | null
-  current_account_phone: string | null
-  current_account_tg_user_id: number | null
-  total_duration_days: number
-  start_at: string | null
-  end_at: string | null
+  amount_cents: number | null
+  credit_delta_cents: number | null
+  payload_json: Record<string, any>
+  approved_at: string | null
+  rejected_at: string | null
   created_at: string | null
   updated_at: string | null
 }
 
-export interface AdminUserSummary {
-  id: number
-  username: string
-  email: string | null
-  is_active: boolean
-  created_at: string | null
-  account_count: number
-  developer_app_id?: number | null
-  current_authorization: {
-    start_at: string | null
-    end_at: string | null
-    status: string | null
-  }
-  authorization_count?: number
-}
-
-export interface AdminAccount {
-  account_id: string
-  tg_user_id: number | null
-  username: string | null
-  first_name: string | null
-  phone: string | null
-  developer_app_id?: number | null
-  is_active: boolean
-  is_banned: boolean
-  health_status: string
-  is_flooding: boolean
-  messages_sent: number
-  created_at: string | null
-}
-
-export interface AdminProxy {
-  proxy_id: number
-  proxy_type: string
-  host: string
-  port: number
-  username: string | null
-  is_active: boolean
-  is_healthy: boolean
-  response_time_ms: number | null
-  usage_count: number
-  assigned_account_id: string | null
-  last_check_at: string | null
-  created_at: string | null
-}
-
-export interface AdminAccountOption {
-  account_id: string
-  username: string | null
-  phone: string | null
-  tg_user_id: number | null
-  owner_user_id: number
-  owner_username: string
-  label: string
+export interface BatchApprovalResult {
+  decision: string
+  success_count: number
+  failed_count: number
+  success_items: Array<{ request_id: string; result: ApprovalRequest }>
+  failed_items: Array<{ request_id: string; detail: string }>
 }
 
 export interface AdminAuditLog {
   id: number
   actor: string
   action: string
-  action_label?: string
   target_type: string | null
-  target_type_label?: string | null
   target_id: string | null
-  developer_app_id?: number | null
   old_value?: Record<string, any> | null
   new_value?: Record<string, any> | null
   detail: Record<string, any> | null
@@ -157,233 +172,196 @@ export interface AdminAuditLog {
   created_at: string | null
 }
 
-export interface AdminDeveloperApp {
+export interface FundLedger {
   id: number
-  app_name: string
-  api_id: number
-  is_active: boolean
-  max_accounts: number
-  selection_weight: number
-  health_status: string
-  last_health_check_at: string | null
-  last_health_error: string | null
-  last_health_latency_ms: number | null
-  health_fail_count: number
-  credentials_version: number
-  last_rotated_at: string | null
-  notes: string | null
-  is_default: boolean
-  account_usage: number
+  ledger_scope: string
+  account_id: number
+  account_name: string | null
+  counterparty_account_id: number | null
+  counterparty_name: string | null
+  biz_type: string
+  direction: string
+  amount_cents: number
+  balance_after_cents: number | null
+  credit_used_after_cents: number | null
+  related_batch_id: string | null
+  related_request_id: string | null
+  remark: string | null
+  operator_account_id: number | null
+  operator_name: string | null
   created_at: string | null
-  updated_at: string | null
 }
 
-export interface AdminDeveloperAppSettings {
-  assignment_mode: 'round_robin' | 'weight'
-  alert_tg_user_ids: number[]
-  alert_tg_user_ids_text: string
-}
+export const adminLogin = (payload: {
+  username: string
+  password: string
+}): Promise<{ success: boolean; data: { access_token: string; token_type: string } & AdminProfile }> =>
+  adminApi.post('/admin-auth/login', payload)
 
-export interface AdminPurchaseSettings {
-  purchase_url: string
-  purchase_button_text: string
-}
+export const adminMe = (): Promise<{ success: boolean; data: AdminProfile }> =>
+  adminApi.get('/admin-auth/me')
 
-export interface AdminNoticeSettings {
-  enabled: boolean
-  entry_button_text: string
-  message_text: string
-  target_url: string
-  updated_at: string | null
-}
+export const adminLogout = (): Promise<{ success: boolean; message: string }> =>
+  adminApi.post('/admin-auth/logout')
 
-export const adminListPlans = (): Promise<{ success: boolean; data: AdminPlan[] }> =>
-  adminApi.get('/admin/plans')
+export const adminChangePassword = (payload: {
+  current_password: string
+  new_password: string
+}): Promise<{ success: boolean; data: AdminProfile }> => adminApi.post('/admin-auth/change-password', payload)
 
-export const adminGetPurchaseSettings = (): Promise<{ success: boolean; data: AdminPurchaseSettings }> =>
-  adminApi.get('/admin/settings/purchase')
+export const adminIssueTgBindCode = (): Promise<{ success: boolean; data: { bind_code: string; expires_at: string; bot_username: string; bot_bind_url: string } }> =>
+  adminApi.post('/admin-auth/tg-bind-code')
 
-export const adminUpdatePurchaseSettings = (
-  payload: AdminPurchaseSettings,
-): Promise<{ success: boolean; data: AdminPurchaseSettings }> => adminApi.put('/admin/settings/purchase', payload)
+export const adminUnbindTg = (): Promise<{ success: boolean; message: string }> =>
+  adminApi.post('/admin-auth/tg-unbind')
 
-export const adminGetNoticeSettings = (): Promise<{ success: boolean; data: AdminNoticeSettings }> =>
-  adminApi.get('/admin/settings/bot-notice')
+export const adminListPlans = (): Promise<{ success: boolean; data: AgentPlan[] }> =>
+  adminApi.get('/agent/plans')
 
-export const adminUpdateNoticeSettings = (
-  payload: Omit<AdminNoticeSettings, 'updated_at'>,
-): Promise<{ success: boolean; data: AdminNoticeSettings }> => adminApi.put('/admin/settings/bot-notice', payload)
+export const adminListAccounts = (): Promise<{ success: boolean; data: AgentAccount[] }> =>
+  adminApi.get('/agent/accounts')
 
-export const adminUpdatePlan = (
-  planCode: string,
-  payload: Partial<Pick<AdminPlan, 'display_name' | 'billing_cycle' | 'price_cents' | 'duration_days' | 'is_active' | 'sort_order'>>,
-): Promise<{ success: boolean; data: AdminPlan }> =>
-  adminApi.put(`/admin/plans/${planCode}`, payload)
-
-export const adminCreatePlan = (payload: {
-  plan_code: string
+export const adminCreateMasterAgent = (provinceCode: string, payload: {
+  username: string
+  password: string
   display_name: string
-  billing_cycle: string
-  price_cents: number
-  duration_days: number
-  is_active?: boolean
-  sort_order?: number
-}): Promise<{ success: boolean; data: AdminPlan }> => adminApi.post('/admin/plans', payload)
+  credit_limit_cents?: number
+  is_credit_whitelisted?: boolean
+  contact_name?: string
+  contact_phone?: string
+}): Promise<{ success: boolean; data: AgentAccount }> => adminApi.post(`/admin/provinces/${provinceCode}/master-agent`, payload)
 
-export const adminDeletePlan = (
+export const adminCreateAgentAccount = (payload: {
+  username: string
+  password: string
+  display_name: string
+  settlement_mode: string
+  credit_limit_cents?: number
+  contact_name?: string
+  contact_phone?: string
+}): Promise<{ success: boolean; data: AgentAccount }> => adminApi.post('/agent/accounts', payload)
+
+export const adminSetMasterCreditLimit = (
+  accountId: number,
+  payload: { credit_limit_cents: number; is_credit_whitelisted?: boolean }
+): Promise<{ success: boolean; data: AgentAccount }> => adminApi.put(`/admin/accounts/${accountId}/credit-limit`, payload)
+
+export const adminSetCreditWhitelist = (
+  accountId: number,
+  isCreditWhitelisted: boolean,
+): Promise<{ success: boolean; data: AgentAccount }> => adminApi.put(`/admin/accounts/${accountId}/credit-whitelist`, {
+  is_credit_whitelisted: isCreditWhitelisted,
+})
+
+export const adminSetSettlementMode = (
+  accountId: number,
+  settlementMode: string,
+): Promise<{ success: boolean; data: AgentAccount }> => adminApi.put(`/agent/accounts/${accountId}/settlement-mode`, {
+  settlement_mode: settlementMode,
+})
+
+export const adminSetChildCreditLimit = (
+  accountId: number,
+  creditLimitCents: number,
+): Promise<{ success: boolean; data: AgentAccount }> => adminApi.put(`/agent/accounts/${accountId}/credit-limit`, {
+  credit_limit_cents: creditLimitCents,
+})
+
+export const adminListPricingPlans = (): Promise<{ success: boolean; data: AgentPlan[] }> =>
+  adminApi.get('/admin/pricing/plans')
+
+export const adminUpdatePricingPlan = (
   planCode: string,
-): Promise<{ success: boolean; data: { plan_code: string; disabled_unused_cards: number; used_cards_kept: number } }> =>
-  adminApi.delete(`/admin/plans/${encodeURIComponent(planCode)}`)
+  priceCents: number,
+): Promise<{ success: boolean; data: AgentPlan }> =>
+  adminApi.put(`/admin/pricing/plans/${encodeURIComponent(planCode)}`, {
+    price_cents: priceCents,
+  })
 
-export const adminListDeveloperApps = (): Promise<{ success: boolean; data: { apps: AdminDeveloperApp[]; settings: AdminDeveloperAppSettings } }> =>
-  adminApi.get('/admin/developer-apps')
-
-export const adminGetDeveloperAppSettings = (): Promise<{ success: boolean; data: AdminDeveloperAppSettings }> =>
-  adminApi.get('/admin/settings/developer-apps')
-
-export const adminCreateDeveloperApp = (payload: {
-  app_name: string
-  api_id: number
-  api_hash: string
-  is_active?: boolean
-  max_accounts?: number
-  selection_weight?: number
-  notes?: string
-}): Promise<{ success: boolean; data: AdminDeveloperApp }> => adminApi.post('/admin/developer-apps', payload)
-
-export const adminUpdateDeveloperApp = (
-  appId: number,
-  payload: {
-    app_name?: string
-    api_hash?: string
-    is_active?: boolean
-    max_accounts?: number
-    selection_weight?: number
-    notes?: string
-  },
-): Promise<{ success: boolean; data: AdminDeveloperApp & { rotated_accounts?: number } }> =>
-  adminApi.put(`/admin/developer-apps/${appId}`, payload)
-
-export const adminUpdateDeveloperAppSettings = (payload: {
-  assignment_mode: 'round_robin' | 'weight'
-  alert_tg_user_ids: string
-}): Promise<{ success: boolean; data: AdminDeveloperAppSettings }> =>
-  adminApi.put('/admin/settings/developer-apps', payload)
-
-export const adminSetDefaultDeveloperApp = (appId: number): Promise<{ success: boolean }> =>
-  adminApi.post(`/admin/developer-apps/${appId}/set-default`)
-
-export const adminCheckDeveloperAppHealth = (
-  appId: number,
-): Promise<{
-  success: boolean
-  data: {
-    app_id: number
-    app_name: string
-    previous_status: string
-    probe_status: string
-    current_status: string
-    checked_at: string
-    last_health_error: string | null
-    last_health_latency_ms: number | null
-    health_fail_count: number
-    migrated_account_ids: string[]
-    stalled_account_ids: string[]
-    notified_recipients: number[]
-    probe_ok: boolean
-    status_changed: boolean
-    migration_executed: boolean
-    probe_failed_without_downgrade: boolean
-  }
-}> => adminApi.post(`/admin/developer-apps/${appId}/check`)
-
-export const adminGenerateCards = (payload: {
+export const adminGenerateCardBatch = (payload: {
   plan_code: string
   quantity: number
-  valid_days?: number | null
   prefix?: string
-}): Promise<{ success: boolean; data: AdminCard[] }> => adminApi.post('/admin/cards/generate', payload)
+  valid_days?: number | null
+  funding_source: 'balance' | 'credit'
+}): Promise<{ success: boolean; data: { batch: CardBatch; cards: AgentCard[]; copied_text: string } }> =>
+  adminApi.post('/agent/card-batches/generate', payload)
+
+export const adminListCardBatches = (): Promise<{ success: boolean; data: CardBatch[] }> =>
+  adminApi.get('/agent/card-batches')
+
+export const adminListSelfFundLedgers = (limit = 200): Promise<{ success: boolean; data: FundLedger[] }> =>
+  adminApi.get('/agent/fund-ledgers', { params: { limit } })
+
+export const adminListVisibleFundLedgers = (params?: {
+  limit?: number
+  account_id?: number
+}): Promise<{ success: boolean; data: FundLedger[] }> =>
+  adminApi.get('/admin/fund-ledgers', { params })
 
 export const adminListCards = (params?: {
-  plan_code?: string
-  is_used?: boolean
-  is_active?: boolean
-  sort_by?: 'created_at' | 'used_at' | 'expires_at'
-  sort_order?: 'asc' | 'desc'
   limit?: number
   offset?: number
-}): Promise<{ success: boolean; data: AdminCardsPage }> => adminApi.get('/admin/cards', { params })
+}): Promise<{ success: boolean; data: { items: AgentCard[]; total: number; limit: number; offset: number } }> =>
+  adminApi.get('/agent/cards', { params })
 
-export const adminExportCardsXlsx = (params?: {
-  plan_code?: string
-  is_used?: boolean
-  is_active?: boolean
-}): Promise<Blob> => adminApi.get('/admin/cards/export', { params, responseType: 'blob' })
+export const adminExportCardsXlsx = (): Promise<Blob> =>
+  adminApi.get('/agent/cards/export', { responseType: 'blob' })
 
-export const adminDisableCard = (cardCode: string): Promise<{ success: boolean }> =>
-  adminApi.post(`/admin/cards/${encodeURIComponent(cardCode)}/disable`)
+export const adminCopyCards = (payload: {
+  card_ids: number[]
+  with_meta?: boolean
+}): Promise<{ success: boolean; data: { count: number; copied_text: string } }> =>
+  adminApi.post('/agent/cards/copy', payload)
 
-export const adminEnableCard = (cardCode: string): Promise<{ success: boolean }> =>
-  adminApi.post(`/admin/cards/${encodeURIComponent(cardCode)}/enable`)
+export const adminCreateRechargeRequest = (payload: {
+  amount_cents: number
+  subject_account_id?: number
+  payload_json?: Record<string, any>
+}): Promise<{ success: boolean; data: ApprovalRequest }> =>
+  adminApi.post('/agent/approval-requests/recharge', { request_type: 'recharge', ...payload })
 
-export const adminListUsers = (params?: {
-  search?: string
+export const adminCreateSettlementRequest = (payload: {
+  amount_cents?: number
+  subject_account_id?: number
+  payload_json?: Record<string, any>
+}): Promise<{ success: boolean; data: ApprovalRequest }> =>
+  adminApi.post('/agent/approval-requests/settlement', { request_type: 'settlement', ...payload })
+
+export const adminCreateCreditAdjustRequest = (payload: {
+  credit_delta_cents?: number
+  subject_account_id?: number
+  payload_json?: Record<string, any>
+}): Promise<{ success: boolean; data: ApprovalRequest }> =>
+  adminApi.post('/agent/approval-requests/credit-adjust', { request_type: 'credit_adjust', ...payload })
+
+export const adminCreateBatchPurchaseRequest = (payload: {
+  subject_account_id?: number
+  payload_json?: Record<string, any>
+}): Promise<{ success: boolean; data: ApprovalRequest }> =>
+  adminApi.post('/agent/approval-requests/batch-purchase', { request_type: 'batch_purchase', ...payload })
+
+export const adminListPendingApprovals = (): Promise<{ success: boolean; data: ApprovalRequest[] }> =>
+  adminApi.get('/agent/approval-requests/pending')
+
+export const adminListApprovalRequests = (params?: {
+  status?: string
+  request_type?: string
   limit?: number
-  offset?: number
-}): Promise<{ success: boolean; data: AdminUserSummary[] }> => adminApi.get('/admin/users', { params })
+}): Promise<{ success: boolean; data: ApprovalRequest[] }> =>
+  adminApi.get('/agent/approval-requests', { params })
 
-export const adminListUserAccounts = (userId: number): Promise<{ success: boolean; data: AdminAccount[] }> =>
-  adminApi.get(`/admin/users/${userId}/accounts`)
+export const adminApproveRequest = (requestId: string): Promise<{ success: boolean; data: ApprovalRequest }> =>
+  adminApi.post(`/agent/approval-requests/${encodeURIComponent(requestId)}/approve`)
 
-export const adminDeleteAccount = (accountId: string): Promise<{ success: boolean }> =>
-  adminApi.delete(`/admin/accounts/${accountId}`)
+export const adminRejectRequest = (requestId: string): Promise<{ success: boolean; data: ApprovalRequest }> =>
+  adminApi.post(`/agent/approval-requests/${encodeURIComponent(requestId)}/reject`)
 
-export const adminResetUserPassword = (
-  userId: number,
-  newPassword: string,
-): Promise<{ success: boolean }> => adminApi.post(`/admin/users/${userId}/reset-password`, { new_password: newPassword })
+export const adminBatchApproveRequests = (requestIds: string[]): Promise<{ success: boolean; data: BatchApprovalResult }> =>
+  adminApi.post('/agent/approval-requests/batch-approve', { request_ids: requestIds })
 
-export const adminSetUserDeveloperApp = (
-  userId: number,
-  developerAppId?: number | null,
-): Promise<{ success: boolean; data: any }> =>
-  adminApi.put(`/admin/users/${userId}/developer-app`, { developer_app_id: developerAppId || null })
+export const adminBatchRejectRequests = (requestIds: string[]): Promise<{ success: boolean; data: BatchApprovalResult }> =>
+  adminApi.post('/agent/approval-requests/batch-reject', { request_ids: requestIds })
 
-export const adminListAccountOptions = (params?: {
-  search?: string
-  limit?: number
-}): Promise<{ success: boolean; data: AdminAccountOption[] }> => adminApi.get('/admin/accounts/options', { params })
-
-export const adminListProxies = (): Promise<{ success: boolean; data: AdminProxy[] }> =>
-  adminApi.get('/admin/proxies')
-
-export const adminAddProxy = (payload: {
-  proxy_type: string
-  host: string
-  port: number
-  username?: string
-  password?: string
-}): Promise<{ success: boolean; data: AdminProxy }> => adminApi.post('/admin/proxies', payload)
-
-export const adminCheckProxyHealth = (
-  proxyId: number,
-): Promise<{ success: boolean; data: { is_healthy: boolean; response_time_ms: number; error?: string | null } }> =>
-  adminApi.post(`/admin/proxies/${proxyId}/check`)
-
-export const adminDeleteProxy = (proxyId: number): Promise<{ success: boolean }> =>
-  adminApi.delete(`/admin/proxies/${proxyId}`)
-
-export const adminAssignProxy = (proxyId: number, accountId: string): Promise<{ success: boolean }> =>
-  adminApi.post(`/admin/proxies/${proxyId}/assign`, { account_id: accountId })
-
-export const adminUnassignProxy = (proxyId: number): Promise<{ success: boolean }> =>
-  adminApi.post(`/admin/proxies/${proxyId}/unassign`)
-
-export const adminListAuditLogs = (params?: {
-  action?: string
-  target_type?: string
-  target_id?: string
-  developer_app_id?: number
-  limit?: number
-  offset?: number
-}): Promise<{ success: boolean; data: AdminAuditLog[] }> => adminApi.get('/admin/audit-logs', { params })
+export const adminListAuditLogs = (limit = 200): Promise<{ success: boolean; data: AdminAuditLog[] }> =>
+  adminApi.get('/agent/audit-logs', { params: { limit } })

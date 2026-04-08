@@ -2,7 +2,7 @@
  * 路由配置
  */
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
-import { hasAdminToken } from '@/api/admin'
+import { hasAdminSession } from '@/api/admin'
 
 // 布局组件（暂不使用）
 // import Layout from '@/components/Layout.vue'
@@ -75,16 +75,69 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '购买卡密', requiresAuth: true }
   },
   {
-    path: '/admin',
+    path: '/admin/login',
     name: 'AdminAuth',
     component: () => import('@/views/AdminAuth.vue'),
-    meta: { title: '管理员密钥' }
+    meta: { title: '后台登录' }
   },
   {
-    path: '/admin/dashboard',
-    name: 'Admin',
+    path: '/admin',
     component: () => import('@/views/Admin.vue'),
-    meta: { title: '管理员后台', requiresAdminToken: true }
+    meta: { title: '管理员后台', requiresAdminSession: true },
+    children: [
+      {
+        path: '',
+        redirect: '/admin/dashboard'
+      },
+      {
+        path: 'dashboard',
+        name: 'AdminDashboard',
+        component: () => import('@/views/admin/DashboardPage.vue'),
+        meta: { title: '仪表盘', requiresAdminSession: true }
+      },
+      {
+        path: 'security',
+        name: 'AdminSecurity',
+        component: () => import('@/views/admin/SecurityPage.vue'),
+        meta: { title: '账户与安全', requiresAdminSession: true }
+      },
+      {
+        path: 'agents',
+        name: 'AdminAgents',
+        component: () => import('@/views/admin/AgentsPage.vue'),
+        meta: { title: '代理管理', requiresAdminSession: true }
+      },
+      {
+        path: 'pricing',
+        name: 'AdminPricing',
+        component: () => import('@/views/admin/PricingPage.vue'),
+        meta: { title: '统一价格', requiresAdminSession: true }
+      },
+      {
+        path: 'ledgers',
+        name: 'AdminLedgers',
+        component: () => import('@/views/admin/LedgersPage.vue'),
+        meta: { title: '资金流水', requiresAdminSession: true }
+      },
+      {
+        path: 'batches',
+        name: 'AdminBatches',
+        component: () => import('@/views/admin/BatchesPage.vue'),
+        meta: { title: '卡密批次', requiresAdminSession: true }
+      },
+      {
+        path: 'approvals',
+        name: 'AdminApprovals',
+        component: () => import('@/views/admin/ApprovalsPage.vue'),
+        meta: { title: '审批中心', requiresAdminSession: true }
+      },
+      {
+        path: 'audit',
+        name: 'AdminAudit',
+        component: () => import('@/views/admin/AuditPage.vue'),
+        meta: { title: '审计日志', requiresAdminSession: true }
+      }
+    ]
   },
   {
     path: '/task/:taskId',
@@ -139,9 +192,13 @@ router.beforeEach((to, _from, next) => {
       path: '/login',
       query: { redirect: to.fullPath }
     })
-  } else if (to.meta?.requiresAdminToken && !hasAdminToken()) {
-    next({ path: '/admin' })
+  } else if (to.meta?.requiresAdminSession && !hasAdminSession()) {
+    next({ path: '/admin/login' })
   } else {
+    if (to.path === '/admin/login' && hasAdminSession()) {
+      next('/admin/dashboard')
+      return
+    }
     next()
   }
 })
