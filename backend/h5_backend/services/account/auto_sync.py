@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import Account
+from backend.bot.account.reauth import is_reauth_required_account
 
 SYNC_TRIGGER_LOGIN_SUCCESS = "login_success"
 SYNC_TRIGGER_AUTO_TIMER = "auto_timer"
@@ -56,6 +57,7 @@ class AccountAutoSyncRuntime:
         *,
         trigger_source: str,
         user_id: Optional[int] = None,
+        skip_reauth_required: bool = False,
     ) -> dict[str, Any]:
         account = await self._load_active_account(account_id, user_id=user_id)
         if account is None:
@@ -69,6 +71,14 @@ class AccountAutoSyncRuntime:
 
         normalized_account_id = str(account.account_id)
         normalized_user_id = int(account.user_id)
+        if skip_reauth_required and is_reauth_required_account(account):
+            logger.info(
+                "account sync enqueue skipped: account_id={}, user_id={}, trigger_source={}, reason=skipped_reauth_required",
+                normalized_account_id,
+                normalized_user_id,
+                trigger_source,
+            )
+            return {"status": "skipped_reauth_required", "account_id": normalized_account_id, "user_id": normalized_user_id}
         if normalized_account_id in self._running_account_ids:
             logger.info(
                 "account sync enqueue deduped: account_id={}, user_id={}, trigger_source={}, dedupe=running, queue_size={}",
@@ -118,6 +128,7 @@ class AccountAutoSyncRuntime:
                 str(account_id),
                 trigger_source=SYNC_TRIGGER_AUTO_TIMER,
                 user_id=int(user_id),
+                skip_reauth_required=True,
             )
             if queue_result["status"] == "enqueued":
                 enqueued += 1

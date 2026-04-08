@@ -9,6 +9,7 @@ REF_NAME="${REF_NAME:-HEAD}"
 ALLOW_DIRTY="${ALLOW_DIRTY:-0}"
 KEEP_ARCHIVE="${KEEP_ARCHIVE:-0}"
 EXPECTED_BRANCHES="${EXPECTED_BRANCHES:-release main master}"
+CONFIRM_PRODUCTION_DEPLOY="${CONFIRM_PRODUCTION_DEPLOY:-0}"
 SSH_OPTS=()
 
 usage() {
@@ -22,6 +23,8 @@ Options:
   --base-dir DIR        Remote base directory, default /data/tgmsg
   --ref REF             Git ref to release, default HEAD
   --allow-dirty         Allow releasing with local uncommitted changes
+  --confirm-production-deploy
+                        Confirm emergency local deploy to production
   --branch-list "..."   Allowed release branches, default "release main master"
   --ssh-opt OPT         Extra ssh/scp option, can be repeated
   -h, --help            Show this help
@@ -52,6 +55,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --allow-dirty)
       ALLOW_DIRTY=1
+      shift
+      ;;
+    --confirm-production-deploy)
+      CONFIRM_PRODUCTION_DEPLOY=1
       shift
       ;;
     --branch-list)
@@ -91,6 +98,44 @@ require_command git
 require_command ssh
 require_command scp
 require_command mktemp
+
+is_production_target() {
+  case "$HOST" in
+    production-server|47.250.167.174)
+      return 0
+      ;;
+  esac
+
+  if [[ "$BASE_DIR" == "/data/tgmsg" ]]; then
+    return 0
+  fi
+  return 1
+}
+
+is_github_actions() {
+  [[ "${GITHUB_ACTIONS:-}" == "true" ]]
+}
+
+if is_production_target && ! is_github_actions; then
+  cat >&2 <<EOF
+WARNING: You are targeting the production environment.
+
+Production deploys should go through GitHub Actions first.
+Local direct deploys are reserved for emergency fixes only.
+If you continue locally, you must backfill the same change into Git
+before the next official Actions release, or production will drift again.
+EOF
+  if [[ "$CONFIRM_PRODUCTION_DEPLOY" != "1" ]]; then
+    cat >&2 <<EOF
+
+Refusing to continue without explicit confirmation.
+Rerun with:
+  bash deploy/release.sh ... --confirm-production-deploy
+EOF
+    exit 1
+  fi
+  echo "==> Emergency production deploy confirmed from local environment" >&2
+fi
 
 current_branch="$(git branch --show-current)"
 if [[ -z "$current_branch" ]]; then

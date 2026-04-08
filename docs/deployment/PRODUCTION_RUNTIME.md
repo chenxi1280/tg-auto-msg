@@ -1,6 +1,6 @@
 # tgmsg 线上部署与目录说明
 
-更新时间：`2026-04-04`
+更新时间：`2026-04-08`
 
 本文档记录 `tgmsg` 当前线上真实部署方式、目录结构、挂载关系和验收方法。
 
@@ -28,6 +28,13 @@
 - Redis 由 `infra-compose` 提供
 - 两者通过 `infra_default` 网络暴露服务名 `postgres` / `redis`
 
+生产环境发布约束：
+
+- **主流程**：生产发布应优先通过 GitHub Actions `Deploy Production`
+- 本地 `deploy/release.sh` 对生产环境会先输出强提醒，并要求显式传入 `--confirm-production-deploy` 才允许继续
+- 本地直发仅用于紧急修复；发生这种情况后，必须立即把同样的修复补回 Git 提交，避免下一次 Actions 发布覆盖生产
+- 不允许长期只修改 `/data/tgmsg/current` 而不回补仓库
+
 ## 2. 当前线上目录
 
 ```text
@@ -52,6 +59,7 @@
 - `/data/tgmsg/incoming` 存放 Actions 上传的 release 包。
 - `/data/tgmsg/backups` 存放归档与备份材料。
 - `/data/tgmsg/postgres` 和 `/data/tgmsg/redis` 现仅保留为历史回退副本，不再被运行中的 `infra-compose` 容器挂载。
+- 仓库中的一次性运维脚本不会被 GitHub Actions 自动执行；是否执行完全取决于运维人员手动调用。
 
 ## 3. 当前真实挂载
 
@@ -66,6 +74,7 @@
 - 线上当前真实挂载目录是 `/data/tgmsg/logs`、`/data/tgmsg/uploads`、`/data/tgmsg/nginx-logs`
 - 这和一些较早文档里提到的 `/data/tgmsg/shared/logs` 并不一致
 - 本文档与当前线上实际保持一致
+- 后端镜像当前不会自动复制仓库根目录下的 `scripts/` 到容器内；一次性脚本不会因为发布而自动进入运行时镜像
 
 ## 4. 当前关键配置
 

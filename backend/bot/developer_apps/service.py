@@ -1,6 +1,8 @@
 """Telegram developer app credential management, health checks and assignment."""
 from __future__ import annotations
 
+import asyncio
+from contextlib import suppress
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -134,6 +136,10 @@ class DeveloperAppService:
     @staticmethod
     def _is_row_healthy(row: TelegramDeveloperApp) -> bool:
         return bool(row.is_active) and (row.health_status or "") == DeveloperAppHealthStatus.HEALTHY.value
+
+    @staticmethod
+    def _decrypt_stored_api_hash(row: TelegramDeveloperApp) -> str:
+        return decrypt_proxy_password(row.api_hash_encrypted)
 
     @staticmethod
     def _resolve_health_transition(
@@ -605,31 +611,26 @@ class DeveloperAppService:
                 session.add(row)
                 await session.flush()
             else:
-                should_rotate = False
                 try:
-                    current_hash = decrypt_proxy_password(row.api_hash_encrypted)
-                    should_rotate = current_hash != str(settings.api_hash)
-                except Exception:
-                    should_rotate = True
-                row.api_hash_encrypted = encrypted_hash
+                    current_hash = self._decrypt_stored_api_hash(row)
+                except Exception as exc:
+                    logger.warning(
+                        "developer_app_hash_decrypt_failed: app_id={}, app_name={}, context=ensure_env_default_app, error={}",
+                        row.id,
+                        row.app_name,
+                        exc,
+                    )
+                else:
+                    if current_hash != str(settings.api_hash):
+                        logger.warning(
+                            "env_default_hash_mismatch_detected: app_id={}, app_name={}, context=ensure_env_default_app",
+                            row.id,
+                            row.app_name,
+                        )
                 row.selection_weight = int(row.selection_weight or DEFAULT_SELECTION_WEIGHT)
                 row.health_status = (
                     DeveloperAppHealthStatus.HEALTHY.value if row.is_active else DeveloperAppHealthStatus.DISABLED.value
                 )
-                if should_rotate:
-                    now = datetime.now()
-                    row.credentials_version = int(row.credentials_version or 1) + 1
-                    row.last_rotated_at = now
-                    await session.execute(
-                        update(Account)
-                        .where(Account.developer_app_id == int(row.id))
-                        .values(
-                            reauth_required=True,
-                            reauth_reason="api_hash_rotated",
-                            reauth_required_at=now,
-                            health_status="offline",
-                        )
-                    )
                 if not row.is_active:
                     row.is_active = True
                     row.health_status = DeveloperAppHealthStatus.HEALTHY.value
@@ -933,15 +934,19 @@ class DeveloperAppService:
                 normalized_hash = api_hash.strip()
                 if not normalized_hash:
                     raise HTTPException(status_code=400, detail="API_HASH 不能为空")
-                should_rotate = True
                 try:
-                    current_hash = decrypt_proxy_password(row.api_hash_encrypted)
-                    should_rotate = current_hash != normalized_hash
-                except Exception:
-                    should_rotate = True
+                    current_hash = self._decrypt_stored_api_hash(row)
+                except Exception as exc:
+                    logger.warning(
+                        "developer_app_hash_decrypt_failed: app_id={}, app_name={}, context=update_app, error={}",
+                        row.id,
+                        row.app_name,
+                        exc,
+                    )
+                    raise HTTPException(status_code=400, detail="无法确认旧的 API_HASH，请人工重建或重新录入该开发者应用") from exc
 
-                row.api_hash_encrypted = encrypt_proxy_password(normalized_hash)
-                if should_rotate:
+                if current_hash != normalized_hash:
+                    row.api_hash_encrypted = encrypt_proxy_password(normalized_hash)
                     now = datetime.now()
                     row.credentials_version = int(row.credentials_version or 1) + 1
                     row.last_rotated_at = now
@@ -1040,11 +1045,24 @@ class DeveloperAppService:
             )
             return DeveloperAppHealthStatus.UNHEALTHY.value, f"{type(exc).__name__}: {exc}", latency_ms
         finally:
-            if client is not None:
-                try:
-                    await client.disconnect()
-                except Exception:
-                    pass
+            await self._safe_disconnect_probe_client(client)
+
+    @staticmethod
+    async def _safe_disconnect_probe_client(client: Optional[TelegramClient]) -> None:
+        if client is None:
+            return
+        with suppress(Exception):
+            await client.disconnect()
+
+        disconnected = getattr(client, "disconnected", None)
+        if callable(disconnected):
+            with suppress(Exception):
+                disconnected = disconnected()
+        if disconnected is None or not hasattr(disconnected, "__await__"):
+            return
+
+        with suppress(Exception):
+            await asyncio.wait_for(disconnected, timeout=1)
 
     async def _append_health_audit(
         self,
