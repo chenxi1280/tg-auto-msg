@@ -104,12 +104,127 @@ class AdminAccount(Base):
         cascade="all, delete-orphan",
         uselist=False,
     )
+    role_bindings: Mapped[List["AdminAccountRole"]] = relationship(
+        "AdminAccountRole",
+        back_populates="admin_account",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         Index("idx_admin_accounts_role_status", "role_code", "status"),
         Index("idx_admin_accounts_parent", "parent_account_id"),
         Index("idx_admin_accounts_root_master", "root_master_account_id"),
         Index("idx_admin_accounts_province_role", "province_code", "role_code"),
+    )
+
+
+class AdminRole(Base):
+    """后台 RBAC 角色。"""
+    __tablename__ = "admin_roles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    role_key: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, comment="角色唯一键")
+    display_name: Mapped[str] = mapped_column(String(100), nullable=False, comment="角色名称")
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="角色说明")
+    status: Mapped[str] = mapped_column(String(20), default="active", nullable=False, comment="状态")
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, comment="是否系统内置角色")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    permission_bindings: Mapped[List["AdminRolePermission"]] = relationship(
+        "AdminRolePermission",
+        back_populates="role",
+        cascade="all, delete-orphan",
+    )
+    account_bindings: Mapped[List["AdminAccountRole"]] = relationship(
+        "AdminAccountRole",
+        back_populates="role",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        Index("idx_admin_roles_status", "status"),
+    )
+
+
+class AdminPermission(Base):
+    """后台 RBAC 权限点。"""
+    __tablename__ = "admin_permissions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    permission_code: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, comment="权限代码")
+    module_key: Mapped[str] = mapped_column(String(50), nullable=False, comment="模块键")
+    display_name: Mapped[str] = mapped_column(String(100), nullable=False, comment="权限名称")
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="权限说明")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    role_bindings: Mapped[List["AdminRolePermission"]] = relationship(
+        "AdminRolePermission",
+        back_populates="permission",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        Index("idx_admin_permissions_module", "module_key"),
+    )
+
+
+class AdminRolePermission(Base):
+    """角色与权限点绑定。"""
+    __tablename__ = "admin_role_permissions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    role_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("admin_roles.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="角色 ID",
+    )
+    permission_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("admin_permissions.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="权限 ID",
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+
+    role: Mapped["AdminRole"] = relationship("AdminRole", back_populates="permission_bindings")
+    permission: Mapped["AdminPermission"] = relationship("AdminPermission", back_populates="role_bindings")
+
+    __table_args__ = (
+        UniqueConstraint("role_id", "permission_id", name="uq_admin_role_permissions_role_permission"),
+        Index("idx_admin_role_permissions_role", "role_id"),
+        Index("idx_admin_role_permissions_permission", "permission_id"),
+    )
+
+
+class AdminAccountRole(Base):
+    """后台账号与角色绑定。"""
+    __tablename__ = "admin_account_roles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    admin_account_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("admin_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="后台账号 ID",
+    )
+    role_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("admin_roles.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="角色 ID",
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+
+    admin_account: Mapped["AdminAccount"] = relationship("AdminAccount", back_populates="role_bindings")
+    role: Mapped["AdminRole"] = relationship("AdminRole", back_populates="account_bindings")
+
+    __table_args__ = (
+        UniqueConstraint("admin_account_id", "role_id", name="uq_admin_account_roles_account_role"),
+        Index("idx_admin_account_roles_account", "admin_account_id"),
+        Index("idx_admin_account_roles_role", "role_id"),
     )
 
 

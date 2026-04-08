@@ -311,7 +311,15 @@ ssh root@your-host "tail -f /data/tgmsg/shared/logs/service-health.log"
 - 新版管理员后台使用“后台账号 + 密码 + JWT”登录，不再使用固定 `X-Admin-Token` 作为后台主入口。
 - 访问地址：`http://localhost:8000/admin/login`
 - 首次部署时，如果当前省份不存在 `super_admin`，系统会读取 `.env` 中的 `ADMIN_BOOTSTRAP_USERNAME` / `ADMIN_BOOTSTRAP_PASSWORD` 自动创建首个超管账号。
-- 登录成功后进入省级后台，可管理总代、下级代理、统一价格、充值审批、卡密批次和审计日志。
+- 登录成功后进入统一后台。
+- `super_admin` 除了省级总代、多级代理、充值审批、卡密批次、统一价格外，还拥有旧 admin 系统能力：
+  - 购买入口配置
+  - Bot 公告栏配置
+  - 开发者应用池
+  - 系统代理池
+  - 旧卡密规格与卡密总览
+  - 用户、TG 账号、历史授权与统一审计
+- `master_agent` / `sub_agent` 只保留分销链路相关菜单，看不到系统级配置模块。
 
 示例：
 ```bash

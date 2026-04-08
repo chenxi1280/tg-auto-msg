@@ -8,11 +8,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend.database.schema.models import AdminAccount
-from backend.h5_backend.dependencies import get_current_admin_account, require_admin_roles
+from backend.h5_backend.dependencies import (
+    get_current_admin_account,
+    require_admin_permissions,
+)
 from backend.h5_backend.services.admin_panel.service import (
-    ROLE_MASTER_AGENT,
-    ROLE_SUB_AGENT,
-    ROLE_SUPER_ADMIN,
     get_admin_panel_service,
 )
 
@@ -90,7 +90,7 @@ async def create_master_agent(
     province_code: str,
     payload: CreateMasterAgentRequest,
     request: Request,
-    current_admin: AdminAccount = Depends(require_admin_roles(ROLE_SUPER_ADMIN)),
+    current_admin: AdminAccount = Depends(require_admin_permissions("agents.master.create")),
 ):
     if province_code != current_admin.province_code:
         raise HTTPException(status_code=403, detail="当前超管只能管理本省总代")
@@ -114,7 +114,7 @@ async def set_master_credit_limit(
     account_id: int,
     payload: UpdateCreditLimitRequest,
     request: Request,
-    current_admin: AdminAccount = Depends(require_admin_roles(ROLE_SUPER_ADMIN)),
+    current_admin: AdminAccount = Depends(require_admin_permissions("agents.credit.master.write")),
 ):
     service = get_admin_panel_service()
     data = await service.set_master_credit_limit(
@@ -132,7 +132,7 @@ async def set_credit_whitelist(
     account_id: int,
     payload: UpdateWhitelistRequest,
     request: Request,
-    current_admin: AdminAccount = Depends(require_admin_roles(ROLE_SUPER_ADMIN)),
+    current_admin: AdminAccount = Depends(require_admin_permissions("agents.credit.master.write")),
 ):
     service = get_admin_panel_service()
     data = await service.set_credit_whitelist(
@@ -145,16 +145,35 @@ async def set_credit_whitelist(
 
 
 @router.get("/api/agent/accounts")
-async def list_accounts(current_admin: AdminAccount = Depends(get_current_admin_account)):
+async def list_accounts(
+    search: Optional[str] = Query(default=None),
+    role_code: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
+    parent_account_id: Optional[int] = Query(default=None, ge=1),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    current_admin: AdminAccount = Depends(require_admin_permissions("agents.read")),
+):
     service = get_admin_panel_service()
-    return {"success": True, "data": await service.list_accounts(current_admin=current_admin)}
+    return {
+        "success": True,
+        "data": await service.list_accounts(
+            current_admin=current_admin,
+            search=search,
+            role_code=role_code,
+            status=status,
+            parent_account_id=parent_account_id,
+            limit=limit,
+            offset=offset,
+        ),
+    }
 
 
 @router.post("/api/agent/accounts")
 async def create_child_agent(
     payload: CreateAgentAccountRequest,
     request: Request,
-    current_admin: AdminAccount = Depends(require_admin_roles(ROLE_MASTER_AGENT, ROLE_SUB_AGENT)),
+    current_admin: AdminAccount = Depends(require_admin_permissions("agents.child.create")),
 ):
     service = get_admin_panel_service()
     data = await service.create_child_agent(
@@ -176,7 +195,7 @@ async def set_settlement_mode(
     account_id: int,
     payload: UpdateSettlementModeRequest,
     request: Request,
-    current_admin: AdminAccount = Depends(get_current_admin_account),
+    current_admin: AdminAccount = Depends(require_admin_permissions("agents.write")),
 ):
     service = get_admin_panel_service()
     data = await service.set_settlement_mode(
@@ -193,7 +212,7 @@ async def set_child_credit_limit(
     account_id: int,
     payload: UpdateCreditLimitRequest,
     request: Request,
-    current_admin: AdminAccount = Depends(get_current_admin_account),
+    current_admin: AdminAccount = Depends(require_admin_permissions("agents.write")),
 ):
     service = get_admin_panel_service()
     data = await service.set_child_credit_limit(
@@ -206,9 +225,24 @@ async def set_child_credit_limit(
 
 
 @router.get("/api/admin/pricing/plans")
-async def list_pricing_plans(current_admin: AdminAccount = Depends(get_current_admin_account)):
+async def list_pricing_plans(
+    search: Optional[str] = Query(default=None),
+    is_active: Optional[bool] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    current_admin: AdminAccount = Depends(require_admin_permissions("pricing.read")),
+):
     service = get_admin_panel_service()
-    return {"success": True, "data": await service.list_pricing_plans(current_admin=current_admin)}
+    return {
+        "success": True,
+        "data": await service.list_pricing_plans(
+            current_admin=current_admin,
+            search=search,
+            is_active=is_active,
+            limit=limit,
+            offset=offset,
+        ),
+    }
 
 
 @router.put("/api/admin/pricing/plans/{plan_code}")
@@ -216,7 +250,7 @@ async def update_pricing_plan(
     plan_code: str,
     payload: UpdatePricingPlanRequest,
     request: Request,
-    current_admin: AdminAccount = Depends(require_admin_roles(ROLE_SUPER_ADMIN)),
+    current_admin: AdminAccount = Depends(require_admin_permissions("pricing.write")),
 ):
     service = get_admin_panel_service()
     data = await service.update_pricing_plan(
@@ -229,16 +263,31 @@ async def update_pricing_plan(
 
 
 @router.get("/api/agent/plans")
-async def list_plans(current_admin: AdminAccount = Depends(get_current_admin_account)):
+async def list_plans(
+    search: Optional[str] = Query(default=None),
+    is_active: Optional[bool] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    current_admin: AdminAccount = Depends(require_admin_permissions("pricing.read")),
+):
     service = get_admin_panel_service()
-    return {"success": True, "data": await service.list_pricing_plans(current_admin=current_admin)}
+    return {
+        "success": True,
+        "data": await service.list_pricing_plans(
+            current_admin=current_admin,
+            search=search,
+            is_active=is_active,
+            limit=limit,
+            offset=offset,
+        ),
+    }
 
 
 @router.post("/api/agent/card-batches/generate")
 async def generate_card_batch(
     payload: GenerateCardBatchRequest,
     request: Request,
-    current_admin: AdminAccount = Depends(require_admin_roles(ROLE_MASTER_AGENT, ROLE_SUB_AGENT)),
+    current_admin: AdminAccount = Depends(require_admin_permissions("batches.generate")),
 ):
     service = get_admin_panel_service()
     data = await service.generate_card_batch(
@@ -254,51 +303,119 @@ async def generate_card_batch(
 
 
 @router.get("/api/agent/card-batches")
-async def list_card_batches(current_admin: AdminAccount = Depends(get_current_admin_account)):
+async def list_card_batches(
+    plan_code: Optional[str] = Query(default=None),
+    payment_status: Optional[str] = Query(default=None),
+    settlement_status: Optional[str] = Query(default=None),
+    keyword: Optional[str] = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    current_admin: AdminAccount = Depends(require_admin_permissions("batches.read")),
+):
     service = get_admin_panel_service()
-    return {"success": True, "data": await service.list_card_batches(current_admin=current_admin)}
+    return {
+        "success": True,
+        "data": await service.list_card_batches(
+            current_admin=current_admin,
+            plan_code=plan_code,
+            payment_status=payment_status,
+            settlement_status=settlement_status,
+            keyword=keyword,
+            limit=limit,
+            offset=offset,
+        ),
+    }
 
 
 @router.get("/api/agent/fund-ledgers")
 async def list_self_fund_ledgers(
+    biz_type: Optional[str] = Query(default=None),
+    direction: Optional[str] = Query(default=None),
+    keyword: Optional[str] = Query(default=None),
     limit: int = Query(default=200, ge=1, le=500),
-    current_admin: AdminAccount = Depends(get_current_admin_account),
+    offset: int = Query(default=0, ge=0),
+    current_admin: AdminAccount = Depends(require_admin_permissions("ledgers.read")),
 ):
     service = get_admin_panel_service()
-    return {"success": True, "data": await service.list_self_fund_ledgers(current_admin=current_admin, limit=limit)}
+    return {
+        "success": True,
+        "data": await service.list_self_fund_ledgers(
+            current_admin=current_admin,
+            biz_type=biz_type,
+            direction=direction,
+            keyword=keyword,
+            limit=limit,
+            offset=offset,
+        ),
+    }
 
 
 @router.get("/api/admin/fund-ledgers")
 async def list_visible_fund_ledgers(
+    biz_type: Optional[str] = Query(default=None),
+    direction: Optional[str] = Query(default=None),
+    keyword: Optional[str] = Query(default=None),
     limit: int = Query(default=200, ge=1, le=500),
     account_id: Optional[int] = Query(default=None, ge=1),
-    current_admin: AdminAccount = Depends(require_admin_roles(ROLE_SUPER_ADMIN, ROLE_MASTER_AGENT)),
+    offset: int = Query(default=0, ge=0),
+    current_admin: AdminAccount = Depends(require_admin_permissions("ledgers.scope.read")),
 ):
     service = get_admin_panel_service()
     return {
         "success": True,
         "data": await service.list_visible_fund_ledgers(
             current_admin=current_admin,
+            biz_type=biz_type,
+            direction=direction,
+            keyword=keyword,
             limit=limit,
             account_id=account_id,
+            offset=offset,
         ),
     }
 
 
 @router.get("/api/agent/cards")
 async def list_cards(
+    plan_code: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
+    source_type: Optional[str] = Query(default=None),
+    keyword: Optional[str] = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
-    current_admin: AdminAccount = Depends(get_current_admin_account),
+    current_admin: AdminAccount = Depends(require_admin_permissions("batches.read")),
 ):
     service = get_admin_panel_service()
-    return {"success": True, "data": await service.list_cards(current_admin=current_admin, limit=limit, offset=offset)}
+    return {
+        "success": True,
+        "data": await service.list_cards(
+            current_admin=current_admin,
+            plan_code=plan_code,
+            status=status,
+            source_type=source_type,
+            keyword=keyword,
+            limit=limit,
+            offset=offset,
+        ),
+    }
 
 
 @router.get("/api/agent/cards/export")
-async def export_cards(current_admin: AdminAccount = Depends(get_current_admin_account)):
+async def export_cards(
+    plan_code: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
+    source_type: Optional[str] = Query(default=None),
+    keyword: Optional[str] = Query(default=None),
+    current_admin: AdminAccount = Depends(require_admin_permissions("batches.export")),
+):
     service = get_admin_panel_service()
-    file_bytes, total = await service.export_cards_xlsx(current_admin=current_admin)
+    file_bytes, total = await service.export_cards_xlsx(
+        current_admin=current_admin,
+        plan_code=plan_code,
+        status=status,
+        source_type=source_type,
+        keyword=keyword,
+    )
     headers = {
         "Content-Disposition": f'attachment; filename="agent-cards-{total}.xlsx"',
     }
@@ -312,7 +429,7 @@ async def export_cards(current_admin: AdminAccount = Depends(get_current_admin_a
 @router.post("/api/agent/cards/copy")
 async def copy_cards(
     payload: CopyCardsRequest,
-    current_admin: AdminAccount = Depends(get_current_admin_account),
+    current_admin: AdminAccount = Depends(require_admin_permissions("batches.copy")),
 ):
     service = get_admin_panel_service()
     return {"success": True, "data": await service.copy_cards(current_admin=current_admin, card_ids=payload.card_ids, with_meta=payload.with_meta)}
@@ -322,7 +439,7 @@ async def copy_cards(
 async def create_recharge_request(
     payload: CreateApprovalRequest,
     request: Request,
-    current_admin: AdminAccount = Depends(get_current_admin_account),
+    current_admin: AdminAccount = Depends(require_admin_permissions("agents.write")),
 ):
     service = get_admin_panel_service()
     data = await service.create_approval_request(
@@ -340,7 +457,7 @@ async def create_recharge_request(
 async def create_settlement_request(
     payload: CreateApprovalRequest,
     request: Request,
-    current_admin: AdminAccount = Depends(get_current_admin_account),
+    current_admin: AdminAccount = Depends(require_admin_permissions("agents.write")),
 ):
     service = get_admin_panel_service()
     data = await service.create_approval_request(
@@ -358,7 +475,7 @@ async def create_settlement_request(
 async def create_credit_adjust_request(
     payload: CreateApprovalRequest,
     request: Request,
-    current_admin: AdminAccount = Depends(get_current_admin_account),
+    current_admin: AdminAccount = Depends(require_admin_permissions("agents.write")),
 ):
     service = get_admin_panel_service()
     data = await service.create_approval_request(
@@ -376,7 +493,7 @@ async def create_credit_adjust_request(
 async def create_batch_purchase_request(
     payload: CreateApprovalRequest,
     request: Request,
-    current_admin: AdminAccount = Depends(get_current_admin_account),
+    current_admin: AdminAccount = Depends(require_admin_permissions("batches.generate")),
 ):
     service = get_admin_panel_service()
     data = await service.create_approval_request(
@@ -391,7 +508,7 @@ async def create_batch_purchase_request(
 
 
 @router.get("/api/agent/approval-requests/pending")
-async def list_pending_approvals(current_admin: AdminAccount = Depends(get_current_admin_account)):
+async def list_pending_approvals(current_admin: AdminAccount = Depends(require_admin_permissions("approvals.read"))):
     service = get_admin_panel_service()
     return {"success": True, "data": await service.list_pending_approvals(current_admin=current_admin)}
 
@@ -400,8 +517,10 @@ async def list_pending_approvals(current_admin: AdminAccount = Depends(get_curre
 async def list_approval_requests(
     status: Optional[str] = Query(default="all"),
     request_type: Optional[str] = Query(default="all"),
+    keyword: Optional[str] = Query(default=None),
     limit: int = Query(default=200, ge=1, le=500),
-    current_admin: AdminAccount = Depends(get_current_admin_account),
+    offset: int = Query(default=0, ge=0),
+    current_admin: AdminAccount = Depends(require_admin_permissions("approvals.read")),
 ):
     service = get_admin_panel_service()
     return {
@@ -410,7 +529,9 @@ async def list_approval_requests(
             current_admin=current_admin,
             status=status,
             request_type=request_type,
+            keyword=keyword,
             limit=limit,
+            offset=offset,
         ),
     }
 
@@ -419,7 +540,7 @@ async def list_approval_requests(
 async def approve_request(
     request_id: str,
     request: Request,
-    current_admin: AdminAccount = Depends(get_current_admin_account),
+    current_admin: AdminAccount = Depends(require_admin_permissions("approvals.approve")),
 ):
     service = get_admin_panel_service()
     data = await service.approve_request(current_admin=current_admin, request_id=request_id, ip_address=_client_ip(request))
@@ -430,7 +551,7 @@ async def approve_request(
 async def reject_request(
     request_id: str,
     request: Request,
-    current_admin: AdminAccount = Depends(get_current_admin_account),
+    current_admin: AdminAccount = Depends(require_admin_permissions("approvals.reject")),
 ):
     service = get_admin_panel_service()
     data = await service.reject_request(current_admin=current_admin, request_id=request_id, ip_address=_client_ip(request))
@@ -441,7 +562,7 @@ async def reject_request(
 async def batch_approve_requests(
     payload: BatchApprovalRequest,
     request: Request,
-    current_admin: AdminAccount = Depends(get_current_admin_account),
+    current_admin: AdminAccount = Depends(require_admin_permissions("approvals.batch")),
 ):
     service = get_admin_panel_service()
     data = await service.batch_process_requests(
@@ -457,7 +578,7 @@ async def batch_approve_requests(
 async def batch_reject_requests(
     payload: BatchApprovalRequest,
     request: Request,
-    current_admin: AdminAccount = Depends(get_current_admin_account),
+    current_admin: AdminAccount = Depends(require_admin_permissions("approvals.batch")),
 ):
     service = get_admin_panel_service()
     data = await service.batch_process_requests(
@@ -489,8 +610,22 @@ async def tg_reject_callback(
 
 @router.get("/api/agent/audit-logs")
 async def list_audit_logs(
+    action: Optional[str] = Query(default=None),
+    target_type: Optional[str] = Query(default=None),
+    keyword: Optional[str] = Query(default=None),
     limit: int = Query(default=200, ge=1, le=500),
-    current_admin: AdminAccount = Depends(get_current_admin_account),
+    offset: int = Query(default=0, ge=0),
+    current_admin: AdminAccount = Depends(require_admin_permissions("audit.read")),
 ):
     service = get_admin_panel_service()
-    return {"success": True, "data": await service.list_audit_logs(current_admin=current_admin, limit=limit)}
+    return {
+        "success": True,
+        "data": await service.list_audit_logs(
+            current_admin=current_admin,
+            action=action,
+            target_type=target_type,
+            keyword=keyword,
+            limit=limit,
+            offset=offset,
+        ),
+    }

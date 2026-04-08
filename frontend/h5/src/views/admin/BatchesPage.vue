@@ -1,25 +1,25 @@
 <template>
   <div class="page-stack">
     <div class="stats-grid">
-      <el-card shadow="hover">
+      <el-card v-if="canGenerateBatches && canReadPricing" shadow="hover">
         <div class="stat-label">批次数</div>
-        <div class="stat-value">{{ filteredBatches.length }}</div>
-        <div class="stat-meta">当前筛选结果</div>
+        <div class="stat-value">{{ batchTotal }}</div>
+        <div class="stat-meta">当前筛选结果总数</div>
       </el-card>
-      <el-card shadow="hover">
+      <el-card v-if="canGenerateBatches && canReadPricing" shadow="hover">
         <div class="stat-label">余额已付批次</div>
-        <div class="stat-value">{{ paidBatchCount }}</div>
-        <div class="stat-meta">总额 ¥{{ centsToYuan(paidBatchAmount) }}</div>
+        <div class="stat-value">{{ batchStats.page_paid_count }}</div>
+        <div class="stat-meta">当前页统计</div>
       </el-card>
       <el-card shadow="hover">
         <div class="stat-label">授信批次</div>
-        <div class="stat-value">{{ creditBatchCount }}</div>
-        <div class="stat-meta">总额 ¥{{ centsToYuan(creditBatchAmount) }}</div>
+        <div class="stat-value">{{ batchStats.page_credit_count }}</div>
+        <div class="stat-meta">当前页统计</div>
       </el-card>
       <el-card shadow="hover">
         <div class="stat-label">待结算批次</div>
-        <div class="stat-value">{{ pendingSettlementCount }}</div>
-        <div class="stat-meta">总额 ¥{{ centsToYuan(pendingSettlementAmount) }}</div>
+        <div class="stat-value">{{ batchStats.page_pending_settlement_count }}</div>
+        <div class="stat-meta">当前页金额 ¥{{ centsToYuan(batchStats.page_total_amount_cents) }}</div>
       </el-card>
     </div>
 
@@ -120,11 +120,12 @@
               <el-option label="待结算" value="pending" />
             </el-select>
             <el-input v-model.trim="batchFilters.keyword" clearable placeholder="搜索批次号/规格" style="width: 220px" />
-            <el-button @click="store.loadBatches()">刷新</el-button>
+            <el-button @click="loadBatchRows(true)">查询</el-button>
+            <el-button @click="loadBatchRows()">刷新</el-button>
           </div>
         </div>
       </template>
-      <el-table :data="filteredBatches" stripe>
+      <el-table :data="batchRows" stripe>
         <el-table-column prop="batch_id" label="批次号" min-width="200" />
         <el-table-column prop="plan_code" label="规格" width="120" />
         <el-table-column prop="quantity" label="数量" width="100" />
@@ -148,6 +149,18 @@
           <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
         </el-table-column>
       </el-table>
+      <div class="pagination-wrap">
+        <el-pagination
+          v-model:current-page="batchPagination.currentPage"
+          v-model:page-size="batchPagination.pageSize"
+          background
+          layout="total, sizes, prev, pager, next"
+          :page-sizes="[20, 50, 100]"
+          :total="batchTotal"
+          @current-change="handleBatchPageChange"
+          @size-change="handleBatchSizeChange"
+        />
+      </div>
     </el-card>
 
     <el-card shadow="hover">
@@ -170,14 +183,15 @@
               <el-option label="审批" value="approval" />
             </el-select>
             <el-input v-model.trim="cardFilters.keyword" clearable placeholder="搜索卡密/批次" style="width: 220px" />
-            <el-button @click="exportExcel">导出 Excel</el-button>
-            <el-button type="primary" :disabled="!selectedCards.length" @click="copySelectedCards(false)">复制卡密</el-button>
-            <el-button type="primary" plain :disabled="!selectedCards.length" @click="copySelectedCards(true)">复制卡密+元数据</el-button>
+            <el-button @click="loadCardRows(true)">查询</el-button>
+            <el-button v-if="canExportCards" @click="exportExcel">导出 Excel</el-button>
+            <el-button v-if="canCopyCards" type="primary" :disabled="!selectedCards.length" @click="copySelectedCards(false)">复制卡密</el-button>
+            <el-button v-if="canCopyCards" type="primary" plain :disabled="!selectedCards.length" @click="copySelectedCards(true)">复制卡密+元数据</el-button>
           </div>
         </div>
       </template>
-      <div class="selection-bar">已选择 {{ selectedCards.length }} 条卡密，单次最多复制 10 条</div>
-      <el-table :data="filteredCards" stripe @selection-change="handleSelectionChange">
+      <div class="selection-bar">已选择 {{ selectedCards.length }} 条卡密，当前总数 {{ cardTotal }}，单次最多复制 10 条</div>
+      <el-table :data="cardRows" stripe @selection-change="handleSelectionChange">
         <el-table-column type="selection" width="48" />
         <el-table-column prop="card_code" label="卡密" min-width="180" />
         <el-table-column prop="plan_code" label="规格" width="120" />
@@ -192,6 +206,18 @@
           <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
         </el-table-column>
       </el-table>
+      <div class="pagination-wrap">
+        <el-pagination
+          v-model:current-page="cardPagination.currentPage"
+          v-model:page-size="cardPagination.pageSize"
+          background
+          layout="total, sizes, prev, pager, next"
+          :page-sizes="[20, 50, 100]"
+          :total="cardTotal"
+          @current-change="handleCardPageChange"
+          @size-change="handleCardSizeChange"
+        />
+      </div>
     </el-card>
   </div>
 </template>
@@ -205,17 +231,43 @@ import {
   adminCreateBatchPurchaseRequest,
   adminExportCardsXlsx,
   adminGenerateCardBatch,
+  adminListCardBatches,
+  adminListCards,
 } from '@/api/admin'
 import { useAdminConsoleStore } from '@/stores/adminConsole'
 import { centsToYuan, formatDateTime } from '@/utils/adminConsole'
 
 const store = useAdminConsoleStore()
+const canGenerateBatches = computed(() => store.hasPermission('batches.generate'))
+const canExportCards = computed(() => store.hasPermission('batches.export'))
+const canCopyCards = computed(() => store.hasPermission('batches.copy'))
+const canReadApprovals = computed(() => store.hasPermission('approvals.read'))
+const canReadPricing = computed(() => store.hasPermission('pricing.read'))
+const canReadLedgers = computed(() => store.hasPermission('ledgers.read'))
 const submittingBatch = ref(false)
 const submittingPurchase = ref(false)
 const selectedCards = ref<AgentCard[]>([])
 const lastActionMessage = ref('')
+const batchRows = ref<CardBatch[]>([])
+const cardRows = ref<AgentCard[]>([])
+const batchTotal = ref(0)
+const cardTotal = ref(0)
+const batchStats = reactive({
+  page_total_amount_cents: 0,
+  page_paid_count: 0,
+  page_credit_count: 0,
+  page_pending_settlement_count: 0,
+})
 
 const activePlans = computed(() => store.plans.filter((plan) => plan.is_active))
+const batchPagination = reactive({
+  currentPage: 1,
+  pageSize: 20,
+})
+const cardPagination = reactive({
+  currentPage: 1,
+  pageSize: 20,
+})
 
 const batchForm = reactive({
   plan_code: '',
@@ -254,69 +306,99 @@ const initDefaultPlan = () => {
   }
 }
 
-const filteredBatches = computed(() => {
-  const keyword = batchFilters.keyword.trim().toLowerCase()
-  return store.batches.filter((batch) => {
-    if (batchFilters.plan_code && batch.plan_code !== batchFilters.plan_code) return false
-    if (batchFilters.payment_status !== 'all' && batch.payment_status !== batchFilters.payment_status) return false
-    if (batchFilters.settlement_status !== 'all' && batch.settlement_status !== batchFilters.settlement_status) return false
-    if (
-      keyword &&
-      ![String(batch.batch_id || ''), String(batch.plan_code || '')].some((part) => part.toLowerCase().includes(keyword))
-    ) {
-      return false
-    }
-    return true
+const loadBatchRows = async (resetPage = false) => {
+  if (resetPage) batchPagination.currentPage = 1
+  const response = await adminListCardBatches({
+    plan_code: batchFilters.plan_code || undefined,
+    payment_status: batchFilters.payment_status === 'all' ? undefined : batchFilters.payment_status,
+    settlement_status: batchFilters.settlement_status === 'all' ? undefined : batchFilters.settlement_status,
+    keyword: batchFilters.keyword || undefined,
+    limit: batchPagination.pageSize,
+    offset: (batchPagination.currentPage - 1) * batchPagination.pageSize,
   })
-})
-
-const paidBatches = computed(() => store.batches.filter((batch) => batch.payment_status === 'paid'))
-const creditBatches = computed(() => store.batches.filter((batch) => batch.payment_status === 'credit'))
-const pendingSettlementBatches = computed(() => store.batches.filter((batch) => batch.settlement_status === 'pending'))
-const paidBatchCount = computed(() => paidBatches.value.length)
-const paidBatchAmount = computed(() => paidBatches.value.reduce((sum, batch) => sum + (batch.total_amount_cents || 0), 0))
-const creditBatchCount = computed(() => creditBatches.value.length)
-const creditBatchAmount = computed(() => creditBatches.value.reduce((sum, batch) => sum + (batch.total_amount_cents || 0), 0))
-const pendingSettlementCount = computed(() => pendingSettlementBatches.value.length)
-const pendingSettlementAmount = computed(() => pendingSettlementBatches.value.reduce((sum, batch) => sum + (batch.total_amount_cents || 0), 0))
-
-const filteredCards = computed(() => {
-  const keyword = cardFilters.keyword.trim().toLowerCase()
-  return store.cards.filter((card) => {
-    if (cardFilters.plan_code && card.plan_code !== cardFilters.plan_code) return false
-    if (cardFilters.status === 'available' && card.is_used) return false
-    if (cardFilters.status === 'used' && !card.is_used) return false
-    if (cardFilters.source_type !== 'all' && card.card_source_type !== cardFilters.source_type) return false
-    if (
-      keyword &&
-      ![String(card.card_code || ''), String(card.batch_id || ''), String(card.plan_code || '')].some((part) =>
-        part.toLowerCase().includes(keyword),
-      )
-    ) {
-      return false
-    }
-    return true
+  batchRows.value = response.data.items
+  batchTotal.value = response.data.total
+  if (!batchRows.value.length && batchTotal.value > 0 && batchPagination.currentPage > 1) {
+    batchPagination.currentPage -= 1
+    await loadBatchRows()
+    return
+  }
+  Object.assign(batchStats, response.data.stats || {
+    page_total_amount_cents: 0,
+    page_paid_count: 0,
+    page_credit_count: 0,
+    page_pending_settlement_count: 0,
   })
-})
+}
+
+const loadCardRows = async (resetPage = false) => {
+  if (resetPage) cardPagination.currentPage = 1
+  const response = await adminListCards({
+    plan_code: cardFilters.plan_code || undefined,
+    status: cardFilters.status === 'all' ? undefined : cardFilters.status,
+    source_type: cardFilters.source_type === 'all' ? undefined : cardFilters.source_type,
+    keyword: cardFilters.keyword || undefined,
+    limit: cardPagination.pageSize,
+    offset: (cardPagination.currentPage - 1) * cardPagination.pageSize,
+  })
+  cardRows.value = response.data.items
+  cardTotal.value = response.data.total
+  selectedCards.value = []
+  if (!cardRows.value.length && cardTotal.value > 0 && cardPagination.currentPage > 1) {
+    cardPagination.currentPage -= 1
+    await loadCardRows()
+  }
+}
 
 const refreshData = async () => {
-  await Promise.all([
-    store.loadPlans(),
-    store.loadBatches(),
-    store.loadCards(),
-    store.loadApprovalRequests({ status: 'pending', limit: 100 }),
-  ])
+  const tasks: Promise<unknown>[] = [
+    loadBatchRows(),
+    loadCardRows(),
+  ]
+  if (canReadPricing.value) {
+    tasks.push(store.loadPlans())
+  }
+  if (canReadApprovals.value) {
+    tasks.push(store.loadApprovalRequests({ status: 'pending', limit: 100 }))
+  }
+  await Promise.all(tasks)
   initDefaultPlan()
+}
+
+const handleBatchPageChange = async () => {
+  await loadBatchRows()
+}
+
+const handleBatchSizeChange = async () => {
+  batchPagination.currentPage = 1
+  await loadBatchRows()
+}
+
+const handleCardPageChange = async () => {
+  await loadCardRows()
+}
+
+const handleCardSizeChange = async () => {
+  cardPagination.currentPage = 1
+  await loadCardRows()
 }
 
 const paymentStatusLabel = (status: string) => (status === 'paid' ? '已支付' : status === 'credit' ? '授信' : status || '-')
 const settlementStatusLabel = (status: string) => (status === 'settled' ? '已结算' : status === 'pending' ? '待结算' : status || '-')
 
 const submitGenerateBatch = async () => {
+  if (!canGenerateBatches.value) {
+    ElMessage.warning('当前账号无权生成卡密批次')
+    return
+  }
   submittingBatch.value = true
   try {
     const response = await adminGenerateCardBatch(batchForm)
-    await Promise.all([store.loadProfile(), store.loadBatches(), store.loadCards(), store.loadSelfLedgers()])
+    const tasks: Promise<unknown>[] = [store.loadProfile(), loadBatchRows(), loadCardRows()]
+    if (canReadLedgers.value) {
+      tasks.push(store.loadSelfLedgers())
+    }
+    await Promise.all(tasks)
     lastActionMessage.value = `批次 ${response.data.batch.batch_id} 已生成，共 ${response.data.batch.quantity} 张，金额 ¥${centsToYuan(response.data.batch.total_amount_cents)}`
     ElMessage.success('卡密批次已生成')
   } finally {
@@ -325,6 +407,10 @@ const submitGenerateBatch = async () => {
 }
 
 const submitBatchPurchase = async () => {
+  if (!canGenerateBatches.value) {
+    ElMessage.warning('当前账号无权提交批次申请')
+    return
+  }
   submittingPurchase.value = true
   try {
     const response = await adminCreateBatchPurchaseRequest({
@@ -335,7 +421,9 @@ const submitBatchPurchase = async () => {
         valid_days: purchaseForm.valid_days,
       },
     })
-    await store.loadApprovalRequests({ status: 'pending', limit: 100 })
+    if (canReadApprovals.value) {
+      await store.loadApprovalRequests({ status: 'pending', limit: 100 })
+    }
     lastActionMessage.value = `批次申请 ${response.data.request_id} 已发起，等待上级审批`
     ElMessage.success('批次申请已发起')
   } finally {
@@ -348,6 +436,10 @@ const handleSelectionChange = (rows: AgentCard[]) => {
 }
 
 const copySelectedCards = async (withMeta: boolean) => {
+  if (!canCopyCards.value) {
+    ElMessage.warning('当前账号无权复制卡密')
+    return
+  }
   if (!selectedCards.value.length) {
     ElMessage.warning('请先选择卡密')
     return
@@ -362,7 +454,16 @@ const copySelectedCards = async (withMeta: boolean) => {
 }
 
 const exportExcel = async () => {
-  const file = await adminExportCardsXlsx()
+  if (!canExportCards.value) {
+    ElMessage.warning('当前账号无权导出卡密')
+    return
+  }
+  const file = await adminExportCardsXlsx({
+    plan_code: cardFilters.plan_code || undefined,
+    status: cardFilters.status === 'all' ? undefined : cardFilters.status,
+    source_type: cardFilters.source_type === 'all' ? undefined : cardFilters.source_type,
+    keyword: cardFilters.keyword || undefined,
+  })
   const url = window.URL.createObjectURL(file)
   const anchor = document.createElement('a')
   anchor.href = url
@@ -421,6 +522,12 @@ onMounted(async () => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.pagination-wrap {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
 }
 
 .card-tip {

@@ -1,10 +1,24 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { fileURLToPath, URL } from 'node:url'
+import AutoImport from 'unplugin-auto-import/vite'
+import Components from 'unplugin-vue-components/vite'
+import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [
+    vue(),
+    AutoImport({
+      dts: 'src/auto-imports.d.ts',
+      imports: ['vue', 'vue-router', 'pinia'],
+      resolvers: [ElementPlusResolver()],
+    }),
+    Components({
+      dts: 'src/components.d.ts',
+      resolvers: [ElementPlusResolver({ importStyle: 'css' })],
+    }),
+  ],
 
   // 路径别名
   resolve: {
@@ -37,10 +51,28 @@ export default defineConfig({
     // 分块策略
     rollupOptions: {
       output: {
-        manualChunks: {
-          'element-plus': ['element-plus'],
-          'vue-vendor': ['vue', 'vue-router', 'pinia']
-        }
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            if (id.includes('/node_modules/vue/') || id.includes('/node_modules/vue-router/') || id.includes('/node_modules/pinia/')) {
+              return 'vue-vendor'
+            }
+            if (id.includes('/node_modules/axios/') || id.includes('/node_modules/jwt-decode/')) {
+              return 'network-utils'
+            }
+            if (id.includes('/node_modules/qrcode/')) {
+              return 'qrcode-utils'
+            }
+            return
+          }
+          if (
+            id.endsWith('/src/views/Admin.vue') ||
+            id.endsWith('/src/api/admin.ts') ||
+            id.endsWith('/src/stores/adminConsole.ts') ||
+            id.includes('/src/utils/adminConsole')
+          ) {
+            return 'admin-core'
+          }
+        },
       }
     }
   }

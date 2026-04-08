@@ -1,0 +1,837 @@
+"""RBAC service for backoffice admin console."""
+from __future__ import annotations
+
+import re
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+from fastapi import HTTPException
+from sqlalchemy import delete, func, or_, select
+from sqlalchemy.orm import selectinload
+
+from backend.database.runtime.session import get_async_session
+from backend.database.schema.models import (
+    AdminAccount,
+    AdminAccountRole,
+    AdminAccountTgBinding,
+    AdminAuditLog,
+    AdminPermission,
+    AdminRole,
+    AdminRolePermission,
+)
+from backend.h5_backend.services.auth.service import get_auth_service
+
+ROLE_SUPER_ADMIN = "super_admin"
+ROLE_MASTER_AGENT = "master_agent"
+ROLE_SUB_AGENT = "sub_agent"
+
+PERMISSION_DEFINITIONS: List[Dict[str, str]] = [
+    {"code": "dashboard.read", "module": "dashboard", "name": "查看仪表盘", "description": "允许进入后台仪表盘"},
+    {"code": "security.read", "module": "security", "name": "查看账户安全", "description": "允许查看自己的后台账号安全信息"},
+    {"code": "security.update", "module": "security", "name": "修改账户安全", "description": "允许修改密码和 TG 绑定"},
+    {"code": "agents.read", "module": "agents", "name": "查看代理", "description": "允许查看代理树和后台账号列表"},
+    {"code": "agents.write", "module": "agents", "name": "管理代理", "description": "允许创建下级、调额和设置结算模式"},
+    {"code": "agents.master.create", "module": "agents", "name": "创建总代", "description": "允许创建省级总代"},
+    {"code": "agents.credit.master.write", "module": "agents", "name": "管理总代额度", "description": "允许设置总代总额度和授信白名单"},
+    {"code": "agents.child.create", "module": "agents", "name": "创建下级代理", "description": "允许创建直属下级代理"},
+    {"code": "pricing.read", "module": "pricing", "name": "查看统一价格", "description": "允许查看统一价格"},
+    {"code": "pricing.write", "module": "pricing", "name": "管理统一价格", "description": "允许更新统一价格"},
+    {"code": "ledgers.read", "module": "ledgers", "name": "查看自有流水", "description": "允许查看自己的资金流水"},
+    {"code": "ledgers.scope.read", "module": "ledgers", "name": "查看范围流水", "description": "允许查看自己权限范围内的资金流水审计"},
+    {"code": "approvals.read", "module": "approvals", "name": "查看审批", "description": "允许查看审批中心"},
+    {"code": "approvals.approve", "module": "approvals", "name": "审批通过", "description": "允许审批通过请求"},
+    {"code": "approvals.reject", "module": "approvals", "name": "审批驳回", "description": "允许审批驳回请求"},
+    {"code": "approvals.batch", "module": "approvals", "name": "批量审批", "description": "允许批量通过或驳回审批"},
+    {"code": "batches.read", "module": "batches", "name": "查看卡密批次", "description": "允许查看批次和卡密明细"},
+    {"code": "batches.generate", "module": "batches", "name": "生成卡密批次", "description": "允许立即生成卡密或提交批次申请"},
+    {"code": "batches.export", "module": "batches", "name": "导出卡密", "description": "允许导出卡密 Excel"},
+    {"code": "batches.copy", "module": "batches", "name": "复制卡密", "description": "允许复制卡密"},
+    {"code": "audit.read", "module": "audit", "name": "查看审计", "description": "允许查看审计日志"},
+    {"code": "audit.system.read", "module": "audit", "name": "查看系统审计", "description": "允许查看系统级全量审计日志"},
+    {"code": "system.settings.read", "module": "system_settings", "name": "查看系统配置", "description": "允许查看购买入口和 Bot 公告栏"},
+    {"code": "system.settings.update", "module": "system_settings", "name": "修改系统配置", "description": "允许更新购买入口和 Bot 公告栏"},
+    {"code": "developer_apps.read", "module": "developer_apps", "name": "查看开发者应用", "description": "允许查看开发者应用池"},
+    {"code": "developer_apps.write", "module": "developer_apps", "name": "管理开发者应用", "description": "允许新增和编辑开发者应用"},
+    {"code": "developer_apps.check", "module": "developer_apps", "name": "检查开发者应用", "description": "允许健康检查与设置默认应用"},
+    {"code": "system_proxies.read", "module": "system_proxies", "name": "查看系统代理", "description": "允许查看系统代理池"},
+    {"code": "system_proxies.write", "module": "system_proxies", "name": "管理系统代理", "description": "允许新增和删除系统代理"},
+    {"code": "system_proxies.check", "module": "system_proxies", "name": "检查系统代理", "description": "允许检测系统代理健康"},
+    {"code": "system_proxies.assign", "module": "system_proxies", "name": "分配系统代理", "description": "允许分配或解绑系统代理"},
+    {"code": "legacy_cards.read", "module": "legacy_cards", "name": "查看旧卡密", "description": "允许查看旧卡密规格、卡密和授权"},
+    {"code": "legacy_cards.write", "module": "legacy_cards", "name": "管理旧卡密", "description": "允许修改旧卡密规格和生成卡密"},
+    {"code": "legacy_cards.export", "module": "legacy_cards", "name": "导出旧卡密", "description": "允许导出旧卡密列表"},
+    {"code": "users.read", "module": "users", "name": "查看用户授权", "description": "允许查看用户、TG 账号和授权"},
+    {"code": "users.write", "module": "users", "name": "管理用户授权", "description": "允许设置用户开发者应用和删除账号"},
+    {"code": "users.reset_password", "module": "users", "name": "重置用户密码", "description": "允许重置用户密码"},
+    {"code": "admin_accounts.read", "module": "admin_accounts", "name": "查看后台账号", "description": "允许查看后台账号列表"},
+    {"code": "admin_accounts.write", "module": "admin_accounts", "name": "管理后台账号", "description": "允许创建、编辑和分配后台账号角色"},
+    {"code": "admin_accounts.reset_password", "module": "admin_accounts", "name": "重置后台密码", "description": "允许重置后台账号密码"},
+    {"code": "rbac.roles.read", "module": "rbac_roles", "name": "查看角色", "description": "允许查看角色和角色权限"},
+    {"code": "rbac.roles.write", "module": "rbac_roles", "name": "管理角色", "description": "允许创建角色和修改角色权限"},
+    {"code": "rbac.permissions.read", "module": "rbac_permissions", "name": "查看权限", "description": "允许查看权限点字典"},
+]
+
+ROLE_DEFAULT_PERMISSION_CODES: Dict[str, List[str]] = {
+    ROLE_SUPER_ADMIN: [item["code"] for item in PERMISSION_DEFINITIONS],
+    ROLE_MASTER_AGENT: [
+        "dashboard.read",
+        "security.read",
+        "security.update",
+        "agents.read",
+        "agents.write",
+        "agents.child.create",
+        "pricing.read",
+        "ledgers.read",
+        "ledgers.scope.read",
+        "approvals.read",
+        "approvals.approve",
+        "approvals.reject",
+        "approvals.batch",
+        "batches.read",
+        "batches.generate",
+        "batches.export",
+        "batches.copy",
+        "audit.read",
+    ],
+    ROLE_SUB_AGENT: [
+        "dashboard.read",
+        "security.read",
+        "security.update",
+        "agents.read",
+        "agents.write",
+        "agents.child.create",
+        "pricing.read",
+        "ledgers.read",
+        "approvals.read",
+        "approvals.approve",
+        "approvals.reject",
+        "approvals.batch",
+        "batches.read",
+        "batches.generate",
+        "batches.export",
+        "batches.copy",
+        "audit.read",
+    ],
+}
+
+SYSTEM_ROLE_META: Dict[str, Dict[str, str]] = {
+    ROLE_SUPER_ADMIN: {"display_name": "超管", "description": "系统超管，拥有后台全部能力"},
+    ROLE_MASTER_AGENT: {"display_name": "省总代", "description": "省级总代，负责分销链路与审批"},
+    ROLE_SUB_AGENT: {"display_name": "下级代理", "description": "管理自己链路内的代理和批次"},
+}
+
+
+class AdminRbacService:
+    """RBAC service for admin roles, permissions and accounts."""
+
+    @staticmethod
+    def _normalize_limit(limit: int, offset: int) -> Tuple[int, int]:
+        return max(1, min(500, int(limit))), max(0, int(offset))
+
+    @staticmethod
+    def _slugify_role_key(value: str) -> str:
+        normalized = re.sub(r"[^a-zA-Z0-9_]+", "_", (value or "").strip()).strip("_").lower()
+        return normalized[:64]
+
+    @staticmethod
+    def _mask_actor(account: AdminAccount) -> str:
+        return f"{account.username}#{account.id}"
+
+    @staticmethod
+    def _serialize_tg_binding(binding: Optional[AdminAccountTgBinding]) -> Dict[str, Any]:
+        if binding is None:
+            return {
+                "bind_status": "unbound",
+                "tg_user_id": None,
+                "tg_username": None,
+                "bound_at": None,
+            }
+        return {
+            "bind_status": binding.bind_status,
+            "tg_user_id": binding.tg_user_id,
+            "tg_username": binding.tg_username,
+            "bound_at": binding.bound_at.isoformat() if binding.bound_at else None,
+        }
+
+    @staticmethod
+    def _serialize_permission(permission: AdminPermission) -> Dict[str, Any]:
+        return {
+            "id": permission.id,
+            "permission_code": permission.permission_code,
+            "module_key": permission.module_key,
+            "display_name": permission.display_name,
+            "description": permission.description,
+        }
+
+    def _serialize_role(self, role: AdminRole) -> Dict[str, Any]:
+        permission_bindings = role.__dict__.get("permission_bindings") or []
+        account_bindings = role.__dict__.get("account_bindings") or []
+        permission_codes = sorted(
+            {
+                binding.permission.permission_code
+                for binding in permission_bindings
+                if getattr(binding, "permission", None) is not None
+            }
+        )
+        return {
+            "id": role.id,
+            "role_key": role.role_key,
+            "display_name": role.display_name,
+            "description": role.description,
+            "status": role.status,
+            "is_system": role.is_system,
+            "permission_codes": permission_codes,
+            "permission_count": len(permission_codes),
+            "account_count": len(account_bindings),
+            "created_at": role.created_at.isoformat() if role.created_at else None,
+            "updated_at": role.updated_at.isoformat() if role.updated_at else None,
+        }
+
+    def _serialize_admin_account(self, account: AdminAccount) -> Dict[str, Any]:
+        role_bindings = account.__dict__.get("role_bindings") or []
+        roles = [
+            {
+                "role_id": binding.role.id,
+                "role_key": binding.role.role_key,
+                "display_name": binding.role.display_name,
+                "is_system": bool(binding.role.is_system),
+            }
+            for binding in role_bindings
+            if getattr(binding, "role", None) is not None
+        ]
+        roles = sorted(roles, key=lambda item: (not item["is_system"], item["role_key"]))
+        return {
+            "id": account.id,
+            "username": account.username,
+            "display_name": account.display_name,
+            "role_code": account.role_code,
+            "province_code": account.province_code,
+            "parent_account_id": account.parent_account_id,
+            "root_master_account_id": account.root_master_account_id,
+            "level_depth": account.level_depth,
+            "status": account.status,
+            "settlement_mode": account.settlement_mode,
+            "is_credit_whitelisted": bool(account.is_credit_whitelisted),
+            "credit_limit_cents": int(account.credit_limit_cents or 0),
+            "allocated_credit_limit_cents": int(account.allocated_credit_limit_cents or 0),
+            "credit_used_cents": int(account.credit_used_cents or 0),
+            "balance_cents": int(account.balance_cents or 0),
+            "force_password_change": bool(account.force_password_change),
+            "contact_name": account.contact_name,
+            "contact_phone": account.contact_phone,
+            "last_login_at": account.last_login_at.isoformat() if account.last_login_at else None,
+            "created_at": account.created_at.isoformat() if account.created_at else None,
+            "updated_at": account.updated_at.isoformat() if account.updated_at else None,
+            "tg_binding": self._serialize_tg_binding(account.__dict__.get("tg_binding")),
+            "assigned_roles": roles,
+        }
+
+    async def _append_audit(
+        self,
+        session: Any,
+        *,
+        actor: AdminAccount,
+        action: str,
+        target_type: Optional[str],
+        target_id: Optional[str],
+        detail: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        session.add(
+            AdminAuditLog(
+                actor=self._mask_actor(actor),
+                action=action,
+                target_type=target_type,
+                target_id=target_id,
+                detail=detail or {},
+            )
+        )
+
+    async def load_account_with_rbac(self, account_id: int) -> Optional[AdminAccount]:
+        async with get_async_session() as session:
+            return (
+                await session.execute(
+                    select(AdminAccount)
+                    .options(
+                        selectinload(AdminAccount.tg_binding),
+                        selectinload(AdminAccount.role_bindings)
+                        .selectinload(AdminAccountRole.role)
+                        .selectinload(AdminRole.permission_bindings)
+                        .selectinload(AdminRolePermission.permission),
+                    )
+                    .where(AdminAccount.id == int(account_id))
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+
+    def get_role_keys_for_account(self, account: AdminAccount) -> List[str]:
+        role_bindings = account.__dict__.get("role_bindings") or []
+        role_keys = {
+            binding.role.role_key
+            for binding in role_bindings
+            if getattr(binding, "role", None) is not None and binding.role.status == "active"
+        }
+        if not role_keys and account.role_code:
+            role_keys.add(account.role_code)
+        return sorted(role_keys)
+
+    def get_permission_codes_for_account(self, account: AdminAccount) -> List[str]:
+        role_bindings = account.__dict__.get("role_bindings") or []
+        permission_codes = {
+            binding.permission.permission_code
+            for role_binding in role_bindings
+            if getattr(role_binding, "role", None) is not None and role_binding.role.status == "active"
+            for binding in (role_binding.role.__dict__.get("permission_bindings") or [])
+            if getattr(binding, "permission", None) is not None
+        }
+        return sorted(permission_codes)
+
+    async def ensure_builtin_rbac(self) -> None:
+        async with get_async_session() as session:
+            existing_permissions = {
+                item.permission_code: item
+                for item in (await session.execute(select(AdminPermission))).scalars().all()
+            }
+            for definition in PERMISSION_DEFINITIONS:
+                permission = existing_permissions.get(definition["code"])
+                if permission is None:
+                    permission = AdminPermission(
+                        permission_code=definition["code"],
+                        module_key=definition["module"],
+                        display_name=definition["name"],
+                        description=definition["description"],
+                    )
+                    session.add(permission)
+                    await session.flush()
+                    existing_permissions[definition["code"]] = permission
+                else:
+                    permission.module_key = definition["module"]
+                    permission.display_name = definition["name"]
+                    permission.description = definition["description"]
+
+            existing_roles = {
+                item.role_key: item
+                for item in (
+                    await session.execute(
+                        select(AdminRole).options(selectinload(AdminRole.permission_bindings))
+                    )
+                ).scalars().all()
+            }
+            for role_key, meta in SYSTEM_ROLE_META.items():
+                role = existing_roles.get(role_key)
+                if role is None:
+                    role = AdminRole(
+                        role_key=role_key,
+                        display_name=meta["display_name"],
+                        description=meta["description"],
+                        status="active",
+                        is_system=True,
+                    )
+                    session.add(role)
+                    await session.flush()
+                    existing_roles[role_key] = role
+                else:
+                    role.display_name = meta["display_name"]
+                    role.description = meta["description"]
+                    role.status = "active"
+                    role.is_system = True
+
+                existing_bindings = {
+                    binding.permission_id: binding
+                    for binding in (role.__dict__.get("permission_bindings") or [])
+                }
+                expected_permission_ids = {
+                    existing_permissions[code].id
+                    for code in ROLE_DEFAULT_PERMISSION_CODES.get(role_key, [])
+                    if code in existing_permissions
+                }
+                for permission_id in list(existing_bindings.keys()):
+                    if permission_id not in expected_permission_ids:
+                        await session.delete(existing_bindings[permission_id])
+                for permission_id in expected_permission_ids:
+                    if permission_id not in existing_bindings:
+                        session.add(AdminRolePermission(role_id=int(role.id), permission_id=int(permission_id)))
+
+            accounts = (await session.execute(select(AdminAccount.id, AdminAccount.role_code))).all()
+            for account_id, role_code in accounts:
+                role = existing_roles.get(str(role_code or "").strip())
+                if role is None:
+                    continue
+                binding_exists = (
+                    await session.execute(
+                        select(AdminAccountRole.id)
+                        .where(
+                            AdminAccountRole.admin_account_id == int(account_id),
+                            AdminAccountRole.role_id == int(role.id),
+                        )
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if binding_exists is None:
+                    session.add(AdminAccountRole(admin_account_id=int(account_id), role_id=int(role.id)))
+
+    async def list_permissions(self) -> Dict[str, Any]:
+        async with get_async_session() as session:
+            permissions = (
+                await session.execute(
+                    select(AdminPermission).order_by(AdminPermission.module_key.asc(), AdminPermission.permission_code.asc())
+                )
+            ).scalars().all()
+        return {
+            "items": [self._serialize_permission(item) for item in permissions],
+            "total": len(permissions),
+        }
+
+    async def list_roles(self) -> Dict[str, Any]:
+        async with get_async_session() as session:
+            roles = (
+                await session.execute(
+                    select(AdminRole)
+                    .options(
+                        selectinload(AdminRole.permission_bindings).selectinload(AdminRolePermission.permission),
+                        selectinload(AdminRole.account_bindings),
+                    )
+                    .order_by(AdminRole.is_system.desc(), AdminRole.role_key.asc())
+                )
+            ).scalars().all()
+        return {"items": [self._serialize_role(item) for item in roles], "total": len(roles)}
+
+    async def create_role(
+        self,
+        *,
+        current_admin: AdminAccount,
+        role_key: str,
+        display_name: str,
+        description: Optional[str],
+    ) -> Dict[str, Any]:
+        normalized_key = self._slugify_role_key(role_key)
+        if not normalized_key:
+            raise HTTPException(status_code=400, detail="角色标识不能为空")
+        async with get_async_session() as session:
+            exists = (
+                await session.execute(select(AdminRole.id).where(AdminRole.role_key == normalized_key).limit(1))
+            ).scalar_one_or_none()
+            if exists is not None:
+                raise HTTPException(status_code=409, detail="角色标识已存在")
+            role = AdminRole(
+                role_key=normalized_key,
+                display_name=(display_name or "").strip() or normalized_key,
+                description=(description or "").strip() or None,
+                status="active",
+                is_system=False,
+            )
+            session.add(role)
+            await session.flush()
+            await self._append_audit(
+                session,
+                actor=current_admin,
+                action="rbac.create_role",
+                target_type="role",
+                target_id=normalized_key,
+                detail={"role_key": normalized_key},
+            )
+            await session.refresh(role)
+            return self._serialize_role(role)
+
+    async def update_role(
+        self,
+        *,
+        current_admin: AdminAccount,
+        role_id: int,
+        display_name: Optional[str],
+        description: Optional[str],
+        status: Optional[str],
+    ) -> Dict[str, Any]:
+        async with get_async_session() as session:
+            role = await session.get(AdminRole, int(role_id))
+            if role is None:
+                raise HTTPException(status_code=404, detail="角色不存在")
+            if display_name is not None:
+                role.display_name = display_name.strip() or role.display_name
+            if description is not None:
+                role.description = description.strip() or None
+            if status is not None:
+                normalized_status = status.strip().lower()
+                if normalized_status not in {"active", "disabled"}:
+                    raise HTTPException(status_code=400, detail="角色状态不合法")
+                role.status = normalized_status
+            await self._append_audit(
+                session,
+                actor=current_admin,
+                action="rbac.update_role",
+                target_type="role",
+                target_id=role.role_key,
+                detail={"role_id": int(role.id)},
+            )
+            await session.flush()
+            role = (
+                await session.execute(
+                    select(AdminRole)
+                    .options(
+                        selectinload(AdminRole.permission_bindings).selectinload(AdminRolePermission.permission),
+                        selectinload(AdminRole.account_bindings),
+                    )
+                    .where(AdminRole.id == int(role.id))
+                    .limit(1)
+                )
+            ).scalar_one()
+            return self._serialize_role(role)
+
+    async def update_role_permissions(
+        self,
+        *,
+        current_admin: AdminAccount,
+        role_id: int,
+        permission_codes: Sequence[str],
+    ) -> Dict[str, Any]:
+        normalized_codes = sorted({str(code or "").strip() for code in permission_codes if str(code or "").strip()})
+        async with get_async_session() as session:
+            role = (
+                await session.execute(
+                    select(AdminRole)
+                    .options(selectinload(AdminRole.permission_bindings))
+                    .where(AdminRole.id == int(role_id))
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if role is None:
+                raise HTTPException(status_code=404, detail="角色不存在")
+            permissions = (
+                await session.execute(
+                    select(AdminPermission).where(AdminPermission.permission_code.in_(normalized_codes))
+                )
+            ).scalars().all()
+            permission_map = {item.permission_code: item for item in permissions}
+            missing = [code for code in normalized_codes if code not in permission_map]
+            if missing:
+                raise HTTPException(status_code=400, detail=f"权限点不存在: {', '.join(missing)}")
+            existing_bindings = {binding.permission_id: binding for binding in (role.__dict__.get("permission_bindings") or [])}
+            target_permission_ids = {int(permission_map[code].id) for code in normalized_codes}
+            for permission_id, binding in list(existing_bindings.items()):
+                if permission_id not in target_permission_ids:
+                    await session.delete(binding)
+            for permission_id in target_permission_ids:
+                if permission_id not in existing_bindings:
+                    session.add(AdminRolePermission(role_id=int(role.id), permission_id=int(permission_id)))
+            await self._append_audit(
+                session,
+                actor=current_admin,
+                action="rbac.update_role_permissions",
+                target_type="role",
+                target_id=role.role_key,
+                detail={"permission_codes": normalized_codes},
+            )
+            await session.flush()
+            role = (
+                await session.execute(
+                    select(AdminRole)
+                    .options(
+                        selectinload(AdminRole.permission_bindings).selectinload(AdminRolePermission.permission),
+                        selectinload(AdminRole.account_bindings),
+                    )
+                    .where(AdminRole.id == int(role.id))
+                    .limit(1)
+                )
+            ).scalar_one()
+            return self._serialize_role(role)
+
+    async def list_admin_accounts(
+        self,
+        *,
+        search: Optional[str] = None,
+        status: Optional[str] = None,
+        role_key: Optional[str] = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        limit, offset = self._normalize_limit(limit, offset)
+        async with get_async_session() as session:
+            stmt = select(AdminAccount).options(
+                selectinload(AdminAccount.tg_binding),
+                selectinload(AdminAccount.role_bindings).selectinload(AdminAccountRole.role),
+            )
+            count_stmt = select(func.count(AdminAccount.id))
+            normalized_search = (search or "").strip()
+            if normalized_search:
+                keyword = f"%{normalized_search}%"
+                condition = or_(
+                    AdminAccount.username.ilike(keyword),
+                    AdminAccount.display_name.ilike(keyword),
+                    AdminAccount.contact_name.ilike(keyword),
+                )
+                stmt = stmt.where(condition)
+                count_stmt = count_stmt.where(condition)
+            normalized_status = (status or "").strip().lower()
+            if normalized_status and normalized_status != "all":
+                stmt = stmt.where(AdminAccount.status == normalized_status)
+                count_stmt = count_stmt.where(AdminAccount.status == normalized_status)
+            normalized_role_key = (role_key or "").strip()
+            if normalized_role_key:
+                stmt = stmt.join(AdminAccountRole, AdminAccountRole.admin_account_id == AdminAccount.id).join(
+                    AdminRole, AdminRole.id == AdminAccountRole.role_id
+                ).where(AdminRole.role_key == normalized_role_key)
+                count_stmt = count_stmt.join(AdminAccountRole, AdminAccountRole.admin_account_id == AdminAccount.id).join(
+                    AdminRole, AdminRole.id == AdminAccountRole.role_id
+                ).where(AdminRole.role_key == normalized_role_key)
+            total = int((await session.execute(count_stmt)).scalar_one() or 0)
+            rows = (
+                await session.execute(
+                    stmt.order_by(AdminAccount.created_at.desc(), AdminAccount.id.desc()).limit(limit).offset(offset)
+                )
+            ).scalars().unique().all()
+            return {
+                "items": [self._serialize_admin_account(item) for item in rows],
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
+
+    async def create_admin_account(
+        self,
+        *,
+        current_admin: AdminAccount,
+        username: str,
+        password: str,
+        display_name: str,
+        role_code: str,
+        role_keys: Sequence[str],
+        parent_account_id: Optional[int] = None,
+        contact_name: Optional[str] = None,
+        contact_phone: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        normalized_role_code = (role_code or "").strip().lower()
+        if normalized_role_code not in {ROLE_SUPER_ADMIN, ROLE_MASTER_AGENT, ROLE_SUB_AGENT}:
+            raise HTTPException(status_code=400, detail="后台账号身份标签不合法")
+        if len(password or "") < 6:
+            raise HTTPException(status_code=400, detail="密码至少 6 位")
+        async with get_async_session() as session:
+            exists = (
+                await session.execute(select(AdminAccount.id).where(AdminAccount.username == (username or "").strip()).limit(1))
+            ).scalar_one_or_none()
+            if exists is not None:
+                raise HTTPException(status_code=409, detail="后台用户名已存在")
+            parent: Optional[AdminAccount] = None
+            root_master_account_id: Optional[int] = None
+            level_depth = 0
+            if parent_account_id is not None:
+                parent = await session.get(AdminAccount, int(parent_account_id))
+                if parent is None:
+                    raise HTTPException(status_code=404, detail="指定上级账号不存在")
+                root_master_account_id = int(parent.root_master_account_id or parent.id)
+                level_depth = int(parent.level_depth or 0) + 1
+            if normalized_role_code == ROLE_MASTER_AGENT:
+                existing_master = (
+                    await session.execute(
+                        select(AdminAccount.id)
+                        .where(
+                            AdminAccount.role_code == ROLE_MASTER_AGENT,
+                            AdminAccount.province_code == current_admin.province_code,
+                            AdminAccount.status == "active",
+                        )
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if existing_master is not None:
+                    raise HTTPException(status_code=409, detail="当前省份已存在总代账号")
+                parent = None
+                parent_account_id = None
+                root_master_account_id = None
+                level_depth = 0
+            if normalized_role_code == ROLE_SUPER_ADMIN:
+                parent = None
+                parent_account_id = None
+                root_master_account_id = None
+                level_depth = 0
+            account = AdminAccount(
+                username=(username or "").strip(),
+                password_hash=get_auth_service().get_password_hash(password),
+                role_code=normalized_role_code,
+                province_code=current_admin.province_code,
+                parent_account_id=int(parent.id) if parent is not None else None,
+                root_master_account_id=root_master_account_id,
+                level_depth=level_depth,
+                status="active",
+                settlement_mode="prepaid",
+                is_credit_whitelisted=False,
+                credit_limit_cents=0,
+                allocated_credit_limit_cents=0,
+                credit_used_cents=0,
+                balance_cents=0,
+                force_password_change=True,
+                display_name=(display_name or "").strip() or (username or "").strip(),
+                contact_name=(contact_name or "").strip() or None,
+                contact_phone=(contact_phone or "").strip() or None,
+                created_by=int(current_admin.id),
+            )
+            session.add(account)
+            await session.flush()
+            if normalized_role_code == ROLE_MASTER_AGENT:
+                account.root_master_account_id = int(account.id)
+            roles = (
+                await session.execute(select(AdminRole).where(AdminRole.role_key.in_(sorted(set(role_keys or [normalized_role_code])))))
+            ).scalars().all()
+            role_map = {item.role_key: item for item in roles}
+            missing = [key for key in sorted(set(role_keys or [normalized_role_code])) if key not in role_map]
+            if missing:
+                raise HTTPException(status_code=400, detail=f"角色不存在: {', '.join(missing)}")
+            for item in role_map.values():
+                session.add(AdminAccountRole(admin_account_id=int(account.id), role_id=int(item.id)))
+            await self._append_audit(
+                session,
+                actor=current_admin,
+                action="admin_account.create",
+                target_type="admin_account",
+                target_id=str(account.id),
+                detail={"username": account.username, "role_code": normalized_role_code},
+            )
+            account = (
+                await session.execute(
+                    select(AdminAccount)
+                    .options(
+                        selectinload(AdminAccount.tg_binding),
+                        selectinload(AdminAccount.role_bindings).selectinload(AdminAccountRole.role),
+                    )
+                    .where(AdminAccount.id == int(account.id))
+                    .limit(1)
+                )
+            ).scalar_one()
+            return self._serialize_admin_account(account)
+
+    async def update_admin_account(
+        self,
+        *,
+        current_admin: AdminAccount,
+        account_id: int,
+        display_name: Optional[str] = None,
+        status: Optional[str] = None,
+        contact_name: Optional[str] = None,
+        contact_phone: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        async with get_async_session() as session:
+            account = await session.get(AdminAccount, int(account_id))
+            if account is None:
+                raise HTTPException(status_code=404, detail="后台账号不存在")
+            if display_name is not None:
+                account.display_name = display_name.strip() or account.display_name
+            if contact_name is not None:
+                account.contact_name = contact_name.strip() or None
+            if contact_phone is not None:
+                account.contact_phone = contact_phone.strip() or None
+            if status is not None:
+                normalized_status = status.strip().lower()
+                if normalized_status not in {"active", "disabled"}:
+                    raise HTTPException(status_code=400, detail="后台账号状态不合法")
+                account.status = normalized_status
+            await self._append_audit(
+                session,
+                actor=current_admin,
+                action="admin_account.update",
+                target_type="admin_account",
+                target_id=str(account.id),
+                detail={"status": account.status},
+            )
+            await session.flush()
+            account = (
+                await session.execute(
+                    select(AdminAccount)
+                    .options(
+                        selectinload(AdminAccount.tg_binding),
+                        selectinload(AdminAccount.role_bindings).selectinload(AdminAccountRole.role),
+                    )
+                    .where(AdminAccount.id == int(account.id))
+                    .limit(1)
+                )
+            ).scalar_one()
+            return self._serialize_admin_account(account)
+
+    async def update_admin_account_roles(
+        self,
+        *,
+        current_admin: AdminAccount,
+        account_id: int,
+        role_keys: Sequence[str],
+    ) -> Dict[str, Any]:
+        normalized_role_keys = sorted({str(key or "").strip() for key in role_keys if str(key or "").strip()})
+        if not normalized_role_keys:
+            raise HTTPException(status_code=400, detail="至少保留一个角色")
+        async with get_async_session() as session:
+            account = (
+                await session.execute(
+                    select(AdminAccount)
+                    .options(selectinload(AdminAccount.role_bindings))
+                    .where(AdminAccount.id == int(account_id))
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if account is None:
+                raise HTTPException(status_code=404, detail="后台账号不存在")
+            roles = (
+                await session.execute(select(AdminRole).where(AdminRole.role_key.in_(normalized_role_keys)))
+            ).scalars().all()
+            role_map = {item.role_key: item for item in roles}
+            missing = [key for key in normalized_role_keys if key not in role_map]
+            if missing:
+                raise HTTPException(status_code=400, detail=f"角色不存在: {', '.join(missing)}")
+            current_bindings = {binding.role_id: binding for binding in (account.__dict__.get("role_bindings") or [])}
+            target_role_ids = {int(role_map[key].id) for key in normalized_role_keys}
+            for role_id, binding in list(current_bindings.items()):
+                if role_id not in target_role_ids:
+                    await session.delete(binding)
+            for role_id in target_role_ids:
+                if role_id not in current_bindings:
+                    session.add(AdminAccountRole(admin_account_id=int(account.id), role_id=role_id))
+            await self._append_audit(
+                session,
+                actor=current_admin,
+                action="admin_account.update_roles",
+                target_type="admin_account",
+                target_id=str(account.id),
+                detail={"role_keys": normalized_role_keys},
+            )
+            await session.flush()
+            account = (
+                await session.execute(
+                    select(AdminAccount)
+                    .options(
+                        selectinload(AdminAccount.tg_binding),
+                        selectinload(AdminAccount.role_bindings).selectinload(AdminAccountRole.role),
+                    )
+                    .where(AdminAccount.id == int(account.id))
+                    .limit(1)
+                )
+            ).scalar_one()
+            return self._serialize_admin_account(account)
+
+    async def reset_admin_account_password(
+        self,
+        *,
+        current_admin: AdminAccount,
+        account_id: int,
+        new_password: str,
+    ) -> Dict[str, Any]:
+        if len(new_password or "") < 6:
+            raise HTTPException(status_code=400, detail="新密码至少 6 位")
+        async with get_async_session() as session:
+            account = await session.get(AdminAccount, int(account_id))
+            if account is None:
+                raise HTTPException(status_code=404, detail="后台账号不存在")
+            account.password_hash = get_auth_service().get_password_hash(new_password)
+            account.force_password_change = True
+            await self._append_audit(
+                session,
+                actor=current_admin,
+                action="admin_account.reset_password",
+                target_type="admin_account",
+                target_id=str(account.id),
+                detail={"username": account.username},
+            )
+            await session.flush()
+            return {"account_id": int(account.id), "username": account.username, "force_password_change": True}
+
+
+_service: Optional[AdminRbacService] = None
+
+
+def get_admin_rbac_service() -> AdminRbacService:
+    global _service
+    if _service is None:
+        _service = AdminRbacService()
+    return _service

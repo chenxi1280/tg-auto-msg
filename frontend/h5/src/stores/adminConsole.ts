@@ -48,10 +48,17 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
     visibleLedgers: false,
   })
 
-  const currentRole = computed(() => profile.value?.account.role_code || '')
-  const isSuperAdmin = computed(() => currentRole.value === 'super_admin')
-  const canManageAgents = computed(() => currentRole.value === 'super_admin' || currentRole.value === 'master_agent' || currentRole.value === 'sub_agent')
-  const canViewVisibleLedgers = computed(() => currentRole.value === 'super_admin' || currentRole.value === 'master_agent')
+  const roleKeys = computed(() => profile.value?.roles || [])
+  const permissionSet = computed(() => new Set(profile.value?.permissions || []))
+  const hasPermission = (permissionCode: string) => permissionSet.value.has(permissionCode)
+  const hasAnyPermission = (permissionCodes: string[]) => permissionCodes.some((permissionCode) => permissionSet.value.has(permissionCode))
+  const hasRole = (roleKey: string) => roleKeys.value.includes(roleKey)
+  const canManageAgents = computed(() => hasAnyPermission(['agents.read', 'agents.write']))
+  const canCreateMasterAgents = computed(() => hasPermission('agents.master.create'))
+  const canCreateChildAgents = computed(() => hasPermission('agents.child.create'))
+  const canManageMasterCredit = computed(() => hasPermission('agents.credit.master.write'))
+  const canViewVisibleLedgers = computed(() => hasPermission('ledgers.scope.read'))
+  const canViewSystemAudit = computed(() => hasPermission('audit.system.read'))
   const accountMap = computed(() => {
     return new Map(accounts.value.map((account) => [account.id, account]))
   })
@@ -83,9 +90,9 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
   const loadAccounts = async () => {
     loading.accounts = true
     try {
-      const response = await adminListAccounts()
-      accounts.value = response.data
-      return response.data
+      const response = await adminListAccounts({ limit: 500, offset: 0 })
+      accounts.value = response.data.items
+      return response.data.items
     } finally {
       loading.accounts = false
     }
@@ -94,9 +101,9 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
   const loadPlans = async () => {
     loading.plans = true
     try {
-      const response = await adminListPricingPlans()
-      plans.value = response.data
-      return response.data
+      const response = await adminListPricingPlans({ limit: 500, offset: 0 })
+      plans.value = response.data.items
+      return response.data.items
     } finally {
       loading.plans = false
     }
@@ -105,9 +112,9 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
   const loadBatches = async () => {
     loading.batches = true
     try {
-      const response = await adminListCardBatches()
-      batches.value = response.data
-      return response.data
+      const response = await adminListCardBatches({ limit: 500, offset: 0 })
+      batches.value = response.data.items
+      return response.data.items
     } finally {
       loading.batches = false
     }
@@ -143,8 +150,8 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
     loading.approvalRequests = true
     try {
       const response = await adminListApprovalRequests(params)
-      approvalRequests.value = response.data
-      return response.data
+      approvalRequests.value = response.data.items
+      return response.data.items
     } finally {
       loading.approvalRequests = false
     }
@@ -153,9 +160,9 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
   const loadAuditLogs = async () => {
     loading.auditLogs = true
     try {
-      const response = await adminListAuditLogs(200)
-      auditLogs.value = response.data
-      return response.data
+      const response = await adminListAuditLogs({ limit: 200, offset: 0 })
+      auditLogs.value = response.data.items
+      return response.data.items
     } finally {
       loading.auditLogs = false
     }
@@ -164,9 +171,9 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
   const loadSelfLedgers = async () => {
     loading.selfLedgers = true
     try {
-      const response = await adminListSelfFundLedgers(200)
-      selfLedgers.value = response.data
-      return response.data
+      const response = await adminListSelfFundLedgers({ limit: 200, offset: 0 })
+      selfLedgers.value = response.data.items
+      return response.data.items
     } finally {
       loading.selfLedgers = false
     }
@@ -182,9 +189,10 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
       const response = await adminListVisibleFundLedgers({
         limit: 200,
         account_id: accountId,
+        offset: 0,
       })
-      visibleLedgers.value = response.data
-      return response.data
+      visibleLedgers.value = response.data.items
+      return response.data.items
     } finally {
       loading.visibleLedgers = false
     }
@@ -206,10 +214,17 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
     selfLedgers,
     visibleLedgers,
     loading,
-    currentRole,
-    isSuperAdmin,
+    roleKeys,
+    permissionSet,
+    hasPermission,
+    hasAnyPermission,
+    hasRole,
     canManageAgents,
+    canCreateMasterAgents,
+    canCreateChildAgents,
+    canManageMasterCredit,
     canViewVisibleLedgers,
+    canViewSystemAudit,
     accountMap,
     reset,
     bootstrap,

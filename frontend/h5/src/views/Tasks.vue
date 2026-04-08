@@ -170,7 +170,7 @@
             </el-table-column>
             <el-table-column label="状态" width="90">
               <template #default="{ row }">
-                <el-switch v-model="row.enabled" @change="(val) => toggleTaskEnabled(row, Boolean(val))" />
+                <el-switch v-model="row.enabled" @change="handleTaskEnabledChange(row, $event)" />
               </template>
             </el-table-column>
             <el-table-column label="间隔/抖动" width="140">
@@ -720,6 +720,10 @@ const toggleTaskEnabled = async (task: TaskItem, enabled: boolean) => {
     task.enabled = !enabled
     ElMessage.error(err.message || '状态更新失败')
   }
+}
+
+const handleTaskEnabledChange = (task: TaskItem, value: string | number | boolean) => {
+  void toggleTaskEnabled(task, Boolean(value))
 }
 
 const removeTask = async (taskId: string) => {

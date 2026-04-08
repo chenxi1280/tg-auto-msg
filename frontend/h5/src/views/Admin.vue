@@ -10,14 +10,11 @@
           </div>
         </div>
         <el-menu :default-active="activeMenu" class="admin-menu" router>
-          <el-menu-item index="/admin/dashboard">仪表盘</el-menu-item>
-          <el-menu-item index="/admin/security">账户与安全</el-menu-item>
-          <el-menu-item index="/admin/agents">代理管理</el-menu-item>
-          <el-menu-item index="/admin/pricing">统一价格</el-menu-item>
-          <el-menu-item index="/admin/ledgers">资金流水</el-menu-item>
-          <el-menu-item index="/admin/batches">卡密批次</el-menu-item>
-          <el-menu-item index="/admin/approvals">审批中心</el-menu-item>
-          <el-menu-item index="/admin/audit">审计日志</el-menu-item>
+          <el-menu-item v-for="item in mainMenus" :key="item.path" :index="item.path">{{ item.title }}</el-menu-item>
+          <el-sub-menu v-if="systemMenus.length" index="super-admin-system">
+            <template #title>系统后台</template>
+            <el-menu-item v-for="item in systemMenus" :key="item.path" :index="item.path">{{ item.title }}</el-menu-item>
+          </el-sub-menu>
         </el-menu>
       </el-aside>
 
@@ -48,7 +45,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { clearAdminAccessToken, adminLogout } from '@/api/admin'
 import { useAdminConsoleStore } from '@/stores/adminConsole'
@@ -58,10 +55,46 @@ const router = useRouter()
 const route = useRoute()
 const store = useAdminConsoleStore()
 
+const menuItems = [
+  { path: '/admin/dashboard', title: '仪表盘', permissions: ['dashboard.read'], group: 'main' },
+  { path: '/admin/security', title: '账户与安全', permissions: ['security.read'], group: 'main' },
+  { path: '/admin/agents', title: '代理管理', permissions: ['agents.read'], group: 'main' },
+  { path: '/admin/pricing', title: '统一价格', permissions: ['pricing.read'], group: 'main' },
+  { path: '/admin/ledgers', title: '资金流水', permissions: ['ledgers.read'], group: 'main' },
+  { path: '/admin/batches', title: '卡密批次', permissions: ['batches.read'], group: 'main' },
+  { path: '/admin/approvals', title: '审批中心', permissions: ['approvals.read'], group: 'main' },
+  { path: '/admin/audit', title: '审计日志', permissions: ['audit.read', 'audit.system.read'], group: 'main' },
+  { path: '/admin/system-settings', title: '系统配置', permissions: ['system.settings.read'], group: 'system' },
+  { path: '/admin/developer-apps', title: '开发者应用', permissions: ['developer_apps.read'], group: 'system' },
+  { path: '/admin/system-proxies', title: '系统代理', permissions: ['system_proxies.read'], group: 'system' },
+  { path: '/admin/legacy-cards', title: '旧卡密总后台', permissions: ['legacy_cards.read'], group: 'system' },
+  { path: '/admin/users-auth', title: '用户与授权', permissions: ['users.read'], group: 'system' },
+  { path: '/admin/admin-accounts', title: '后台账号', permissions: ['admin_accounts.read'], group: 'system' },
+  { path: '/admin/rbac-roles', title: '角色管理', permissions: ['rbac.roles.read'], group: 'system' },
+  { path: '/admin/rbac-permissions', title: '权限管理', permissions: ['rbac.permissions.read'], group: 'system' },
+] as const
+
 const activeMenu = computed(() => route.path)
+const canAccessMenu = (permissions: readonly string[]) => store.hasAnyPermission([...permissions])
+const mainMenus = computed(() => menuItems.filter((item) => item.group === 'main' && canAccessMenu(item.permissions)))
+const systemMenus = computed(() => menuItems.filter((item) => item.group === 'system' && canAccessMenu(item.permissions)))
+const accessibleMenus = computed(() => [...mainMenus.value, ...systemMenus.value])
 
 const refreshProfile = async () => {
   await store.loadProfile()
+}
+
+const ensureRouteAccess = async () => {
+  if (!store.profile) {
+    await store.bootstrap()
+  }
+  const requiredPermissions = Array.isArray(route.meta.permissions) ? route.meta.permissions : []
+  if (requiredPermissions.length && !store.hasAnyPermission(requiredPermissions as string[])) {
+    const fallback = accessibleMenus.value[0]?.path || '/admin/login'
+    if (route.path !== fallback) {
+      await router.replace(fallback)
+    }
+  }
 }
 
 const handleLogout = async () => {
@@ -76,10 +109,15 @@ const handleLogout = async () => {
 }
 
 onMounted(async () => {
-  if (!store.profile) {
-    await store.bootstrap()
-  }
+  await ensureRouteAccess()
 })
+
+watch(
+  () => [route.fullPath, (store.profile?.roles || []).join('|'), (store.profile?.permissions || []).join('|')],
+  async () => {
+    await ensureRouteAccess()
+  },
+)
 </script>
 
 <style scoped>

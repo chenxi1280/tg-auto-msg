@@ -93,49 +93,97 @@ const routes: RouteRecordRaw[] = [
         path: 'dashboard',
         name: 'AdminDashboard',
         component: () => import('@/views/admin/DashboardPage.vue'),
-        meta: { title: '仪表盘', requiresAdminSession: true }
+        meta: { title: '仪表盘', requiresAdminSession: true, permissions: ['dashboard.read'] }
       },
       {
         path: 'security',
         name: 'AdminSecurity',
         component: () => import('@/views/admin/SecurityPage.vue'),
-        meta: { title: '账户与安全', requiresAdminSession: true }
+        meta: { title: '账户与安全', requiresAdminSession: true, permissions: ['security.read'] }
       },
       {
         path: 'agents',
         name: 'AdminAgents',
         component: () => import('@/views/admin/AgentsPage.vue'),
-        meta: { title: '代理管理', requiresAdminSession: true }
+        meta: { title: '代理管理', requiresAdminSession: true, permissions: ['agents.read'] }
       },
       {
         path: 'pricing',
         name: 'AdminPricing',
         component: () => import('@/views/admin/PricingPage.vue'),
-        meta: { title: '统一价格', requiresAdminSession: true }
+        meta: { title: '统一价格', requiresAdminSession: true, permissions: ['pricing.read'] }
       },
       {
         path: 'ledgers',
         name: 'AdminLedgers',
         component: () => import('@/views/admin/LedgersPage.vue'),
-        meta: { title: '资金流水', requiresAdminSession: true }
+        meta: { title: '资金流水', requiresAdminSession: true, permissions: ['ledgers.read'] }
       },
       {
         path: 'batches',
         name: 'AdminBatches',
         component: () => import('@/views/admin/BatchesPage.vue'),
-        meta: { title: '卡密批次', requiresAdminSession: true }
+        meta: { title: '卡密批次', requiresAdminSession: true, permissions: ['batches.read'] }
       },
       {
         path: 'approvals',
         name: 'AdminApprovals',
         component: () => import('@/views/admin/ApprovalsPage.vue'),
-        meta: { title: '审批中心', requiresAdminSession: true }
+        meta: { title: '审批中心', requiresAdminSession: true, permissions: ['approvals.read'] }
       },
       {
         path: 'audit',
         name: 'AdminAudit',
         component: () => import('@/views/admin/AuditPage.vue'),
-        meta: { title: '审计日志', requiresAdminSession: true }
+        meta: { title: '审计日志', requiresAdminSession: true, permissions: ['audit.read', 'audit.system.read'] }
+      },
+      {
+        path: 'system-settings',
+        name: 'AdminSystemSettings',
+        component: () => import('@/views/admin/SystemSettingsPage.vue'),
+        meta: { title: '系统配置', requiresAdminSession: true, permissions: ['system.settings.read'] }
+      },
+      {
+        path: 'developer-apps',
+        name: 'AdminDeveloperApps',
+        component: () => import('@/views/admin/DeveloperAppsPage.vue'),
+        meta: { title: '开发者应用', requiresAdminSession: true, permissions: ['developer_apps.read'] }
+      },
+      {
+        path: 'system-proxies',
+        name: 'AdminSystemProxies',
+        component: () => import('@/views/admin/SystemProxiesPage.vue'),
+        meta: { title: '系统代理', requiresAdminSession: true, permissions: ['system_proxies.read'] }
+      },
+      {
+        path: 'legacy-cards',
+        name: 'AdminLegacyCards',
+        component: () => import('@/views/admin/LegacyCardsPage.vue'),
+        meta: { title: '旧卡密总后台', requiresAdminSession: true, permissions: ['legacy_cards.read'] }
+      },
+      {
+        path: 'users-auth',
+        name: 'AdminUsersAuth',
+        component: () => import('@/views/admin/UsersAuthPage.vue'),
+        meta: { title: '用户与授权', requiresAdminSession: true, permissions: ['users.read'] }
+      },
+      {
+        path: 'admin-accounts',
+        name: 'AdminAccountsManage',
+        component: () => import('@/views/admin/AdminAccountsPage.vue'),
+        meta: { title: '后台账号', requiresAdminSession: true, permissions: ['admin_accounts.read'] }
+      },
+      {
+        path: 'rbac-roles',
+        name: 'AdminRbacRoles',
+        component: () => import('@/views/admin/RbacRolesPage.vue'),
+        meta: { title: '角色管理', requiresAdminSession: true, permissions: ['rbac.roles.read'] }
+      },
+      {
+        path: 'rbac-permissions',
+        name: 'AdminRbacPermissions',
+        component: () => import('@/views/admin/RbacPermissionsPage.vue'),
+        meta: { title: '权限管理', requiresAdminSession: true, permissions: ['rbac.permissions.read'] }
       }
     ]
   },

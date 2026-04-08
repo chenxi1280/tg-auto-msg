@@ -14,6 +14,14 @@ MEM_AVAILABLE_THRESHOLD_MB="${MEM_AVAILABLE_THRESHOLD_MB:-128}"
 DISK_USAGE_THRESHOLD_PERCENT="${DISK_USAGE_THRESHOLD_PERCENT:-90}"
 RECOVERY_WAIT_SECONDS="${RECOVERY_WAIT_SECONDS:-8}"
 DAILY_REPORT_HOUR="${DAILY_REPORT_HOUR:-09}"
+TGMSG_LOG_SCAN_WINDOW="${TGMSG_LOG_SCAN_WINDOW:-30m}"
+TGMSG_ERROR_MATCH_LIMIT="${TGMSG_ERROR_MATCH_LIMIT:-6}"
+TGMSG_LOG_TAIL_LINES="${TGMSG_LOG_TAIL_LINES:-400}"
+APP_CONTAINER="${APP_CONTAINER:-tgmsg-app}"
+FRONTEND_CONTAINER="${FRONTEND_CONTAINER:-tgmsg-frontend}"
+POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-app-infra-postgres}"
+REDIS_CONTAINER="${REDIS_CONTAINER:-app-infra-redis}"
+APP_RUNTIME_LOG_DIR="${APP_RUNTIME_LOG_DIR:-/data/tgmsg/logs}"
 
 mkdir -p "$LOG_DIR"
 
@@ -90,6 +98,102 @@ service_ok() {
   return 0
 }
 
+tail_container_errors() {
+  local container="$1"
+
+  docker logs --since "$TGMSG_LOG_SCAN_WINDOW" --tail "$TGMSG_LOG_TAIL_LINES" "$container" 2>&1 \
+    | grep -E '(\| ERROR\s+\||\| CRITICAL\s+\||Traceback|ERROR:|CRITICAL:|FATAL:|PANIC:)' \
+    | tail -n "$TGMSG_ERROR_MATCH_LIMIT" || true
+}
+
+check_tgmsg_recent_errors() {
+  local matches latest_log
+
+  matches="$(tail_container_errors "$APP_CONTAINER")"
+
+  if [[ -z "$matches" && -d "$APP_RUNTIME_LOG_DIR" ]]; then
+    latest_log="$(find "$APP_RUNTIME_LOG_DIR" -maxdepth 1 -type f -name 'app_*.log' | sort | tail -n 1)"
+    if [[ -n "$latest_log" ]]; then
+      matches="$(tail -n "$TGMSG_LOG_TAIL_LINES" "$latest_log" 2>/dev/null \
+        | grep -E '(\| ERROR\s+\||\| CRITICAL\s+\||Traceback|ERROR:|CRITICAL:|FATAL:|PANIC:)' \
+        | tail -n "$TGMSG_ERROR_MATCH_LIMIT" || true)"
+    fi
+  fi
+
+  if [[ -n "$matches" ]]; then
+    issues+=("tgmsg 最近 ${TGMSG_LOG_SCAN_WINDOW} 存在错误日志:")
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && issues+=("  $line")
+    done <<<"$matches"
+  fi
+}
+
+check_postgres_middleware() {
+  local status health stderr_file
+
+  status="$(service_status "$POSTGRES_CONTAINER")"
+  health="$(service_health "$POSTGRES_CONTAINER")"
+
+  if [[ -z "$status" ]]; then
+    issues+=("PostgreSQL 容器缺失: $POSTGRES_CONTAINER")
+    return
+  fi
+
+  if [[ "$status" != "running" ]]; then
+    issues+=("PostgreSQL 容器未运行: $POSTGRES_CONTAINER (status=$status)")
+    return
+  fi
+
+  if [[ -n "$health" && "$health" != "healthy" ]]; then
+    issues+=("PostgreSQL 容器健康异常: $POSTGRES_CONTAINER (health=$health)")
+  fi
+
+  stderr_file="$(mktemp)"
+  if ! docker exec -u postgres "$POSTGRES_CONTAINER" psql -U postgres -d postgres -Atqc 'select 1;' >/dev/null 2>"$stderr_file"; then
+    cat "$stderr_file" >>"$LOG_FILE"
+    rm -f "$stderr_file"
+    issues+=("PostgreSQL 查询失败: $POSTGRES_CONTAINER")
+    return
+  fi
+  rm -f "$stderr_file"
+}
+
+check_redis_middleware() {
+  local status health redis_password stderr_file
+
+  status="$(service_status "$REDIS_CONTAINER")"
+  health="$(service_health "$REDIS_CONTAINER")"
+
+  if [[ -z "$status" ]]; then
+    issues+=("Redis 容器缺失: $REDIS_CONTAINER")
+    return
+  fi
+
+  if [[ "$status" != "running" ]]; then
+    issues+=("Redis 容器未运行: $REDIS_CONTAINER (status=$status)")
+    return
+  fi
+
+  if [[ -n "$health" && "$health" != "healthy" ]]; then
+    issues+=("Redis 容器健康异常: $REDIS_CONTAINER (health=$health)")
+  fi
+
+  redis_password="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$REDIS_CONTAINER" 2>/dev/null | awk -F= '/^REDIS_PASSWORD=/{print substr($0,16); exit}')"
+  if [[ -z "$redis_password" ]]; then
+    issues+=("Redis 密码读取失败: $REDIS_CONTAINER")
+    return
+  fi
+
+  stderr_file="$(mktemp)"
+  if ! docker exec "$REDIS_CONTAINER" redis-cli -a "$redis_password" ping >/dev/null 2>"$stderr_file"; then
+    cat "$stderr_file" >>"$LOG_FILE"
+    rm -f "$stderr_file"
+    issues+=("Redis PING 失败: $REDIS_CONTAINER")
+    return
+  fi
+  rm -f "$stderr_file"
+}
+
 attempt_service_recovery() {
   local service="$1"
   local compose_name="$2"
@@ -125,7 +229,7 @@ ensure_runtime_env
 
 issues=()
 recovered_services=()
-services=(tgmsg-app tgmsg-frontend)
+services=("$APP_CONTAINER" "$FRONTEND_CONTAINER")
 
 for service in "${services[@]}"; do
   status="$(service_status "$service")"
@@ -145,6 +249,9 @@ for service in "${services[@]}"; do
   fi
 done
 
+check_postgres_middleware
+check_redis_middleware
+
 if ! curl -fsS --max-time 8 http://127.0.0.1/ >/dev/null; then
   issues+=("HTTP 首页异常: http://127.0.0.1/")
 fi
@@ -162,6 +269,8 @@ disk_usage_percent="$(df -P / | awk 'NR==2 {gsub(/%/, "", $5); print $5}')"
 if (( disk_usage_percent >= DISK_USAGE_THRESHOLD_PERCENT )); then
   issues+=("系统盘使用率过高: ${disk_usage_percent}%")
 fi
+
+check_tgmsg_recent_errors
 
 current_status="HEALTHY"
 summary="服务全部正常"

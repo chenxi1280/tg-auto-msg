@@ -60,6 +60,13 @@ AUDIT_ACTION_LABELS = {
     "admin.set_user_developer_app": "设置用户开发者应用",
     "admin.update_developer_app_settings": "更新开发者应用策略",
     "admin.check_developer_app_health": "手动检测开发者应用",
+    "rbac.create_role": "创建后台角色",
+    "rbac.update_role": "更新后台角色",
+    "rbac.update_role_permissions": "更新角色权限",
+    "admin_account.create": "创建后台账号",
+    "admin_account.update": "更新后台账号",
+    "admin_account.update_roles": "更新后台账号角色",
+    "admin_account.reset_password": "重置后台账号密码",
     "system.developer_app_health_changed": "开发者应用健康状态变更",
     "system.developer_app_health_recovered": "开发者应用健康恢复",
 }
@@ -71,6 +78,8 @@ AUDIT_TARGET_TYPE_LABELS = {
     "proxy": "代理",
     "settings": "配置",
     "developer_app": "开发者应用",
+    "role": "后台角色",
+    "admin_account": "后台账号",
 }
 
 DEFAULT_PURCHASE_URL = "https://t.me/"
@@ -174,6 +183,18 @@ class AdminLicenseService:
         }
 
     @staticmethod
+    def _paginate_items(items: List[Dict[str, Any]], *, limit: int, offset: int) -> Dict[str, Any]:
+        normalized_limit = max(1, min(500, int(limit)))
+        normalized_offset = max(0, int(offset))
+        sliced_items = items[normalized_offset:normalized_offset + normalized_limit]
+        return {
+            "items": sliced_items,
+            "total": len(items),
+            "limit": normalized_limit,
+            "offset": normalized_offset,
+        }
+
+    @staticmethod
     def _generate_card_code(prefix: str = "") -> str:
         normalized_prefix = (prefix or "").strip().upper()
         random_part = "".join(secrets.choice(CARD_ALPHABET) for _ in range(16))
@@ -184,6 +205,8 @@ class AdminLicenseService:
         raw = (actor or "").strip()
         if not raw:
             return "admin"
+        if "#" in raw:
+            return raw
         if len(raw) <= 8:
             return "***"
         return f"{raw[:4]}***{raw[-4:]}"
@@ -225,11 +248,22 @@ class AdminLicenseService:
             plans = result.scalars().all()
         return [self._serialize_plan(plan) for plan in plans]
 
-    async def list_users(self, search: Optional[str] = None, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+    async def list_all_plans(self) -> List[Dict[str, Any]]:
+        async with get_async_session() as session:
+            result = await session.execute(
+                select(PricingPlan).order_by(PricingPlan.sort_order.asc(), PricingPlan.price_cents.asc())
+            )
+            plans = result.scalars().all()
+        return [self._serialize_plan(plan) for plan in plans]
+
+    async def list_users(self, search: Optional[str] = None, limit: int = 100, offset: int = 0) -> Dict[str, Any]:
         limit = max(1, min(500, int(limit)))
         offset = max(0, int(offset))
 
         async with get_async_session() as session:
+            base_stmt = (
+                select(func.count(User.id))
+            )
             stmt = (
                 select(
                     User.id,
@@ -248,10 +282,11 @@ class AdminLicenseService:
 
             if search:
                 search_value = f"%{search.strip()}%"
-                stmt = stmt.where(
-                    (User.username.ilike(search_value)) | (User.email.ilike(search_value))
-                )
+                search_condition = (User.username.ilike(search_value)) | (User.email.ilike(search_value))
+                stmt = stmt.where(search_condition)
+                base_stmt = base_stmt.where(search_condition)
 
+            total = int((await session.execute(base_stmt)).scalar_one() or 0)
             rows = (await session.execute(stmt)).all()
             user_ids = [row.id for row in rows]
 
@@ -293,7 +328,12 @@ class AdminLicenseService:
                         },
                     }
                 )
-            return data
+            return {
+                "items": data,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
 
     async def list_account_options(self, search: Optional[str] = None, limit: int = 300) -> List[Dict[str, Any]]:
         limit = max(1, min(1000, int(limit)))
@@ -332,10 +372,31 @@ class AdminLicenseService:
                 for row in rows
             ]
 
-    async def list_proxies(self) -> List[Dict[str, Any]]:
+    async def list_proxies(
+        self,
+        *,
+        search: Optional[str] = None,
+        is_healthy: Optional[bool] = None,
+        is_assigned: Optional[bool] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
         proxy_pool = get_proxy_pool()
         proxies = await proxy_pool.get_proxies(is_active=False, is_healthy=None)
-        return [self._serialize_proxy(proxy) for proxy in proxies]
+        items = [self._serialize_proxy(proxy) for proxy in proxies]
+        keyword = (search or "").strip().lower()
+        if keyword:
+            items = [
+                item for item in items
+                if keyword in f"{item['proxy_type']}://{item['host']}:{item['port']}".lower()
+                or keyword in str(item.get("username") or "").lower()
+                or keyword in str(item.get("assigned_account_id") or "").lower()
+            ]
+        if is_healthy is not None:
+            items = [item for item in items if bool(item.get("is_healthy")) is bool(is_healthy)]
+        if is_assigned is not None:
+            items = [item for item in items if bool(item.get("assigned_account_id")) is bool(is_assigned)]
+        return self._paginate_items(items, limit=limit, offset=offset)
 
     async def get_purchase_settings(self) -> Dict[str, str]:
         async with get_async_session() as session:
@@ -500,11 +561,33 @@ class AdminLicenseService:
         result["refresh_summary"] = refresh_summary
         return result
 
-    async def list_developer_apps(self) -> Dict[str, Any]:
+    async def list_developer_apps(
+        self,
+        *,
+        search: Optional[str] = None,
+        health_status: Optional[str] = None,
+        is_active: Optional[bool] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
         service = get_developer_app_service()
         apps = await service.list_apps()
         settings_data = await service.get_assignment_settings()
-        return {"apps": apps, "settings": settings_data}
+        keyword = (search or "").strip().lower()
+        if keyword:
+            apps = [
+                item for item in apps
+                if keyword in str(item.get("app_name") or "").lower()
+                or keyword in str(item.get("api_id") or "").lower()
+                or keyword in str(item.get("notes") or "").lower()
+            ]
+        normalized_health = (health_status or "").strip().lower()
+        if normalized_health and normalized_health != "all":
+            apps = [item for item in apps if str(item.get("health_status") or "").lower() == normalized_health]
+        if is_active is not None:
+            apps = [item for item in apps if bool(item.get("is_active")) is bool(is_active)]
+        page = self._paginate_items(apps, limit=limit, offset=offset)
+        return {**page, "settings": settings_data}
 
     async def create_developer_app(
         self,
@@ -1215,6 +1298,7 @@ class AdminLicenseService:
         plan_code: Optional[str] = None,
         is_used: Optional[bool] = None,
         is_active: Optional[bool] = None,
+        keyword: Optional[str] = None,
         sort_by: str = "created_at",
         sort_order: str = "desc",
         limit: int = 50,
@@ -1237,6 +1321,12 @@ class AdminLicenseService:
             conditions.append(ActivationCard.is_used.is_(is_used))
         if is_active is not None:
             conditions.append(ActivationCard.is_active.is_(is_active))
+        if keyword:
+            keyword_value = f"%{keyword.strip()}%"
+            conditions.append(
+                ActivationCard.card_code.ilike(keyword_value)
+                | ActivationCard.plan_code.ilike(keyword_value)
+            )
         if conditions:
             stmt = stmt.where(and_(*conditions))
             count_stmt = count_stmt.where(and_(*conditions))
@@ -1428,10 +1518,11 @@ class AdminLicenseService:
         status: Optional[str] = None,
         limit: int = 200,
         offset: int = 0,
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         limit = max(1, min(500, int(limit)))
         offset = max(0, int(offset))
 
+        count_stmt: Select[Any] = select(func.count(UserAuthorization.authorization_id))
         stmt: Select[Any] = (
             select(UserAuthorization, User.username, Account.username, Account.phone, Account.tg_user_id)
             .join(User, User.id == UserAuthorization.user_id)
@@ -1442,8 +1533,10 @@ class AdminLicenseService:
         )
         if status:
             stmt = stmt.where(UserAuthorization.status == status)
+            count_stmt = count_stmt.where(UserAuthorization.status == status)
 
         async with get_async_session() as session:
+            total = int((await session.execute(count_stmt)).scalar_one() or 0)
             rows = (await session.execute(stmt)).all()
 
         data: List[Dict[str, Any]] = []
@@ -1465,7 +1558,12 @@ class AdminLicenseService:
                     "updated_at": slot.updated_at.isoformat() if slot.updated_at else None,
                 }
             )
-        return data
+        return {
+            "items": data,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
 
     async def set_card_active(
         self,
@@ -1535,13 +1633,15 @@ class AdminLicenseService:
         target_type: Optional[str] = None,
         target_id: Optional[str] = None,
         developer_app_id: Optional[int] = None,
+        keyword: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         limit = max(1, min(500, int(limit)))
         offset = max(0, int(offset))
 
         stmt: Select[Any] = select(AdminAuditLog)
+        count_stmt: Select[Any] = select(func.count(AdminAuditLog.id))
         conditions = []
         if action:
             conditions.append(AdminAuditLog.action == action)
@@ -1551,14 +1651,24 @@ class AdminLicenseService:
             conditions.append(AdminAuditLog.target_id == target_id)
         if developer_app_id is not None:
             conditions.append(AdminAuditLog.developer_app_id == int(developer_app_id))
+        normalized_keyword = (keyword or "").strip()
+        if normalized_keyword:
+            keyword_condition = (
+                AdminAuditLog.actor.ilike(f"%{normalized_keyword}%")
+                | AdminAuditLog.action.ilike(f"%{normalized_keyword}%")
+                | AdminAuditLog.target_id.ilike(f"%{normalized_keyword}%")
+            )
+            conditions.append(keyword_condition)
         if conditions:
             stmt = stmt.where(and_(*conditions))
+            count_stmt = count_stmt.where(and_(*conditions))
         stmt = stmt.order_by(AdminAuditLog.id.desc()).limit(limit).offset(offset)
 
         async with get_async_session() as session:
+            total = int((await session.execute(count_stmt)).scalar_one() or 0)
             rows = (await session.execute(stmt)).scalars().all()
 
-        return [
+        items = [
             {
                 "id": row.id,
                 "actor": row.actor,
@@ -1580,6 +1690,12 @@ class AdminLicenseService:
             }
             for row in rows
         ]
+        return {
+            "items": items,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
 
 
 _admin_license_service: Optional[AdminLicenseService] = None

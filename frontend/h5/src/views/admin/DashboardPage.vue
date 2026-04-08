@@ -30,7 +30,7 @@
         <template #header>
           <div class="card-header">
             <span>统一价格概览</span>
-            <el-button link type="primary" @click="router.push('/admin/pricing')">前往管理</el-button>
+            <el-button v-if="canReadPricing" link type="primary" @click="router.push('/admin/pricing')">前往管理</el-button>
           </div>
         </template>
         <el-table :data="store.plans.slice(0, 5)" size="small">
@@ -47,7 +47,7 @@
         <template #header>
           <div class="card-header">
             <span>最近批次</span>
-            <el-button link type="primary" @click="router.push('/admin/batches')">查看全部</el-button>
+            <el-button v-if="canReadBatches" link type="primary" @click="router.push('/admin/batches')">查看全部</el-button>
           </div>
         </template>
         <el-table :data="store.batches.slice(0, 6)" size="small">
@@ -66,7 +66,7 @@
       <template #header>
         <div class="card-header">
           <span>待处理审批</span>
-          <el-button link type="primary" @click="router.push('/admin/approvals')">审批中心</el-button>
+          <el-button v-if="canReadApprovals" link type="primary" @click="router.push('/admin/approvals')">审批中心</el-button>
         </div>
       </template>
       <el-empty v-if="!store.pendingApprovals.length" description="当前没有待处理审批" />
@@ -88,21 +88,29 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAdminConsoleStore } from '@/stores/adminConsole'
 import { approvalLabel, centsToYuan, formatDateTime, roleLabel } from '@/utils/adminConsole'
 
 const router = useRouter()
 const store = useAdminConsoleStore()
+const canReadApprovals = computed(() => store.hasPermission('approvals.read'))
+const canReadPricing = computed(() => store.hasPermission('pricing.read'))
+const canReadBatches = computed(() => store.hasPermission('batches.read'))
 
 onMounted(async () => {
-  await Promise.all([
-    store.loadProfile(),
-    store.loadPlans(),
-    store.loadBatches(),
-    store.loadPendingApprovals(),
-  ])
+  const tasks: Promise<unknown>[] = [store.loadProfile()]
+  if (canReadPricing.value) {
+    tasks.push(store.loadPlans())
+  }
+  if (canReadBatches.value) {
+    tasks.push(store.loadBatches())
+  }
+  if (canReadApprovals.value) {
+    tasks.push(store.loadPendingApprovals())
+  }
+  await Promise.all(tasks)
 })
 </script>
 

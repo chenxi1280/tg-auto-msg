@@ -1,7 +1,9 @@
 <template>
   <div class="page-stack">
+    <el-alert v-if="lastActionMessage" :title="lastActionMessage" type="success" :closable="true" @close="lastActionMessage = ''" />
+
     <div class="form-grid">
-      <el-card v-if="store.isSuperAdmin" shadow="hover">
+      <el-card v-if="store.canCreateMasterAgents" shadow="hover">
         <template #header>
           <div class="card-header">
             <span>创建省总代</span>
@@ -28,7 +30,7 @@
         </el-form>
       </el-card>
 
-      <el-card v-if="store.canManageAgents && store.currentRole !== 'super_admin'" shadow="hover">
+      <el-card v-if="store.canCreateChildAgents && !store.hasRole('super_admin')" shadow="hover">
         <template #header>
           <div class="card-header">
             <span>创建直属下级</span>
@@ -64,10 +66,23 @@
       <template #header>
         <div class="card-header">
           <span>代理树与后台账号</span>
-          <el-button @click="store.loadAccounts()">刷新</el-button>
+          <div class="header-actions">
+            <el-input v-model.trim="filters.search" clearable placeholder="搜索账号/显示名" style="width: 220px" />
+            <el-select v-model="filters.role_code" clearable placeholder="角色" style="width: 140px">
+              <el-option label="超管" value="super_admin" />
+              <el-option label="总代" value="master_agent" />
+              <el-option label="下级代理" value="sub_agent" />
+            </el-select>
+            <el-select v-model="filters.status" clearable placeholder="状态" style="width: 140px">
+              <el-option label="启用" value="active" />
+              <el-option label="停用" value="disabled" />
+            </el-select>
+            <el-button @click="loadAccountsPage(true)">查询</el-button>
+            <el-button @click="refreshData">刷新</el-button>
+          </div>
         </div>
       </template>
-      <el-table :data="store.accounts" stripe>
+      <el-table :data="accountRows" stripe>
         <el-table-column label="账号" min-width="220">
           <template #default="{ row }">
             <div class="account-cell" :style="{ paddingLeft: `${12 + row.level_depth * 18}px` }">
@@ -103,7 +118,7 @@
         <el-table-column label="操作" min-width="320" fixed="right">
           <template #default="{ row }">
             <el-button
-              v-if="store.isSuperAdmin && row.role_code === 'master_agent'"
+              v-if="store.canManageMasterCredit && row.role_code === 'master_agent'"
               link
               type="primary"
               @click="openCreditDialog(row, 'master')"
@@ -111,7 +126,7 @@
               设置总代额度
             </el-button>
             <el-button
-              v-if="row.parent_account_id"
+              v-if="row.parent_account_id && store.hasPermission('agents.write')"
               link
               type="primary"
               @click="openCreditDialog(row, 'child')"
@@ -119,7 +134,7 @@
               设置下级额度
             </el-button>
             <el-button
-              v-if="row.id !== store.profile?.account.id"
+              v-if="row.id !== store.profile?.account.id && store.hasPermission('agents.write')"
               link
               type="primary"
               @click="openSettlementDialog(row)"
@@ -127,7 +142,7 @@
               结算模式
             </el-button>
             <el-button
-              v-if="store.isSuperAdmin"
+              v-if="store.canManageMasterCredit"
               link
               type="warning"
               @click="toggleWhitelist(row)"
@@ -137,6 +152,18 @@
           </template>
         </el-table-column>
       </el-table>
+      <div class="pagination-wrap">
+        <el-pagination
+          v-model:current-page="pagination.currentPage"
+          v-model:page-size="pagination.pageSize"
+          background
+          layout="total, sizes, prev, pager, next"
+          :page-sizes="[20, 50, 100]"
+          :total="totalAccounts"
+          @current-change="handlePageChange"
+          @size-change="handleSizeChange"
+        />
+      </div>
     </el-card>
 
     <el-dialog v-model="creditDialog.visible" :title="creditDialog.mode === 'master' ? '设置总代额度' : '设置下级额度'" width="420px">
@@ -185,6 +212,7 @@ import type { AgentAccount } from '@/api/admin'
 import {
   adminCreateAgentAccount,
   adminCreateMasterAgent,
+  adminListAccounts,
   adminSetChildCreditLimit,
   adminSetCreditWhitelist,
   adminSetMasterCreditLimit,
@@ -194,6 +222,18 @@ import { useAdminConsoleStore } from '@/stores/adminConsole'
 import { centsToYuan, roleLabel, settlementLabel, yuanToCents } from '@/utils/adminConsole'
 
 const store = useAdminConsoleStore()
+const lastActionMessage = ref('')
+const accountRows = ref<AgentAccount[]>([])
+const totalAccounts = ref(0)
+const pagination = reactive({
+  currentPage: 1,
+  pageSize: 20,
+})
+const filters = reactive({
+  search: '',
+  role_code: '',
+  status: '',
+})
 
 const masterForm = reactive({
   username: '',
@@ -240,6 +280,36 @@ const submittingChild = ref(false)
 const submittingCredit = ref(false)
 const submittingSettlementMode = ref(false)
 
+const loadAccountsPage = async (resetPage = false) => {
+  if (resetPage) pagination.currentPage = 1
+  const response = await adminListAccounts({
+    search: filters.search || undefined,
+    role_code: filters.role_code || undefined,
+    status: filters.status || undefined,
+    limit: pagination.pageSize,
+    offset: (pagination.currentPage - 1) * pagination.pageSize,
+  })
+  accountRows.value = response.data.items
+  totalAccounts.value = response.data.total
+  if (!accountRows.value.length && totalAccounts.value > 0 && pagination.currentPage > 1) {
+    pagination.currentPage -= 1
+    await loadAccountsPage()
+  }
+}
+
+const refreshData = async () => {
+  await Promise.all([store.loadProfile(), store.loadAccounts(), loadAccountsPage()])
+}
+
+const handlePageChange = async () => {
+  await loadAccountsPage()
+}
+
+const handleSizeChange = async () => {
+  pagination.currentPage = 1
+  await loadAccountsPage()
+}
+
 const submitCreateMaster = async () => {
   if (!store.profile) return
   submittingMaster.value = true
@@ -258,8 +328,9 @@ const submitCreateMaster = async () => {
       credit_limit_yuan: 0,
       is_credit_whitelisted: false,
     })
-    await store.loadAccounts()
-    ElMessage.success('总代已创建')
+    await refreshData()
+    lastActionMessage.value = '总代已创建'
+    ElMessage.success(lastActionMessage.value)
   } finally {
     submittingMaster.value = false
   }
@@ -282,8 +353,9 @@ const submitCreateChild = async () => {
       settlement_mode: 'prepaid',
       credit_limit_yuan: 0,
     })
-    await store.loadAccounts()
-    ElMessage.success('下级代理已创建')
+    await refreshData()
+    lastActionMessage.value = '下级代理已创建'
+    ElMessage.success(lastActionMessage.value)
   } finally {
     submittingChild.value = false
   }
@@ -310,8 +382,9 @@ const submitCreditUpdate = async () => {
       await adminSetChildCreditLimit(creditDialog.account.id, yuanToCents(creditDialog.credit_limit_yuan))
     }
     creditDialog.visible = false
-    await store.loadAccounts()
-    ElMessage.success('额度已更新')
+    await refreshData()
+    lastActionMessage.value = '额度已更新'
+    ElMessage.success(lastActionMessage.value)
   } finally {
     submittingCredit.value = false
   }
@@ -329,8 +402,9 @@ const submitSettlementMode = async () => {
   try {
     await adminSetSettlementMode(settlementDialog.account.id, settlementDialog.settlement_mode)
     settlementDialog.visible = false
-    await store.loadAccounts()
-    ElMessage.success('结算模式已更新')
+    await refreshData()
+    lastActionMessage.value = '结算模式已更新'
+    ElMessage.success(lastActionMessage.value)
   } finally {
     submittingSettlementMode.value = false
   }
@@ -338,12 +412,13 @@ const submitSettlementMode = async () => {
 
 const toggleWhitelist = async (account: AgentAccount) => {
   await adminSetCreditWhitelist(account.id, !account.is_credit_whitelisted)
-  await store.loadAccounts()
-  ElMessage.success('授信白名单已更新')
+  await refreshData()
+  lastActionMessage.value = '授信白名单已更新'
+  ElMessage.success(lastActionMessage.value)
 }
 
 onMounted(async () => {
-  await Promise.all([store.loadProfile(), store.loadAccounts()])
+  await refreshData()
 })
 </script>
 
@@ -366,6 +441,12 @@ onMounted(async () => {
   justify-content: space-between;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .card-tip {
   color: #94a3b8;
   font-size: 12px;
@@ -384,5 +465,11 @@ onMounted(async () => {
 .account-subtitle {
   font-size: 12px;
   color: #64748b;
+}
+
+.pagination-wrap {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
 }
 </style>

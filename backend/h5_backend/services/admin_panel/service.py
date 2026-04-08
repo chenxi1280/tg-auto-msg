@@ -21,14 +21,18 @@ from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import (
     ActivationCard,
     AdminAccount,
+    AdminAccountRole,
     AdminAccountTgBinding,
     AdminAuditLog,
     AgentCreditLimit,
     AgentFundLedger,
+    AdminRole,
+    AdminRolePermission,
     ApprovalRequest,
     CardBatch,
     PricingPlan,
 )
+from backend.h5_backend.services.admin_rbac.service import get_admin_rbac_service
 from backend.h5_backend.services.admin.service import get_admin_license_service
 from backend.h5_backend.services.me.service import MeService
 
@@ -98,6 +102,7 @@ class AdminPanelService:
 
     def _serialize_admin_account(self, account: AdminAccount) -> Dict[str, Any]:
         binding = account.__dict__.get("tg_binding")
+        rbac_service = get_admin_rbac_service()
         return {
             "id": account.id,
             "username": account.username,
@@ -121,6 +126,17 @@ class AdminPanelService:
             "created_at": account.created_at.isoformat() if account.created_at else None,
             "updated_at": account.updated_at.isoformat() if account.updated_at else None,
             "tg_binding": self._serialize_tg_binding(binding),
+            "assigned_roles": [
+                {
+                    "role_id": binding.role.id,
+                    "role_key": binding.role.role_key,
+                    "display_name": binding.role.display_name,
+                    "is_system": bool(binding.role.is_system),
+                }
+                for binding in (account.__dict__.get("role_bindings") or [])
+                if getattr(binding, "role", None) is not None
+            ],
+            "permissions": rbac_service.get_permission_codes_for_account(account),
         }
 
     @staticmethod
@@ -227,6 +243,10 @@ class AdminPanelService:
             "operator_name": operator_name,
             "created_at": row.created_at.isoformat() if row.created_at else None,
         }
+
+    @staticmethod
+    def _normalize_page(limit: int, offset: int) -> Tuple[int, int]:
+        return max(1, min(500, int(limit))), max(0, int(offset))
 
     async def _list_descendant_ids(self, session: Any, root_account_id: int) -> List[int]:
         pending = [int(root_account_id)]
@@ -748,15 +768,24 @@ class AdminPanelService:
                 await session.execute(
                     select(AdminAccount)
                     .options(selectinload(AdminAccount.tg_binding))
+                    .options(
+                        selectinload(AdminAccount.role_bindings)
+                        .selectinload(AdminAccountRole.role)
+                        .selectinload(AdminRole.permission_bindings)
+                        .selectinload(AdminRolePermission.permission)
+                    )
                     .where(AdminAccount.id == int(current_admin.id))
                     .limit(1)
                 )
             ).scalar_one()
             visible_count = len(await self._visible_account_ids(session, account))
+        rbac_service = get_admin_rbac_service()
         return {
             "account": self._serialize_admin_account(account),
             "visible_account_count": visible_count,
             "province_code": account.province_code,
+            "roles": rbac_service.get_role_keys_for_account(account),
+            "permissions": rbac_service.get_permission_codes_for_account(account),
         }
 
     async def list_plans(self) -> List[Dict[str, Any]]:
@@ -824,6 +853,11 @@ class AdminPanelService:
             session.add(account)
             await session.flush()
             account.root_master_account_id = int(account.id)
+            master_role = (
+                await session.execute(select(AdminRole).where(AdminRole.role_key == ROLE_MASTER_AGENT).limit(1))
+            ).scalar_one_or_none()
+            if master_role is not None:
+                session.add(AdminAccountRole(admin_account_id=int(account.id), role_id=int(master_role.id)))
             await self._append_audit(
                 session,
                 actor=current_admin,
@@ -896,18 +930,61 @@ class AdminPanelService:
             await session.refresh(target)
             return self._serialize_admin_account(target)
 
-    async def list_accounts(self, *, current_admin: AdminAccount) -> List[Dict[str, Any]]:
+    async def list_accounts(
+        self,
+        *,
+        current_admin: AdminAccount,
+        search: Optional[str] = None,
+        role_code: Optional[str] = None,
+        status: Optional[str] = None,
+        parent_account_id: Optional[int] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        limit, offset = self._normalize_page(limit, offset)
         async with get_async_session() as session:
             visible_ids = await self._visible_account_ids(session, current_admin)
+            stmt = (
+                select(AdminAccount)
+                .options(selectinload(AdminAccount.tg_binding))
+                .options(selectinload(AdminAccount.role_bindings).selectinload(AdminAccountRole.role))
+                .where(AdminAccount.id.in_(visible_ids))
+            )
+            count_stmt = select(func.count(AdminAccount.id)).where(AdminAccount.id.in_(visible_ids))
+            normalized_search = (search or "").strip()
+            if normalized_search:
+                search_value = f"%{normalized_search}%"
+                search_condition = (
+                    AdminAccount.username.ilike(search_value)
+                    | AdminAccount.display_name.ilike(search_value)
+                    | AdminAccount.contact_name.ilike(search_value)
+                    | AdminAccount.contact_phone.ilike(search_value)
+                )
+                stmt = stmt.where(search_condition)
+                count_stmt = count_stmt.where(search_condition)
+            normalized_role = (role_code or "").strip().lower()
+            if normalized_role and normalized_role != "all":
+                stmt = stmt.where(AdminAccount.role_code == normalized_role)
+                count_stmt = count_stmt.where(AdminAccount.role_code == normalized_role)
+            normalized_status = (status or "").strip().lower()
+            if normalized_status and normalized_status != "all":
+                stmt = stmt.where(AdminAccount.status == normalized_status)
+                count_stmt = count_stmt.where(AdminAccount.status == normalized_status)
+            if parent_account_id is not None:
+                stmt = stmt.where(AdminAccount.parent_account_id == int(parent_account_id))
+                count_stmt = count_stmt.where(AdminAccount.parent_account_id == int(parent_account_id))
+            total = int((await session.execute(count_stmt)).scalar_one() or 0)
             rows = (
                 await session.execute(
-                    select(AdminAccount)
-                    .options(selectinload(AdminAccount.tg_binding))
-                    .where(AdminAccount.id.in_(visible_ids))
-                    .order_by(AdminAccount.level_depth.asc(), AdminAccount.id.asc())
+                    stmt.order_by(AdminAccount.level_depth.asc(), AdminAccount.id.asc()).limit(limit).offset(offset)
                 )
             ).scalars().all()
-            return [self._serialize_admin_account(row) for row in rows]
+            return {
+                "items": [self._serialize_admin_account(row) for row in rows],
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
 
     async def create_child_agent(
         self,
@@ -953,6 +1030,11 @@ class AdminPanelService:
             )
             session.add(child)
             await session.flush()
+            sub_role = (
+                await session.execute(select(AdminRole).where(AdminRole.role_key == ROLE_SUB_AGENT).limit(1))
+            ).scalar_one_or_none()
+            if sub_role is not None:
+                session.add(AdminAccountRole(admin_account_id=int(child.id), role_id=int(sub_role.id)))
 
             credit_row = AgentCreditLimit(
                 parent_account_id=int(parent.id),
@@ -1049,15 +1131,44 @@ class AdminPanelService:
             await session.refresh(target)
             return self._serialize_admin_account(target)
 
-    async def list_pricing_plans(self, *, current_admin: AdminAccount) -> List[Dict[str, Any]]:
+    async def list_pricing_plans(
+        self,
+        *,
+        current_admin: AdminAccount,
+        search: Optional[str] = None,
+        is_active: Optional[bool] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
         del current_admin
+        limit, offset = self._normalize_page(limit, offset)
         async with get_async_session() as session:
+            stmt = select(PricingPlan)
+            count_stmt = select(func.count(PricingPlan.plan_code))
+            normalized_search = (search or "").strip()
+            if normalized_search:
+                search_value = f"%{normalized_search}%"
+                search_condition = (
+                    PricingPlan.plan_code.ilike(search_value)
+                    | PricingPlan.display_name.ilike(search_value)
+                )
+                stmt = stmt.where(search_condition)
+                count_stmt = count_stmt.where(search_condition)
+            if is_active is not None:
+                stmt = stmt.where(PricingPlan.is_active.is_(bool(is_active)))
+                count_stmt = count_stmt.where(PricingPlan.is_active.is_(bool(is_active)))
+            total = int((await session.execute(count_stmt)).scalar_one() or 0)
             rows = (
                 await session.execute(
-                    select(PricingPlan).order_by(PricingPlan.sort_order.asc(), PricingPlan.plan_code.asc())
+                    stmt.order_by(PricingPlan.sort_order.asc(), PricingPlan.plan_code.asc()).limit(limit).offset(offset)
                 )
             ).scalars().all()
-            return [self._serialize_pricing_plan(row) for row in rows]
+            return {
+                "items": [self._serialize_pricing_plan(row) for row in rows],
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
 
     async def update_pricing_plan(
         self,
@@ -1067,8 +1178,6 @@ class AdminPanelService:
         price_cents: int,
         ip_address: Optional[str] = None,
     ) -> Dict[str, Any]:
-        if current_admin.role_code != ROLE_SUPER_ADMIN:
-            raise HTTPException(status_code=403, detail="只有超管可以维护统一价格")
         if int(price_cents or 0) <= 0:
             raise HTTPException(status_code=400, detail="price_cents 必须大于 0")
         async with get_async_session() as session:
@@ -1203,59 +1312,153 @@ class AdminPanelService:
                 "copied_text": "\n".join(card.card_code for card in cards[:10]),
             }
 
-    async def list_card_batches(self, *, current_admin: AdminAccount) -> List[Dict[str, Any]]:
+    async def list_card_batches(
+        self,
+        *,
+        current_admin: AdminAccount,
+        plan_code: Optional[str] = None,
+        payment_status: Optional[str] = None,
+        settlement_status: Optional[str] = None,
+        keyword: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        limit, offset = self._normalize_page(limit, offset)
         async with get_async_session() as session:
             visible_ids = await self._visible_account_ids(session, current_admin)
+            stmt = select(CardBatch).where(CardBatch.owner_account_id.in_(visible_ids))
+            count_stmt = select(func.count(CardBatch.batch_id)).where(CardBatch.owner_account_id.in_(visible_ids))
+            normalized_plan = (plan_code or "").strip()
+            if normalized_plan:
+                stmt = stmt.where(CardBatch.plan_code == normalized_plan)
+                count_stmt = count_stmt.where(CardBatch.plan_code == normalized_plan)
+            normalized_payment = (payment_status or "").strip().lower()
+            if normalized_payment and normalized_payment != "all":
+                stmt = stmt.where(CardBatch.payment_status == normalized_payment)
+                count_stmt = count_stmt.where(CardBatch.payment_status == normalized_payment)
+            normalized_settlement = (settlement_status or "").strip().lower()
+            if normalized_settlement and normalized_settlement != "all":
+                stmt = stmt.where(CardBatch.settlement_status == normalized_settlement)
+                count_stmt = count_stmt.where(CardBatch.settlement_status == normalized_settlement)
+            normalized_keyword = (keyword or "").strip()
+            if normalized_keyword:
+                keyword_value = f"%{normalized_keyword}%"
+                keyword_condition = CardBatch.batch_id.ilike(keyword_value) | CardBatch.plan_code.ilike(keyword_value)
+                stmt = stmt.where(keyword_condition)
+                count_stmt = count_stmt.where(keyword_condition)
+            total = int((await session.execute(count_stmt)).scalar_one() or 0)
             rows = (
                 await session.execute(
-                    select(CardBatch).where(CardBatch.owner_account_id.in_(visible_ids)).order_by(CardBatch.created_at.desc())
+                    stmt.order_by(CardBatch.created_at.desc()).limit(limit).offset(offset)
                 )
             ).scalars().all()
-            return [self._serialize_batch(row) for row in rows]
+            items = [self._serialize_batch(row) for row in rows]
+            return {
+                "items": items,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "stats": {
+                    "page_total_amount_cents": sum(int(item["total_amount_cents"] or 0) for item in items),
+                    "page_paid_count": sum(1 for item in items if item["payment_status"] == "paid"),
+                    "page_credit_count": sum(1 for item in items if item["payment_status"] == "credit"),
+                    "page_pending_settlement_count": sum(1 for item in items if item["settlement_status"] == "pending"),
+                },
+            }
 
     async def list_cards(
         self,
         *,
         current_admin: AdminAccount,
+        plan_code: Optional[str] = None,
+        status: Optional[str] = None,
+        source_type: Optional[str] = None,
+        keyword: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> Dict[str, Any]:
+        limit, offset = self._normalize_page(limit, offset)
         async with get_async_session() as session:
             visible_ids = await self._visible_account_ids(session, current_admin)
+            stmt = select(ActivationCard).where(ActivationCard.owner_account_id.in_(visible_ids))
             count_stmt = select(func.count(ActivationCard.id)).where(ActivationCard.owner_account_id.in_(visible_ids))
-            stmt = (
-                select(ActivationCard)
-                .where(ActivationCard.owner_account_id.in_(visible_ids))
-                .order_by(ActivationCard.created_at.desc(), ActivationCard.id.desc())
-                .limit(max(1, min(500, int(limit))))
-                .offset(max(0, int(offset)))
-            )
+            normalized_plan = (plan_code or "").strip()
+            if normalized_plan:
+                stmt = stmt.where(ActivationCard.plan_code == normalized_plan)
+                count_stmt = count_stmt.where(ActivationCard.plan_code == normalized_plan)
+            normalized_status = (status or "").strip().lower()
+            if normalized_status == "available":
+                stmt = stmt.where(ActivationCard.is_used.is_(False))
+                count_stmt = count_stmt.where(ActivationCard.is_used.is_(False))
+            elif normalized_status == "used":
+                stmt = stmt.where(ActivationCard.is_used.is_(True))
+                count_stmt = count_stmt.where(ActivationCard.is_used.is_(True))
+            normalized_source = (source_type or "").strip().lower()
+            if normalized_source and normalized_source != "all":
+                stmt = stmt.where(ActivationCard.card_source_type == normalized_source)
+                count_stmt = count_stmt.where(ActivationCard.card_source_type == normalized_source)
+            normalized_keyword = (keyword or "").strip()
+            if normalized_keyword:
+                keyword_value = f"%{normalized_keyword}%"
+                keyword_condition = (
+                    ActivationCard.card_code.ilike(keyword_value)
+                    | ActivationCard.batch_id.ilike(keyword_value)
+                    | ActivationCard.plan_code.ilike(keyword_value)
+                )
+                stmt = stmt.where(keyword_condition)
+                count_stmt = count_stmt.where(keyword_condition)
             total = int((await session.execute(count_stmt)).scalar_one() or 0)
-            rows = (await session.execute(stmt)).scalars().all()
+            rows = (
+                await session.execute(
+                    stmt.order_by(ActivationCard.created_at.desc(), ActivationCard.id.desc()).limit(limit).offset(offset)
+                )
+            ).scalars().all()
             return {
                 "items": [self._serialize_card(row) for row in rows],
                 "total": total,
-                "limit": max(1, min(500, int(limit))),
-                "offset": max(0, int(offset)),
+                "limit": limit,
+                "offset": offset,
             }
 
     async def list_self_fund_ledgers(
         self,
         *,
         current_admin: AdminAccount,
+        biz_type: Optional[str] = None,
+        direction: Optional[str] = None,
+        keyword: Optional[str] = None,
         limit: int = 200,
-    ) -> List[Dict[str, Any]]:
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        limit, offset = self._normalize_page(limit, offset)
         async with get_async_session() as session:
+            stmt = select(AgentFundLedger).where(AgentFundLedger.account_id == int(current_admin.id))
+            count_stmt = select(func.count(AgentFundLedger.id)).where(AgentFundLedger.account_id == int(current_admin.id))
+            normalized_biz = (biz_type or "").strip().lower()
+            if normalized_biz and normalized_biz != "all":
+                stmt = stmt.where(AgentFundLedger.biz_type == normalized_biz)
+                count_stmt = count_stmt.where(AgentFundLedger.biz_type == normalized_biz)
+            normalized_direction = (direction or "").strip().lower()
+            if normalized_direction and normalized_direction != "all":
+                stmt = stmt.where(AgentFundLedger.direction == normalized_direction)
+                count_stmt = count_stmt.where(AgentFundLedger.direction == normalized_direction)
+            normalized_keyword = (keyword or "").strip()
+            if normalized_keyword:
+                keyword_value = f"%{normalized_keyword}%"
+                keyword_condition = (
+                    AgentFundLedger.remark.ilike(keyword_value)
+                    | AgentFundLedger.related_batch_id.ilike(keyword_value)
+                )
+                stmt = stmt.where(keyword_condition)
+                count_stmt = count_stmt.where(keyword_condition)
+            total = int((await session.execute(count_stmt)).scalar_one() or 0)
             rows = (
                 await session.execute(
-                    select(AgentFundLedger)
-                    .where(AgentFundLedger.account_id == int(current_admin.id))
-                    .order_by(AgentFundLedger.created_at.desc(), AgentFundLedger.id.desc())
-                    .limit(max(1, min(500, int(limit))))
+                    stmt.order_by(AgentFundLedger.created_at.desc(), AgentFundLedger.id.desc()).limit(limit).offset(offset)
                 )
             ).scalars().all()
             account_map = await self._build_account_name_map(session, rows)
-            return [
+            items = [
                 self._serialize_fund_ledger(
                     row,
                     account_name=account_map.get(int(row.account_id)),
@@ -1264,28 +1467,63 @@ class AdminPanelService:
                 )
                 for row in rows
             ]
+            return {
+                "items": items,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "stats": {
+                    "page_in_amount_cents": sum(item["amount_cents"] for item in items if item["direction"] == "in"),
+                    "page_out_amount_cents": sum(item["amount_cents"] for item in items if item["direction"] == "out"),
+                },
+            }
 
     async def list_visible_fund_ledgers(
         self,
         *,
         current_admin: AdminAccount,
+        biz_type: Optional[str] = None,
+        direction: Optional[str] = None,
+        keyword: Optional[str] = None,
         limit: int = 200,
         account_id: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        limit, offset = self._normalize_page(limit, offset)
         async with get_async_session() as session:
             visible_ids = await self._visible_account_ids(session, current_admin)
             if account_id is not None and int(account_id) not in set(visible_ids):
                 raise HTTPException(status_code=403, detail="无权查看该账号流水")
             stmt = select(AgentFundLedger).where(AgentFundLedger.account_id.in_(visible_ids))
+            count_stmt = select(func.count(AgentFundLedger.id)).where(AgentFundLedger.account_id.in_(visible_ids))
             if account_id is not None:
                 stmt = stmt.where(AgentFundLedger.account_id == int(account_id))
+                count_stmt = count_stmt.where(AgentFundLedger.account_id == int(account_id))
+            normalized_biz = (biz_type or "").strip().lower()
+            if normalized_biz and normalized_biz != "all":
+                stmt = stmt.where(AgentFundLedger.biz_type == normalized_biz)
+                count_stmt = count_stmt.where(AgentFundLedger.biz_type == normalized_biz)
+            normalized_direction = (direction or "").strip().lower()
+            if normalized_direction and normalized_direction != "all":
+                stmt = stmt.where(AgentFundLedger.direction == normalized_direction)
+                count_stmt = count_stmt.where(AgentFundLedger.direction == normalized_direction)
+            normalized_keyword = (keyword or "").strip()
+            if normalized_keyword:
+                keyword_value = f"%{normalized_keyword}%"
+                keyword_condition = (
+                    AgentFundLedger.remark.ilike(keyword_value)
+                    | AgentFundLedger.related_batch_id.ilike(keyword_value)
+                )
+                stmt = stmt.where(keyword_condition)
+                count_stmt = count_stmt.where(keyword_condition)
+            total = int((await session.execute(count_stmt)).scalar_one() or 0)
             rows = (
                 await session.execute(
-                    stmt.order_by(AgentFundLedger.created_at.desc(), AgentFundLedger.id.desc()).limit(max(1, min(500, int(limit))))
+                    stmt.order_by(AgentFundLedger.created_at.desc(), AgentFundLedger.id.desc()).limit(limit).offset(offset)
                 )
             ).scalars().all()
             account_map = await self._build_account_name_map(session, rows)
-            return [
+            items = [
                 self._serialize_fund_ledger(
                     row,
                     account_name=account_map.get(int(row.account_id)),
@@ -1294,6 +1532,12 @@ class AdminPanelService:
                 )
                 for row in rows
             ]
+            return {
+                "items": items,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
 
     async def _build_account_name_map(
         self,
@@ -1317,8 +1561,24 @@ class AdminPanelService:
             for account in accounts
         }
 
-    async def export_cards_xlsx(self, *, current_admin: AdminAccount) -> Tuple[bytes, int]:
-        cards_page = await self.list_cards(current_admin=current_admin, limit=5000, offset=0)
+    async def export_cards_xlsx(
+        self,
+        *,
+        current_admin: AdminAccount,
+        plan_code: Optional[str] = None,
+        status: Optional[str] = None,
+        source_type: Optional[str] = None,
+        keyword: Optional[str] = None,
+    ) -> Tuple[bytes, int]:
+        cards_page = await self.list_cards(
+            current_admin=current_admin,
+            plan_code=plan_code,
+            status=status,
+            source_type=source_type,
+            keyword=keyword,
+            limit=5000,
+            offset=0,
+        )
         rows = cards_page["items"]
         try:
             from openpyxl import Workbook
@@ -1523,31 +1783,54 @@ class AdminPanelService:
         current_admin: AdminAccount,
         status: Optional[str] = None,
         request_type: Optional[str] = None,
+        keyword: Optional[str] = None,
         limit: int = 200,
-    ) -> List[Dict[str, Any]]:
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        limit, offset = self._normalize_page(limit, offset)
         async with get_async_session() as session:
             visible_ids = await self._visible_account_ids(session, current_admin)
             stmt = select(ApprovalRequest).where(ApprovalRequest.province_code == current_admin.province_code)
+            count_stmt = select(func.count(ApprovalRequest.request_id)).where(ApprovalRequest.province_code == current_admin.province_code)
             if current_admin.role_code != ROLE_SUPER_ADMIN:
-                stmt = stmt.where(
-                    or_(
-                        ApprovalRequest.approver_account_id == int(current_admin.id),
-                        ApprovalRequest.requester_account_id.in_(visible_ids),
-                        ApprovalRequest.subject_account_id.in_(visible_ids),
-                    )
+                scope_condition = or_(
+                    ApprovalRequest.approver_account_id == int(current_admin.id),
+                    ApprovalRequest.requester_account_id.in_(visible_ids),
+                    ApprovalRequest.subject_account_id.in_(visible_ids),
                 )
+                stmt = stmt.where(scope_condition)
+                count_stmt = count_stmt.where(scope_condition)
             normalized_status = (status or "").strip().lower()
             if normalized_status and normalized_status != "all":
                 stmt = stmt.where(ApprovalRequest.status == normalized_status)
+                count_stmt = count_stmt.where(ApprovalRequest.status == normalized_status)
             normalized_type = (request_type or "").strip().lower()
             if normalized_type and normalized_type != "all":
                 stmt = stmt.where(ApprovalRequest.request_type == normalized_type)
+                count_stmt = count_stmt.where(ApprovalRequest.request_type == normalized_type)
+            normalized_keyword = (keyword or "").strip()
+            if normalized_keyword:
+                keyword_value = f"%{normalized_keyword}%"
+                keyword_condition = ApprovalRequest.request_id.ilike(keyword_value)
+                stmt = stmt.where(keyword_condition)
+                count_stmt = count_stmt.where(keyword_condition)
+            total = int((await session.execute(count_stmt)).scalar_one() or 0)
             rows = (
                 await session.execute(
-                    stmt.order_by(ApprovalRequest.created_at.desc(), ApprovalRequest.request_id.desc()).limit(max(1, min(500, int(limit))))
+                    stmt.order_by(ApprovalRequest.created_at.desc(), ApprovalRequest.request_id.desc()).limit(limit).offset(offset)
                 )
             ).scalars().all()
-            return [self._serialize_approval_request(row) for row in rows]
+            items = [self._serialize_approval_request(row) for row in rows]
+            return {
+                "items": items,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "stats": {
+                    "page_pending_count": sum(1 for item in items if item["status"] == "pending"),
+                    "page_pending_amount_cents": sum(int(item["amount_cents"] or 0) for item in items if item["status"] == "pending"),
+                },
+            }
 
     async def _apply_approval_effect(self, session: Any, request: ApprovalRequest, operator: AdminAccount) -> None:
         subject = await session.get(AdminAccount, int(request.subject_account_id))
@@ -1758,12 +2041,52 @@ class AdminPanelService:
             return await self.approve_request(current_admin=account, request_id=request_id)
         return await self.reject_request(current_admin=account, request_id=request_id)
 
-    async def list_audit_logs(self, *, current_admin: AdminAccount, limit: int = 200) -> List[Dict[str, Any]]:
+    async def list_audit_logs(
+        self,
+        *,
+        current_admin: AdminAccount,
+        action: Optional[str] = None,
+        target_type: Optional[str] = None,
+        keyword: Optional[str] = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        limit, offset = self._normalize_page(limit, offset)
         async with get_async_session() as session:
-            rows = (
-                await session.execute(select(AdminAuditLog).order_by(AdminAuditLog.id.desc()).limit(max(1, min(500, int(limit)))))
-            ).scalars().all()
+            stmt = select(AdminAuditLog)
+            count_stmt = select(func.count(AdminAuditLog.id))
+            normalized_action = (action or "").strip()
+            if normalized_action:
+                stmt = stmt.where(AdminAuditLog.action == normalized_action)
+                count_stmt = count_stmt.where(AdminAuditLog.action == normalized_action)
+            normalized_target = (target_type or "").strip()
+            if normalized_target:
+                stmt = stmt.where(AdminAuditLog.target_type == normalized_target)
+                count_stmt = count_stmt.where(AdminAuditLog.target_type == normalized_target)
+            normalized_keyword = (keyword or "").strip()
+            if normalized_keyword:
+                keyword_value = f"%{normalized_keyword}%"
+                keyword_condition = (
+                    AdminAuditLog.actor.ilike(keyword_value)
+                    | AdminAuditLog.action.ilike(keyword_value)
+                    | AdminAuditLog.target_id.ilike(keyword_value)
+                )
+                stmt = stmt.where(keyword_condition)
+                count_stmt = count_stmt.where(keyword_condition)
             visible_ids = set(await self._visible_account_ids(session, current_admin))
+            if current_admin.role_code == ROLE_SUPER_ADMIN:
+                total = int((await session.execute(count_stmt)).scalar_one() or 0)
+                rows = (
+                    await session.execute(
+                        stmt.order_by(AdminAuditLog.id.desc()).limit(limit).offset(offset)
+                    )
+                ).scalars().all()
+            else:
+                rows = (
+                    await session.execute(
+                        stmt.order_by(AdminAuditLog.id.desc())
+                    )
+                ).scalars().all()
         result: List[Dict[str, Any]] = []
         for row in rows:
             detail = row.detail or {}
@@ -1784,7 +2107,15 @@ class AdminPanelService:
                     "created_at": row.created_at.isoformat() if row.created_at else None,
                 }
             )
-        return result
+        if current_admin.role_code != ROLE_SUPER_ADMIN:
+            total = len(result)
+            result = result[offset:offset + limit]
+        return {
+            "items": result,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
 
 
 _admin_panel_service: Optional[AdminPanelService] = None

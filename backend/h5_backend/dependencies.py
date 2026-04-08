@@ -4,9 +4,18 @@ from fastapi import Depends
 from fastapi import HTTPException
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from backend.bot.account.manager import get_account_manager
 from backend.bot.proxy.pool import get_proxy_pool
-from backend.database.schema.models import Account, AdminAccount, Proxy, ScheduledMessageTask
+from backend.database.schema.models import (
+    Account,
+    AdminAccount,
+    AdminAccountRole,
+    AdminRole,
+    AdminRolePermission,
+    Proxy,
+    ScheduledMessageTask,
+)
 from backend.database.runtime.session import get_async_session
 from backend.h5_backend.services.admin_auth.service import get_admin_auth_service
 
@@ -51,12 +60,59 @@ async def check_proxy_permission(proxy_id: int, user_id: int) -> Proxy:
 
 async def get_current_admin_account(token: str = Depends(admin_oauth2_scheme)) -> AdminAccount:
     service = get_admin_auth_service()
-    return await service.get_current_admin(token)
+    account = await service.get_current_admin(token)
+    async with get_async_session() as session:
+        hydrated = (
+            await session.execute(
+                select(AdminAccount)
+                .options(
+                    selectinload(AdminAccount.tg_binding),
+                    selectinload(AdminAccount.role_bindings)
+                    .selectinload(AdminAccountRole.role)
+                    .selectinload(AdminRole.permission_bindings)
+                    .selectinload(AdminRolePermission.permission),
+                )
+                .where(AdminAccount.id == int(account.id))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    if hydrated is None:
+        raise HTTPException(status_code=401, detail="后台账号不存在")
+    return hydrated
+
+
+def _get_effective_permissions(current_admin: AdminAccount) -> set[str]:
+    permission_codes: set[str] = set()
+    for binding in current_admin.__dict__.get("role_bindings") or []:
+        role = getattr(binding, "role", None)
+        if role is None or role.status != "active":
+            continue
+        for permission_binding in role.__dict__.get("permission_bindings") or []:
+            permission = getattr(permission_binding, "permission", None)
+            if permission is not None:
+                permission_codes.add(permission.permission_code)
+    return permission_codes
+
+
+def admin_has_permissions(current_admin: AdminAccount, *permission_codes: str) -> bool:
+    required = {str(code or "").strip() for code in permission_codes if str(code or "").strip()}
+    if not required:
+        return True
+    return required.issubset(_get_effective_permissions(current_admin))
 
 
 def require_admin_roles(*roles: str):
     async def _dependency(current_admin: AdminAccount = Depends(get_current_admin_account)) -> AdminAccount:
         if roles and current_admin.role_code not in set(roles):
+            raise HTTPException(status_code=403, detail="无权访问该后台资源")
+        return current_admin
+
+    return _dependency
+
+
+def require_admin_permissions(*permission_codes: str):
+    async def _dependency(current_admin: AdminAccount = Depends(get_current_admin_account)) -> AdminAccount:
+        if not admin_has_permissions(current_admin, *permission_codes):
             raise HTTPException(status_code=403, detail="无权访问该后台资源")
         return current_admin
 

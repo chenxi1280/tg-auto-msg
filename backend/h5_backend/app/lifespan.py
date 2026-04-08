@@ -19,6 +19,7 @@ from backend.config.core.settings import settings
 from backend.database.runtime.session import init_database
 from backend.h5_backend.services.account import account_auto_sync_runtime
 from backend.h5_backend.services.admin_auth.service import get_admin_auth_service
+from backend.h5_backend.services.admin_rbac.service import get_admin_rbac_service
 from backend.scheduler.core.worker import scheduler
 
 # Register Bot command/callback handlers (import side effect)
@@ -62,6 +63,10 @@ async def app_lifespan(app: FastAPI):
     logger.info("检查后台超管账号...")
     await get_admin_auth_service().ensure_bootstrap_super_admin()
     logger.info("✅ 后台超管账号检查完成")
+
+    logger.info("初始化后台 RBAC...")
+    await get_admin_rbac_service().ensure_builtin_rbac()
+    logger.info("✅ 后台 RBAC 初始化完成")
 
     logger.info("初始化开发者应用凭证...")
     await get_developer_app_service().ensure_env_default_app()

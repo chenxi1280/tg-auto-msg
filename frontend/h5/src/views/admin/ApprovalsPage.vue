@@ -1,5 +1,13 @@
 <template>
   <div class="page-stack">
+    <el-alert
+      v-if="lastActionMessage"
+      :title="lastActionMessage"
+      type="success"
+      :closable="true"
+      @close="lastActionMessage = ''"
+    />
+
     <div class="stats-grid">
       <el-card shadow="hover">
         <div class="stat-label">待处理审批</div>
@@ -40,9 +48,16 @@
         </el-table-column>
         <el-table-column label="操作" width="160">
           <template #default="{ row }">
-            <el-button type="primary" link :loading="settlingBatchId === row.batch_id" @click="submitSettlement(row.batch_id)">
+            <el-button
+              v-if="canCreateSettlement"
+              type="primary"
+              link
+              :loading="settlingBatchId === row.batch_id"
+              @click="submitSettlement(row.batch_id)"
+            >
               发起结算审批
             </el-button>
+            <span v-else class="muted-text">无发起权限</span>
           </template>
         </el-table-column>
       </el-table>
@@ -53,20 +68,21 @@
         <div class="card-header">
           <span>审批工作台</span>
           <div class="header-actions">
-            <el-select v-model="filters.status" style="width: 140px" @change="loadApprovals">
+            <el-select v-model="filters.status" style="width: 140px" @change="loadApprovals(true)">
               <el-option label="全部状态" value="all" />
               <el-option label="待处理" value="pending" />
               <el-option label="已通过" value="approved" />
               <el-option label="已驳回" value="rejected" />
             </el-select>
-            <el-select v-model="filters.request_type" style="width: 160px" @change="loadApprovals">
+            <el-select v-model="filters.request_type" style="width: 160px" @change="loadApprovals(true)">
               <el-option label="全部类型" value="all" />
               <el-option label="充值入账" value="recharge" />
               <el-option label="批次申请" value="batch_purchase" />
               <el-option label="授信结算" value="settlement" />
               <el-option label="额度调整" value="credit_adjust" />
             </el-select>
-            <el-input v-model.trim="filters.keyword" clearable placeholder="搜索审批单号/批次/规格" style="width: 220px" />
+            <el-input v-model.trim="filters.keyword" clearable placeholder="搜索审批单号" style="width: 220px" />
+            <el-button @click="loadApprovals(true)">查询</el-button>
             <el-button @click="refreshData">刷新</el-button>
           </div>
         </div>
@@ -74,10 +90,11 @@
 
       <div class="toolbar">
         <div class="selection-note">
-          已选择 {{ selectedPendingRequestIds.length }} 条待处理审批
+          已选择 {{ selectedPendingRequestIds.length }} 条待处理审批，当前总数 {{ totalApprovals }}
         </div>
         <div class="toolbar-actions">
           <el-button
+            v-if="canBatchApprove"
             type="primary"
             :disabled="!selectedPendingRequestIds.length"
             :loading="batchActionLoading === 'approve'"
@@ -86,6 +103,7 @@
             批量通过
           </el-button>
           <el-button
+            v-if="canBatchReject"
             type="danger"
             plain
             :disabled="!selectedPendingRequestIds.length"
@@ -97,10 +115,10 @@
         </div>
       </div>
 
-      <el-empty v-if="!filteredApprovals.length" description="当前筛选条件下没有审批记录" />
+      <el-empty v-if="!approvals.length" description="当前筛选条件下没有审批记录" />
       <el-table
         v-else
-        :data="filteredApprovals"
+        :data="approvals"
         stripe
         @selection-change="handleSelectionChange"
       >
@@ -132,13 +150,42 @@
         <el-table-column label="操作" width="160" fixed="right">
           <template #default="{ row }">
             <template v-if="row.status === 'pending'">
-              <el-button type="primary" link :loading="processingRequestId === row.request_id" @click="approve(row.request_id)">通过</el-button>
-              <el-button type="danger" link :loading="processingRequestId === row.request_id" @click="reject(row.request_id)">驳回</el-button>
+              <el-button
+                v-if="canApprove"
+                type="primary"
+                link
+                :loading="processingRequestId === row.request_id"
+                @click="approve(row.request_id)"
+              >
+                通过
+              </el-button>
+              <el-button
+                v-if="canReject"
+                type="danger"
+                link
+                :loading="processingRequestId === row.request_id"
+                @click="reject(row.request_id)"
+              >
+                驳回
+              </el-button>
+              <span v-if="!canApprove && !canReject" class="muted-text">无处理权限</span>
             </template>
             <span v-else class="muted-text">已处理</span>
           </template>
         </el-table-column>
       </el-table>
+      <div class="pagination-wrap">
+        <el-pagination
+          v-model:current-page="pagination.currentPage"
+          v-model:page-size="pagination.pageSize"
+          background
+          layout="total, sizes, prev, pager, next"
+          :page-sizes="[20, 50, 100]"
+          :total="totalApprovals"
+          @current-change="handlePageChange"
+          @size-change="handleSizeChange"
+        />
+      </div>
     </el-card>
   </div>
 </template>
@@ -152,23 +199,39 @@ import {
   adminBatchApproveRequests,
   adminBatchRejectRequests,
   adminCreateSettlementRequest,
+  adminListApprovalRequests,
   adminRejectRequest,
 } from '@/api/admin'
 import { useAdminConsoleStore } from '@/stores/adminConsole'
 import { approvalLabel, centsToYuan, formatDateTime } from '@/utils/adminConsole'
 
 const store = useAdminConsoleStore()
+const canCreateSettlement = computed(() => store.hasPermission('agents.write'))
+const canApprove = computed(() => store.hasPermission('approvals.approve'))
+const canReject = computed(() => store.hasPermission('approvals.reject'))
+const canBatchApprove = computed(() => store.hasPermission('approvals.batch'))
+const canBatchReject = computed(() => store.hasPermission('approvals.batch'))
+const canReadAgents = computed(() => store.hasPermission('agents.read'))
+const canReadBatches = computed(() => store.hasPermission('batches.read'))
 const settlingBatchId = ref('')
 const processingRequestId = ref('')
 const batchActionLoading = ref<'approve' | 'reject' | ''>('')
 const selectedRows = ref<ApprovalRequest[]>([])
+const approvals = ref<ApprovalRequest[]>([])
+const totalApprovals = ref(0)
+const lastActionMessage = ref('')
 const filters = reactive({
   status: 'all',
   request_type: 'all',
   keyword: '',
 })
+const pagination = reactive({
+  currentPage: 1,
+  pageSize: 20,
+})
 
 const mySettlementBatches = computed(() => {
+  if (!canReadBatches.value) return []
   const currentId = store.profile?.account.id
   if (!currentId) return []
   return store.batches.filter(
@@ -183,7 +246,7 @@ const settlementBatchAmount = computed(() =>
   mySettlementBatches.value.reduce((sum, batch) => sum + (batch.total_amount_cents || 0), 0),
 )
 
-const pendingApprovals = computed(() => store.approvalRequests.filter((item) => item.status === 'pending'))
+const pendingApprovals = computed(() => approvals.value.filter((item) => item.status === 'pending'))
 const pendingApprovalCount = computed(() => pendingApprovals.value.length)
 const pendingRechargeItems = computed(() => pendingApprovals.value.filter((item) => item.request_type === 'recharge'))
 const pendingBatchPurchaseItems = computed(() => pendingApprovals.value.filter((item) => item.request_type === 'batch_purchase'))
@@ -191,21 +254,6 @@ const pendingRechargeCount = computed(() => pendingRechargeItems.value.length)
 const pendingRechargeAmount = computed(() => pendingRechargeItems.value.reduce((sum, item) => sum + (item.amount_cents || 0), 0))
 const pendingBatchPurchaseCount = computed(() => pendingBatchPurchaseItems.value.length)
 const pendingBatchPurchaseAmount = computed(() => pendingBatchPurchaseItems.value.reduce((sum, item) => sum + (item.amount_cents || 0), 0))
-
-const filteredApprovals = computed(() => {
-  const keyword = filters.keyword.trim().toLowerCase()
-  if (!keyword) return store.approvalRequests
-  return store.approvalRequests.filter((item) => {
-    const payload = item.payload_json || {}
-    return [
-      item.request_id,
-      String(payload.batch_id || ''),
-      String(payload.plan_code || ''),
-      String(payload.quantity || ''),
-      String(store.accountMap.get(item.subject_account_id)?.display_name || ''),
-    ].some((part) => part.toLowerCase().includes(keyword))
-  })
-})
 
 const selectedPendingRequestIds = computed(() =>
   selectedRows.value.filter((row) => row.status === 'pending').map((row) => row.request_id),
@@ -241,25 +289,55 @@ const handleSelectionChange = (rows: ApprovalRequest[]) => {
   selectedRows.value = rows
 }
 
-const loadApprovals = async () => {
-  await store.loadApprovalRequests({
+const loadApprovals = async (resetPage = false) => {
+  if (resetPage) pagination.currentPage = 1
+  const response = await adminListApprovalRequests({
     status: filters.status,
     request_type: filters.request_type,
-    limit: 300,
+    keyword: filters.keyword || undefined,
+    limit: pagination.pageSize,
+    offset: (pagination.currentPage - 1) * pagination.pageSize,
   })
+  approvals.value = response.data.items
+  totalApprovals.value = response.data.total
+  if (!approvals.value.length && totalApprovals.value > 0 && pagination.currentPage > 1) {
+    pagination.currentPage -= 1
+    await loadApprovals()
+  }
 }
 
 const refreshData = async () => {
-  await Promise.all([store.loadProfile(), store.loadAccounts(), store.loadBatches(), loadApprovals()])
+  const tasks: Promise<unknown>[] = [store.loadProfile(), loadApprovals()]
+  if (canReadAgents.value) {
+    tasks.push(store.loadAccounts())
+  }
+  if (canReadBatches.value) {
+    tasks.push(store.loadBatches())
+  }
+  await Promise.all(tasks)
+}
+
+const handlePageChange = async () => {
+  await loadApprovals()
+}
+
+const handleSizeChange = async () => {
+  pagination.currentPage = 1
+  await loadApprovals()
 }
 
 const submitSettlement = async (batchId: string) => {
+  if (!canCreateSettlement.value) {
+    ElMessage.warning('当前账号无权发起结算审批')
+    return
+  }
   settlingBatchId.value = batchId
   try {
     await adminCreateSettlementRequest({
       payload_json: { batch_id: batchId },
     })
     await refreshData()
+    lastActionMessage.value = '结算审批已发起'
     ElMessage.success('结算审批已发起')
   } finally {
     settlingBatchId.value = ''
@@ -267,10 +345,15 @@ const submitSettlement = async (batchId: string) => {
 }
 
 const approve = async (requestId: string) => {
+  if (!canApprove.value) {
+    ElMessage.warning('当前账号无权通过审批')
+    return
+  }
   processingRequestId.value = requestId
   try {
     await adminApproveRequest(requestId)
     await refreshData()
+    lastActionMessage.value = '审批已通过'
     ElMessage.success('审批已通过')
   } finally {
     processingRequestId.value = ''
@@ -278,10 +361,15 @@ const approve = async (requestId: string) => {
 }
 
 const reject = async (requestId: string) => {
+  if (!canReject.value) {
+    ElMessage.warning('当前账号无权驳回审批')
+    return
+  }
   processingRequestId.value = requestId
   try {
     await adminRejectRequest(requestId)
     await refreshData()
+    lastActionMessage.value = '审批已驳回'
     ElMessage.success('审批已驳回')
   } finally {
     processingRequestId.value = ''
@@ -289,6 +377,8 @@ const reject = async (requestId: string) => {
 }
 
 const showBatchFeedback = (actionLabel: string, result: { success_count: number; failed_count: number; failed_items: Array<{ request_id: string; detail: string }> }) => {
+  const summary = `${actionLabel}完成，成功 ${result.success_count} 条，失败 ${result.failed_count} 条`
+  lastActionMessage.value = summary
   if (!result.failed_count) {
     ElMessage.success(`${actionLabel}完成，成功 ${result.success_count} 条`)
     return
@@ -301,6 +391,10 @@ const showBatchFeedback = (actionLabel: string, result: { success_count: number;
 }
 
 const batchApprove = async () => {
+  if (!canBatchApprove.value) {
+    ElMessage.warning('当前账号无权批量审批')
+    return
+  }
   if (!selectedPendingRequestIds.value.length) return
   try {
     await ElMessageBox.confirm(`确认批量通过 ${selectedPendingRequestIds.value.length} 条审批吗？`, '批量通过确认', {
@@ -321,6 +415,10 @@ const batchApprove = async () => {
 }
 
 const batchReject = async () => {
+  if (!canBatchReject.value) {
+    ElMessage.warning('当前账号无权批量驳回')
+    return
+  }
   if (!selectedPendingRequestIds.value.length) return
   try {
     await ElMessageBox.confirm(`确认批量驳回 ${selectedPendingRequestIds.value.length} 条审批吗？`, '批量驳回确认', {
@@ -402,5 +500,11 @@ onMounted(async () => {
 
 .muted-text {
   display: inline-block;
+}
+
+.pagination-wrap {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
 }
 </style>

@@ -11,10 +11,22 @@
         <el-descriptions-item label="显示名">{{ store.profile.account.display_name }}</el-descriptions-item>
         <el-descriptions-item label="账号">{{ store.profile.account.username }}</el-descriptions-item>
         <el-descriptions-item label="省份">{{ store.profile.province_code }}</el-descriptions-item>
+        <el-descriptions-item label="绑定角色">
+          <div class="tag-list">
+            <el-tag v-for="roleKey in store.profile.roles" :key="roleKey" size="small">
+              {{ roleLabel(roleKey) }}
+            </el-tag>
+          </div>
+        </el-descriptions-item>
         <el-descriptions-item label="余额">¥{{ centsToYuan(store.profile.account.balance_cents) }}</el-descriptions-item>
         <el-descriptions-item label="授信白名单">
           <el-tag :type="store.profile.account.is_credit_whitelisted ? 'success' : 'info'">
             {{ store.profile.account.is_credit_whitelisted ? '已开通' : '未开通' }}
+          </el-tag>
+        </el-descriptions-item>
+        <el-descriptions-item label="TG 绑定状态">
+          <el-tag :type="store.profile.account.tg_binding.bind_status === 'bound' ? 'success' : 'info'">
+            {{ store.profile.account.tg_binding.bind_status === 'bound' ? '已绑定' : '未绑定' }}
           </el-tag>
         </el-descriptions-item>
         <el-descriptions-item label="上次登录">{{ formatDateTime(store.profile.account.last_login_at) }}</el-descriptions-item>
@@ -24,8 +36,30 @@
     <el-card shadow="hover">
       <template #header>
         <div class="card-header">
+          <span>权限摘要</span>
+          <el-tag type="info">{{ store.profile?.permissions?.length || 0 }} 项</el-tag>
+        </div>
+      </template>
+      <div v-if="store.profile" class="tag-list">
+        <el-tag v-for="permission in store.profile.permissions" :key="permission" size="small" type="info">
+          {{ permission }}
+        </el-tag>
+      </div>
+    </el-card>
+
+    <el-card shadow="hover">
+      <template #header>
+        <div class="card-header">
           <span>TG 绑定</span>
-          <el-button link type="primary" @click="issueBindCode" :loading="issuingBindCode">生成绑定码</el-button>
+          <el-button
+            v-if="store.hasPermission('security.update')"
+            link
+            type="primary"
+            @click="issueBindCode"
+            :loading="issuingBindCode"
+          >
+            生成绑定码
+          </el-button>
         </div>
       </template>
       <div v-if="store.profile" class="tg-section">
@@ -47,7 +81,7 @@
           </div>
         </div>
         <el-button
-          v-if="store.profile.account.tg_binding.bind_status === 'bound'"
+          v-if="store.profile.account.tg_binding.bind_status === 'bound' && store.hasPermission('security.update')"
           class="danger-action"
           type="danger"
           plain
@@ -67,12 +101,14 @@
       </template>
       <el-form label-position="top">
         <el-form-item label="当前密码">
-          <el-input v-model="passwordForm.current_password" type="password" show-password />
+          <el-input v-model="passwordForm.current_password" type="password" show-password :disabled="!store.hasPermission('security.update')" />
         </el-form-item>
         <el-form-item label="新密码">
-          <el-input v-model="passwordForm.new_password" type="password" show-password />
+          <el-input v-model="passwordForm.new_password" type="password" show-password :disabled="!store.hasPermission('security.update')" />
         </el-form-item>
-        <el-button type="primary" :loading="changingPassword" @click="submitChangePassword">更新密码</el-button>
+        <el-button v-if="store.hasPermission('security.update')" type="primary" :loading="changingPassword" @click="submitChangePassword">
+          更新密码
+        </el-button>
       </el-form>
     </el-card>
   </div>
@@ -186,5 +222,11 @@ onMounted(async () => {
 
 .danger-action {
   align-self: flex-start;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 </style>
