@@ -84,6 +84,10 @@
 DATABASE_URL=postgresql+asyncpg://<db_user>:<db_password>@postgres:5432/tgmsg
 REDIS_URL=redis://:<redis_password>@redis:6379/0
 INFRA_NETWORK_NAME=infra_default
+PROVINCE_CODE=<province_code>
+ADMIN_BOOTSTRAP_USERNAME=admin
+ADMIN_BOOTSTRAP_PASSWORD=<strong_password>
+ADMIN_BOOTSTRAP_DISPLAY_NAME=超级管理员
 ```
 
 含义：
@@ -91,6 +95,8 @@ INFRA_NETWORK_NAME=infra_default
 - `DATABASE_URL` 指向 `infra-compose` 中的 `postgres`
 - `REDIS_URL` 指向 `infra-compose` 中的 `redis`
 - `INFRA_NETWORK_NAME` 用于把业务容器接入公共网络
+- `PROVINCE_CODE` 表示当前这套服务所属省份，超管账号按省份隔离初始化
+- `ADMIN_BOOTSTRAP_*` 用于首次启动时自动创建当前省份的首个 `super_admin`
 
 ## 5. 当前实际 vs 目标架构
 

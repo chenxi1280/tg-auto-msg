@@ -190,6 +190,15 @@ cp .env.docker.example /data/tgmsg/shared/.env
 nano /data/tgmsg/shared/.env
 ```
 
+至少补齐下面几项，否则新版后台不会自动创建首个超管：
+
+```env
+PROVINCE_CODE=guangdong
+ADMIN_BOOTSTRAP_USERNAME=admin
+ADMIN_BOOTSTRAP_PASSWORD=your_strong_password
+ADMIN_BOOTSTRAP_DISPLAY_NAME=超级管理员
+```
+
 ### 3. 本地标准发版
 ```bash
 bash deploy/release.sh --host 47.250.167.174
