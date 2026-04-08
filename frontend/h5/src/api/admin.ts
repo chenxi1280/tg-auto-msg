@@ -272,6 +272,9 @@ export interface DeveloperAppSettings {
   assignment_mode: string
   alert_tg_user_ids: number[]
   alert_tg_user_ids_text: string
+  default_developer_app_id?: number | null
+  default_developer_app_name?: string | null
+  default_developer_app_active?: boolean
 }
 
 export interface LegacyProxy {
@@ -565,12 +568,6 @@ export const adminCreateCreditAdjustRequest = (payload: {
   payload_json?: Record<string, any>
 }): Promise<{ success: boolean; data: ApprovalRequest }> =>
   adminApi.post('/agent/approval-requests/credit-adjust', { request_type: 'credit_adjust', ...payload })
-
-export const adminCreateBatchPurchaseRequest = (payload: {
-  subject_account_id?: number
-  payload_json?: Record<string, any>
-}): Promise<{ success: boolean; data: ApprovalRequest }> =>
-  adminApi.post('/agent/approval-requests/batch-purchase', { request_type: 'batch_purchase', ...payload })
 
 export const adminListPendingApprovals = (): Promise<{ success: boolean; data: ApprovalRequest[] }> =>
   adminApi.get('/agent/approval-requests/pending')

@@ -300,10 +300,21 @@ class DeveloperAppService:
             mode = await self._get_assignment_mode(session)
             raw_alert_ids = await self._get_alert_tg_user_ids_raw(session)
             _, alert_ids = self._normalize_alert_tg_user_ids(raw_alert_ids)
+            default_app_id = await self.get_default_app_id(session)
+            default_app_name: Optional[str] = None
+            default_app_active = False
+            if default_app_id is not None:
+                app_row = await session.get(TelegramDeveloperApp, int(default_app_id))
+                if app_row is not None:
+                    default_app_name = app_row.app_name
+                    default_app_active = bool(app_row.is_active)
             return {
                 "assignment_mode": mode,
                 "alert_tg_user_ids": alert_ids,
                 "alert_tg_user_ids_text": raw_alert_ids,
+                "default_developer_app_id": default_app_id,
+                "default_developer_app_name": default_app_name,
+                "default_developer_app_active": default_app_active,
             }
 
     async def update_assignment_settings(

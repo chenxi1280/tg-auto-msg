@@ -11,7 +11,7 @@
         </div>
         <el-menu :default-active="activeMenu" class="admin-menu" router>
           <el-menu-item v-for="item in mainMenus" :key="item.path" :index="item.path">{{ item.title }}</el-menu-item>
-          <el-sub-menu v-if="systemMenus.length" index="super-admin-system">
+          <el-sub-menu v-if="systemMenus.length" index="super-admin-system" popper-class="admin-menu-popper">
             <template #title>系统后台</template>
             <el-menu-item v-for="item in systemMenus" :key="item.path" :index="item.path">{{ item.title }}</el-menu-item>
           </el-sub-menu>
@@ -135,6 +135,8 @@ watch(
   color: #fff;
   padding: 20px 0 16px;
   box-shadow: 8px 0 24px rgba(15, 23, 42, 0.16);
+  backdrop-filter: blur(20px);
+  border-right: 1px solid rgba(148, 163, 184, 0.12);
 }
 
 .brand-block {
@@ -166,21 +168,89 @@ watch(
 :deep(.admin-menu) {
   border-right: none;
   background: transparent;
+  padding: 8px 0;
 }
 
 :deep(.admin-menu .el-menu-item) {
-  color: rgba(255, 255, 255, 0.76);
+  color: rgba(255, 255, 255, 0.86);
   margin: 4px 12px;
   border-radius: 10px;
+  min-height: 44px;
+  line-height: 44px;
+  background: rgba(15, 23, 42, 0.18);
+  backdrop-filter: blur(10px);
 }
 
 :deep(.admin-menu .el-menu-item.is-active) {
   color: #fff;
-  background: rgba(59, 130, 246, 0.26);
+  background: linear-gradient(90deg, rgba(59, 130, 246, 0.34), rgba(37, 99, 235, 0.18));
+  box-shadow: inset 0 0 0 1px rgba(147, 197, 253, 0.24);
 }
 
 :deep(.admin-menu .el-menu-item:hover) {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+:deep(.admin-menu .el-sub-menu) {
+  margin: 6px 12px 0;
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(15, 23, 42, 0.18);
+  backdrop-filter: blur(10px);
+}
+
+:deep(.admin-menu .el-sub-menu__title) {
+  color: rgba(255, 255, 255, 0.9);
+  border-radius: 12px;
+  min-height: 46px;
+  line-height: 46px;
+  margin: 0;
+}
+
+:deep(.admin-menu .el-sub-menu__title:hover) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+:deep(.admin-menu .el-sub-menu.is-opened > .el-sub-menu__title) {
+  background: rgba(59, 130, 246, 0.18);
+  color: #fff;
+}
+
+:deep(.admin-menu .el-sub-menu .el-menu) {
+  background: rgba(15, 23, 42, 0.24);
+  padding: 4px 0 8px;
+}
+
+:deep(.admin-menu .el-sub-menu .el-menu-item) {
+  margin: 4px 10px;
+  min-height: 40px;
+  line-height: 40px;
+}
+
+:deep(.admin-menu-popper.el-popper),
+:deep(.admin-menu-popper .el-menu) {
+  background: rgba(15, 23, 42, 0.92) !important;
+  backdrop-filter: blur(18px);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.28);
+  border-radius: 14px;
+}
+
+:deep(.admin-menu-popper .el-menu-item) {
+  color: rgba(255, 255, 255, 0.88);
+  border-radius: 10px;
+  margin: 6px 8px;
+}
+
+:deep(.admin-menu-popper .el-menu-item:hover) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+:deep(.admin-menu-popper .el-menu-item.is-active) {
+  background: linear-gradient(90deg, rgba(59, 130, 246, 0.34), rgba(37, 99, 235, 0.16));
   color: #fff;
 }
 

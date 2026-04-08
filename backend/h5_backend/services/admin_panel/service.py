@@ -1210,7 +1210,7 @@ class AdminPanelService:
         funding_source: str,
         ip_address: Optional[str] = None,
     ) -> Dict[str, Any]:
-        if current_admin.role_code not in {ROLE_MASTER_AGENT, ROLE_SUB_AGENT}:
+        if current_admin.role_code not in {ROLE_SUPER_ADMIN, ROLE_MASTER_AGENT, ROLE_SUB_AGENT}:
             raise HTTPException(status_code=403, detail="当前角色不能生成卡密")
         normalized_funding_source = (funding_source or "").strip().lower()
         if normalized_funding_source not in {"balance", "credit"}:
@@ -1227,15 +1227,13 @@ class AdminPanelService:
                 valid_days=valid_days,
             )
             total_amount = int(quote["total_amount_cents"])
-            if normalized_funding_source == "credit":
-                self._ensure_credit_mode_allowed(operator)
-            if normalized_funding_source == "balance":
-                self._apply_balance_generation(operator=operator, amount_cents=total_amount)
+            if current_admin.role_code == ROLE_SUPER_ADMIN:
                 payment_status = "paid"
                 settlement_status = "settled"
-                card_source_type = "balance"
+                card_source_type = "platform"
                 chain: List[Tuple[AdminAccount, AdminAccount, AgentCreditLimit]] = []
-            else:
+            elif normalized_funding_source == "credit":
+                self._ensure_credit_mode_allowed(operator)
                 chain = await self._validate_credit_generation(
                     session,
                     operator=operator,
@@ -1245,6 +1243,12 @@ class AdminPanelService:
                 payment_status = "credit"
                 settlement_status = "pending"
                 card_source_type = "credit"
+            else:
+                self._apply_balance_generation(operator=operator, amount_cents=total_amount)
+                payment_status = "paid"
+                settlement_status = "settled"
+                card_source_type = "balance"
+                chain: List[Tuple[AdminAccount, AdminAccount, AgentCreditLimit]] = []
 
             batch, cards = await self._create_batch_records(
                 session,
@@ -1261,10 +1265,12 @@ class AdminPanelService:
                 settlement_status=settlement_status,
                 payment_status=payment_status,
                 card_source_type=card_source_type,
-                remark=f"funding_source={normalized_funding_source}",
+                remark=f"funding_source={'platform' if current_admin.role_code == ROLE_SUPER_ADMIN else normalized_funding_source}",
             )
 
-            if normalized_funding_source == "balance":
+            if current_admin.role_code == ROLE_SUPER_ADMIN:
+                pass
+            elif normalized_funding_source == "balance":
                 session.add(
                     AgentFundLedger(
                         ledger_scope="platform" if operator.parent_account_id is None else "channel",
@@ -1300,7 +1306,7 @@ class AdminPanelService:
                     "plan_code": quote["plan"].plan_code,
                     "quantity": int(quote["quantity"]),
                     "total_amount_cents": int(total_amount),
-                    "funding_source": normalized_funding_source,
+                    "funding_source": "platform" if current_admin.role_code == ROLE_SUPER_ADMIN else normalized_funding_source,
                 },
                 ip_address=ip_address,
             )
@@ -1661,7 +1667,7 @@ class AdminPanelService:
         ip_address: Optional[str] = None,
     ) -> Dict[str, Any]:
         request_type = (request_type or "").strip()
-        if request_type not in {"recharge", "settlement", "credit_adjust", "batch_purchase"}:
+        if request_type not in {"recharge", "settlement", "credit_adjust"}:
             raise HTTPException(status_code=400, detail="不支持的审批类型")
         async with get_async_session() as session:
             subject = await self._ensure_visible_account(session, current_admin, int(subject_account_id or current_admin.id))
@@ -1676,28 +1682,6 @@ class AdminPanelService:
                     raise HTTPException(status_code=400, detail="目标额度不能为负数")
                 credit_delta_cents = requested_limit
                 normalized_payload["credit_limit_cents"] = requested_limit
-            elif request_type == "batch_purchase":
-                quote = await self._prepare_batch_quote(
-                    session,
-                    account=subject,
-                    plan_code=str(normalized_payload.get("plan_code") or "").strip(),
-                    quantity=int(normalized_payload.get("quantity") or 0),
-                    prefix=str(normalized_payload.get("prefix") or ""),
-                    valid_days=normalized_payload.get("valid_days"),
-                )
-                amount_cents = int(quote["total_amount_cents"])
-                normalized_payload = {
-                    **normalized_payload,
-                    "plan_code": quote["plan"].plan_code,
-                    "quantity": int(quote["quantity"]),
-                    "prefix": quote["prefix"],
-                    "valid_days": quote["valid_days"],
-                    "duration_days": int(quote["duration_days"]),
-                    "direct_parent_account_id": quote["direct_parent_account_id"],
-                    "root_master_account_id": int(quote["root_master"].id),
-                    "unit_price_cents": int(quote["unit_price_cents"]),
-                    "quoted_amount_cents": int(quote["total_amount_cents"]),
-                }
             elif request_type == "settlement":
                 batch_id = str(normalized_payload.get("batch_id") or "").strip()
                 if not batch_id:
@@ -1886,34 +1870,6 @@ class AdminPanelService:
                 row.delegated_credit_limit_cents = requested_limit
                 row.last_adjusted_by = int(operator.id)
                 subject.credit_limit_cents = requested_limit
-        elif request.request_type == "batch_purchase":
-            payload = request.payload_json or {}
-            root_master = await session.get(AdminAccount, int(subject.root_master_account_id or subject.id))
-            if root_master is None:
-                raise HTTPException(status_code=400, detail="审批主体缺少总代账号")
-            batch, cards = await self._create_batch_records(
-                session,
-                operator=subject,
-                root_master=root_master,
-                direct_parent_account_id=int(payload.get("direct_parent_account_id")) if payload.get("direct_parent_account_id") is not None else subject.parent_account_id,
-                plan_code=str(payload.get("plan_code") or ""),
-                duration_days=int(payload.get("duration_days") or 0),
-                unit_price_cents=int(payload.get("unit_price_cents") or 0),
-                total_amount_cents=int(payload.get("quoted_amount_cents") or amount),
-                quantity=int(payload.get("quantity") or 0),
-                prefix=str(payload.get("prefix") or ""),
-                expires_at=datetime.now() + timedelta(days=int(payload["valid_days"])) if payload.get("valid_days") else None,
-                settlement_status="settled",
-                payment_status="paid",
-                card_source_type="approval",
-                remark=f"approval_request={request.request_id}",
-            )
-            request.payload_json = {
-                **payload,
-                "approved_batch_id": batch.batch_id,
-                "approved_card_count": len(cards),
-            }
-
     async def approve_request(
         self,
         *,

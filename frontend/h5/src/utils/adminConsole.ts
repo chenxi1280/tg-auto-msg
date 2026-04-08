@@ -14,7 +14,7 @@ export const APPROVAL_LABELS: Record<string, string> = {
   recharge: '充值入账',
   settlement: '授信结算',
   credit_adjust: '额度调整',
-  batch_purchase: '批次申请',
+  batch_purchase: '批次申请（历史）',
 }
 
 export const LEDGER_LABELS: Record<string, string> = {

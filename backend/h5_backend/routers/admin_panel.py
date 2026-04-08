@@ -491,20 +491,9 @@ async def create_credit_adjust_request(
 
 @router.post("/api/agent/approval-requests/batch-purchase")
 async def create_batch_purchase_request(
-    payload: CreateApprovalRequest,
-    request: Request,
-    current_admin: AdminAccount = Depends(require_admin_permissions("batches.generate")),
+    current_admin: AdminAccount = Depends(get_current_admin_account),
 ):
-    service = get_admin_panel_service()
-    data = await service.create_approval_request(
-        current_admin=current_admin,
-        request_type="batch_purchase",
-        amount_cents=payload.amount_cents,
-        subject_account_id=payload.subject_account_id,
-        payload_json=payload.payload_json,
-        ip_address=_client_ip(request),
-    )
-    return {"success": True, "message": "批次申请已发起", "data": data}
+    raise HTTPException(status_code=410, detail="批次申请流程已下线，请改用余额生成或授信生成")
 
 
 @router.get("/api/agent/approval-requests/pending")

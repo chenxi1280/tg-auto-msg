@@ -12,7 +12,7 @@
       <el-card shadow="hover">
         <div class="stat-label">待处理审批</div>
         <div class="stat-value">{{ pendingApprovalCount }}</div>
-        <div class="stat-meta">等待你处理的充值、批次、结算和调额审批</div>
+        <div class="stat-meta">等待你处理的充值、结算和调额审批</div>
       </el-card>
       <el-card shadow="hover">
         <div class="stat-label">待充值审批</div>
@@ -20,9 +20,9 @@
         <div class="stat-meta">金额 ¥{{ centsToYuan(pendingRechargeAmount) }}</div>
       </el-card>
       <el-card shadow="hover">
-        <div class="stat-label">待批次申请</div>
-        <div class="stat-value">{{ pendingBatchPurchaseCount }}</div>
-        <div class="stat-meta">金额 ¥{{ centsToYuan(pendingBatchPurchaseAmount) }}</div>
+        <div class="stat-label">待调额审批</div>
+        <div class="stat-value">{{ pendingCreditAdjustCount }}</div>
+        <div class="stat-meta">当前页待处理额度调整请求</div>
       </el-card>
       <el-card shadow="hover">
         <div class="stat-label">待结算授信批次</div>
@@ -77,7 +77,6 @@
             <el-select v-model="filters.request_type" style="width: 160px" @change="loadApprovals(true)">
               <el-option label="全部类型" value="all" />
               <el-option label="充值入账" value="recharge" />
-              <el-option label="批次申请" value="batch_purchase" />
               <el-option label="授信结算" value="settlement" />
               <el-option label="额度调整" value="credit_adjust" />
             </el-select>
@@ -249,11 +248,10 @@ const settlementBatchAmount = computed(() =>
 const pendingApprovals = computed(() => approvals.value.filter((item) => item.status === 'pending'))
 const pendingApprovalCount = computed(() => pendingApprovals.value.length)
 const pendingRechargeItems = computed(() => pendingApprovals.value.filter((item) => item.request_type === 'recharge'))
-const pendingBatchPurchaseItems = computed(() => pendingApprovals.value.filter((item) => item.request_type === 'batch_purchase'))
+const pendingCreditAdjustItems = computed(() => pendingApprovals.value.filter((item) => item.request_type === 'credit_adjust'))
 const pendingRechargeCount = computed(() => pendingRechargeItems.value.length)
 const pendingRechargeAmount = computed(() => pendingRechargeItems.value.reduce((sum, item) => sum + (item.amount_cents || 0), 0))
-const pendingBatchPurchaseCount = computed(() => pendingBatchPurchaseItems.value.length)
-const pendingBatchPurchaseAmount = computed(() => pendingBatchPurchaseItems.value.reduce((sum, item) => sum + (item.amount_cents || 0), 0))
+const pendingCreditAdjustCount = computed(() => pendingCreditAdjustItems.value.length)
 
 const selectedPendingRequestIds = computed(() =>
   selectedRows.value.filter((row) => row.status === 'pending').map((row) => row.request_id),

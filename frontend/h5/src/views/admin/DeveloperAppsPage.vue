@@ -6,10 +6,16 @@
       <template #header>
         <div class="card-header">
           <span>开发者应用策略</span>
-          <el-button @click="refreshList">刷新</el-button>
+          <div class="header-actions">
+            <span class="card-tip">
+              当前默认应用：
+              <strong>{{ currentDefaultAppLabel }}</strong>
+            </span>
+            <el-button @click="refreshList">刷新</el-button>
+          </div>
         </div>
       </template>
-        <el-form inline class="toolbar-form">
+      <el-form inline class="toolbar-form">
         <el-form-item label="分配模式">
           <el-select v-model="settingsForm.assignment_mode" :disabled="!canWrite" style="width: 180px">
             <el-option label="轮询" value="round_robin" />
@@ -203,6 +209,16 @@ const settingsForm = reactive({
   alert_tg_user_ids: '',
 })
 
+const currentDefaultAppLabel = computed(() => {
+  const settings = store.developerAppSettings
+  if (!settings?.default_developer_app_id || !settings.default_developer_app_name) {
+    return '未配置默认应用'
+  }
+  return settings.default_developer_app_active === false
+    ? `${settings.default_developer_app_name}（不可用）`
+    : settings.default_developer_app_name
+})
+
 const createForm = reactive({
   app_name: '',
   api_id: 0,
@@ -249,6 +265,7 @@ const loadData = async (resetPage = false) => {
     }
     settingsForm.assignment_mode = response.data.settings.assignment_mode || 'round_robin'
     settingsForm.alert_tg_user_ids = response.data.settings.alert_tg_user_ids_text || ''
+    store.developerAppSettings = response.data.settings
   } finally {
     loading.value = false
   }
@@ -337,6 +354,7 @@ const saveEditor = async () => {
 
 const setDefault = async (row: DeveloperApp) => {
   await adminSetDefaultDeveloperApp(row.id)
+  await loadData()
   lastActionMessage.value = `已将 ${row.app_name} 设为默认应用`
   ElMessage.success(lastActionMessage.value)
 }

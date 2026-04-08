@@ -36,7 +36,7 @@
         <template #header>
           <div class="card-header">
             <span>立即生成卡密</span>
-            <span class="card-tip">默认消耗余额，授信仅对白名单代理开放</span>
+            <span class="card-tip">{{ generationTip }}</span>
           </div>
         </template>
         <el-form label-position="top">
@@ -59,44 +59,14 @@
           <el-form-item label="有效天数">
             <el-input-number v-model="batchForm.valid_days" :min="1" />
           </el-form-item>
-          <el-form-item label="资金来源">
+          <el-form-item v-if="!isPlatformOperator" label="资金来源">
             <el-radio-group v-model="batchForm.funding_source">
               <el-radio-button label="balance">余额直接生成</el-radio-button>
-              <el-radio-button label="credit" :disabled="!store.profile?.account.is_credit_whitelisted">授信快速生成</el-radio-button>
+              <el-radio-button label="credit" :disabled="!store.profile?.account.is_credit_whitelisted">授信兜底生成</el-radio-button>
             </el-radio-group>
           </el-form-item>
+          <div v-if="!isPlatformOperator && balanceWarning" class="warning-tip">{{ balanceWarning }}</div>
           <el-button type="primary" :loading="submittingBatch" @click="submitGenerateBatch">提交生成</el-button>
-        </el-form>
-      </el-card>
-
-      <el-card shadow="hover">
-        <template #header>
-          <div class="card-header">
-            <span>提交批次申请</span>
-            <span class="card-tip">上级审批通过后系统自动生成</span>
-          </div>
-        </template>
-        <el-form label-position="top">
-          <el-form-item label="规格">
-            <el-select v-model="purchaseForm.plan_code" filterable>
-              <el-option
-                v-for="plan in activePlans"
-                :key="plan.plan_code"
-                :label="`${plan.display_name} / ¥${centsToYuan(plan.price_cents)}`"
-                :value="plan.plan_code"
-              />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="数量">
-            <el-input-number v-model="purchaseForm.quantity" :min="1" :max="500" />
-          </el-form-item>
-          <el-form-item label="前缀">
-            <el-input v-model.trim="purchaseForm.prefix" />
-          </el-form-item>
-          <el-form-item label="有效天数">
-            <el-input-number v-model="purchaseForm.valid_days" :min="1" />
-          </el-form-item>
-          <el-button type="primary" :loading="submittingPurchase" @click="submitBatchPurchase">发起批次申请</el-button>
         </el-form>
       </el-card>
     </div>
@@ -180,7 +150,8 @@
               <el-option label="全部来源" value="all" />
               <el-option label="余额" value="balance" />
               <el-option label="授信" value="credit" />
-              <el-option label="审批" value="approval" />
+              <el-option label="平台直生" value="platform" />
+              <el-option label="审批（历史）" value="approval" />
             </el-select>
             <el-input v-model.trim="cardFilters.keyword" clearable placeholder="搜索卡密/批次" style="width: 220px" />
             <el-button @click="loadCardRows(true)">查询</el-button>
@@ -228,7 +199,6 @@ import { ElMessage } from 'element-plus'
 import type { AgentCard, CardBatch } from '@/api/admin'
 import {
   adminCopyCards,
-  adminCreateBatchPurchaseRequest,
   adminExportCardsXlsx,
   adminGenerateCardBatch,
   adminListCardBatches,
@@ -244,8 +214,8 @@ const canCopyCards = computed(() => store.hasPermission('batches.copy'))
 const canReadApprovals = computed(() => store.hasPermission('approvals.read'))
 const canReadPricing = computed(() => store.hasPermission('pricing.read'))
 const canReadLedgers = computed(() => store.hasPermission('ledgers.read'))
+const isPlatformOperator = computed(() => store.hasRole('super_admin'))
 const submittingBatch = ref(false)
-const submittingPurchase = ref(false)
 const selectedCards = ref<AgentCard[]>([])
 const lastActionMessage = ref('')
 const batchRows = ref<CardBatch[]>([])
@@ -260,6 +230,25 @@ const batchStats = reactive({
 })
 
 const activePlans = computed(() => store.plans.filter((plan) => plan.is_active))
+const selectedPlan = computed(() => activePlans.value.find((plan) => plan.plan_code === batchForm.plan_code))
+const estimatedBatchAmountCents = computed(() => (selectedPlan.value?.price_cents || 0) * Number(batchForm.quantity || 0))
+const generationTip = computed(() => {
+  if (isPlatformOperator.value) {
+    return '超管走平台直生，不占用余额、不走授信、不经过审批'
+  }
+  return '默认先扣余额生成；余额不足时，只有授信白名单代理可走授信兜底'
+})
+const balanceWarning = computed(() => {
+  if (isPlatformOperator.value) return ''
+  const amount = estimatedBatchAmountCents.value
+  if (!amount) return ''
+  const balance = Number(store.profile?.account.balance_cents || 0)
+  if (balance >= amount) return ''
+  if (store.profile?.account.is_credit_whitelisted) {
+    return `当前余额不足 ¥${centsToYuan(amount - balance)}，如需立即出卡可切换到“授信兜底生成”。`
+  }
+  return `当前余额不足 ¥${centsToYuan(amount - balance)}，且未开通授信白名单，请先发起线下充值入账。`
+})
 const batchPagination = reactive({
   currentPage: 1,
   pageSize: 20,
@@ -275,13 +264,6 @@ const batchForm = reactive({
   prefix: '',
   valid_days: 30,
   funding_source: 'balance' as 'balance' | 'credit',
-})
-
-const purchaseForm = reactive({
-  plan_code: '',
-  quantity: 1,
-  prefix: '',
-  valid_days: 30,
 })
 
 const batchFilters = reactive({
@@ -302,7 +284,6 @@ const initDefaultPlan = () => {
   const firstPlan = activePlans.value[0]
   if (firstPlan && !batchForm.plan_code) {
     batchForm.plan_code = firstPlan.plan_code
-    purchaseForm.plan_code = firstPlan.plan_code
   }
 }
 
@@ -391,6 +372,21 @@ const submitGenerateBatch = async () => {
     ElMessage.warning('当前账号无权生成卡密批次')
     return
   }
+  if (!isPlatformOperator.value && batchForm.funding_source === 'balance') {
+    const balance = Number(store.profile?.account.balance_cents || 0)
+    if (balance < estimatedBatchAmountCents.value) {
+      if (store.profile?.account.is_credit_whitelisted) {
+        ElMessage.warning('当前余额不足，请切换到“授信兜底生成”或先充值到账')
+      } else {
+        ElMessage.warning('当前余额不足且未开通授信白名单，请先充值到账')
+      }
+      return
+    }
+  }
+  if (!isPlatformOperator.value && batchForm.funding_source === 'credit' && !store.profile?.account.is_credit_whitelisted) {
+    ElMessage.warning('当前账号未开通授信白名单，不能使用授信生成')
+    return
+  }
   submittingBatch.value = true
   try {
     const response = await adminGenerateCardBatch(batchForm)
@@ -403,31 +399,6 @@ const submitGenerateBatch = async () => {
     ElMessage.success('卡密批次已生成')
   } finally {
     submittingBatch.value = false
-  }
-}
-
-const submitBatchPurchase = async () => {
-  if (!canGenerateBatches.value) {
-    ElMessage.warning('当前账号无权提交批次申请')
-    return
-  }
-  submittingPurchase.value = true
-  try {
-    const response = await adminCreateBatchPurchaseRequest({
-      payload_json: {
-        plan_code: purchaseForm.plan_code,
-        quantity: purchaseForm.quantity,
-        prefix: purchaseForm.prefix,
-        valid_days: purchaseForm.valid_days,
-      },
-    })
-    if (canReadApprovals.value) {
-      await store.loadApprovalRequests({ status: 'pending', limit: 100 })
-    }
-    lastActionMessage.value = `批次申请 ${response.data.request_id} 已发起，等待上级审批`
-    ElMessage.success('批次申请已发起')
-  } finally {
-    submittingPurchase.value = false
   }
 }
 
@@ -510,10 +481,15 @@ onMounted(async () => {
   font-size: 13px;
 }
 
+.warning-tip {
+  margin: 4px 0 16px;
+  color: #b45309;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .form-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: 20px;
+  display: block;
 }
 
 .card-header,

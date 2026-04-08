@@ -42,7 +42,7 @@ PERMISSION_DEFINITIONS: List[Dict[str, str]] = [
     {"code": "approvals.reject", "module": "approvals", "name": "审批驳回", "description": "允许审批驳回请求"},
     {"code": "approvals.batch", "module": "approvals", "name": "批量审批", "description": "允许批量通过或驳回审批"},
     {"code": "batches.read", "module": "batches", "name": "查看卡密批次", "description": "允许查看批次和卡密明细"},
-    {"code": "batches.generate", "module": "batches", "name": "生成卡密批次", "description": "允许立即生成卡密或提交批次申请"},
+    {"code": "batches.generate", "module": "batches", "name": "生成卡密批次", "description": "允许直接生成卡密批次"},
     {"code": "batches.export", "module": "batches", "name": "导出卡密", "description": "允许导出卡密 Excel"},
     {"code": "batches.copy", "module": "batches", "name": "复制卡密", "description": "允许复制卡密"},
     {"code": "audit.read", "module": "audit", "name": "查看审计", "description": "允许查看审计日志"},

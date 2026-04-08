@@ -2,6 +2,7 @@ import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
 import type {
   AdminAuditLog,
+  DeveloperAppSettings,
   AdminProfile,
   AgentAccount,
   AgentCard,
@@ -34,6 +35,7 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
   const auditLogs = ref<AdminAuditLog[]>([])
   const selfLedgers = ref<FundLedger[]>([])
   const visibleLedgers = ref<FundLedger[]>([])
+  const developerAppSettings = ref<DeveloperAppSettings | null>(null)
 
   const loading = reactive({
     profile: false,
@@ -74,6 +76,7 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
     auditLogs.value = []
     selfLedgers.value = []
     visibleLedgers.value = []
+    developerAppSettings.value = null
   }
 
   const loadProfile = async () => {
@@ -213,6 +216,7 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
     auditLogs,
     selfLedgers,
     visibleLedgers,
+    developerAppSettings,
     loading,
     roleKeys,
     permissionSet,

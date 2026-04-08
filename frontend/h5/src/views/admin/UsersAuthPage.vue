@@ -30,7 +30,16 @@
         </el-table-column>
         <el-table-column label="开发者应用" min-width="140">
           <template #default="{ row }">
-            {{ developerAppName(row.developer_app_id) }}
+            <div class="developer-app-cell">
+              <span>{{ developerAppDisplay(row.developer_app_id).label }}</span>
+              <el-tag
+                v-if="developerAppDisplay(row.developer_app_id).sourceTag"
+                size="small"
+                :type="developerAppDisplay(row.developer_app_id).sourceTagType"
+              >
+                {{ developerAppDisplay(row.developer_app_id).sourceTag }}
+              </el-tag>
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="操作" min-width="220" fixed="right">
@@ -68,7 +77,18 @@
         <el-table-column prop="phone" label="手机号" width="140" />
         <el-table-column prop="health_status" label="健康状态" width="120" />
         <el-table-column label="开发者应用" min-width="140">
-          <template #default="{ row }">{{ developerAppName(row.developer_app_id) }}</template>
+          <template #default="{ row }">
+            <div class="developer-app-cell">
+              <span>{{ developerAppDisplay(row.developer_app_id).label }}</span>
+              <el-tag
+                v-if="developerAppDisplay(row.developer_app_id).sourceTag"
+                size="small"
+                :type="developerAppDisplay(row.developer_app_id).sourceTagType"
+              >
+                {{ developerAppDisplay(row.developer_app_id).sourceTag }}
+              </el-tag>
+            </div>
+          </template>
         </el-table-column>
         <el-table-column label="授权到期" min-width="160">
           <template #default="{ row }">{{ formatDateTime(row.authorization_end_at) }}</template>
@@ -99,6 +119,7 @@
           <el-select v-model="developerAppDialog.developer_app_id" clearable style="width: 100%">
             <el-option v-for="app in developerApps" :key="app.id" :label="app.app_name" :value="app.id" />
           </el-select>
+          <div class="form-tip">留空表示使用当前系统默认开发应用。</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -159,9 +180,50 @@ const developerAppDialog = reactive({
   developer_app_id: null as number | null,
 })
 
-const developerAppName = (appId?: number | null) => {
-  if (!appId) return '跟随系统'
-  return developerApps.value.find((item) => item.id === appId)?.app_name || `应用#${appId}`
+const defaultDeveloperApp = computed(() => {
+  const responseSettings = store.developerAppSettings
+  const appId = responseSettings?.default_developer_app_id ?? null
+  const appName = responseSettings?.default_developer_app_name?.trim() || ''
+  const matchedApp = appId ? developerApps.value.find((item) => item.id === appId) : null
+  return {
+    id: appId,
+    name: appName || matchedApp?.app_name || '',
+    isActive:
+      responseSettings?.default_developer_app_active ??
+      (matchedApp ? Boolean(matchedApp.is_active) : false),
+  }
+})
+
+const developerAppDisplay = (appId?: number | null) => {
+  if (appId) {
+    return {
+      label: developerApps.value.find((item) => item.id === appId)?.app_name || `应用#${appId}`,
+      sourceTag: '',
+      sourceTagType: 'info' as const,
+    }
+  }
+
+  if (!canReadDeveloperApps.value) {
+    return {
+      label: '系统默认应用',
+      sourceTag: '',
+      sourceTagType: 'info' as const,
+    }
+  }
+
+  if (defaultDeveloperApp.value.name) {
+    return {
+      label: defaultDeveloperApp.value.name,
+      sourceTag: '系统默认',
+      sourceTagType: defaultDeveloperApp.value.isActive ? ('success' as const) : ('warning' as const),
+    }
+  }
+
+  return {
+    label: '未配置默认应用',
+    sourceTag: '需处理',
+    sourceTagType: 'danger' as const,
+  }
 }
 
 const loadUsers = async (resetPage = false) => {
@@ -203,6 +265,10 @@ const loadDeveloperApps = async () => {
   }
   const response = await adminListDeveloperApps({ limit: 500, offset: 0 })
   developerApps.value = response.data.items
+  store.developerAppSettings = {
+    ...store.developerAppSettings,
+    ...response.data.settings,
+  }
 }
 
 const loadUserAccounts = async () => {
@@ -291,6 +357,20 @@ onMounted(async () => {
 .muted-text {
   color: #64748b;
   font-size: 13px;
+}
+
+.developer-app-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.form-tip {
+  margin-top: 8px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .toolbar-bar,
