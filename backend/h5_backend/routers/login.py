@@ -50,6 +50,7 @@ async def submit_phone_login_code(request: Request, current_user: User = Depends
         login_id=(payload.get("login_id") or "").strip(),
         user_id=current_user.id,
         code=payload.get("code") or "",
+        input_mode="h5_api",
     )
     return {"success": True, "data": data}
 

@@ -110,6 +110,17 @@ async def callback_handler(event):
             } and data in {"bot_home", "bot_notice"}:
                 fsm_storage.reset_state(user_id)
                 await handle_callback(event, user_id, data)
+            elif current_state == FSMState.WAIT_LOGIN_CODE and (
+                data.startswith("bot_cancel_login:")
+                or data.startswith("bot_login_code_digit:")
+                or data in {
+                    "bot_login_code_backspace",
+                    "bot_login_code_clear",
+                    "bot_login_code_submit",
+                    "bot_login_code_resend",
+                }
+            ):
+                await handle_callback(event, user_id, data)
             elif current_state == FSMState.WAIT_LOGIN_PASSWORD and data.startswith("bot_cancel_login:"):
                 fsm_storage.reset_state(user_id)
                 await handle_callback(event, user_id, data)

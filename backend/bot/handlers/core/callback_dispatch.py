@@ -343,6 +343,33 @@ async def _handle_bot_cancel_login(event, user_id: int, parts: list[str]):
     await get_onboarding_service().cancel_login(event, user_id, login_id)
 
 
+async def _handle_bot_login_code_digit(event, user_id: int, parts: list[str]):
+    if len(parts) < 2 or parts[1] not in set("0123456789"):
+        await event.answer("参数错误", alert=True)
+        return
+    await get_onboarding_service().handle_login_code_digit(event, user_id, parts[1])
+
+
+async def _handle_bot_login_code_backspace(event, user_id: int, parts: list[str]):
+    del parts
+    await get_onboarding_service().handle_login_code_backspace(event, user_id)
+
+
+async def _handle_bot_login_code_clear(event, user_id: int, parts: list[str]):
+    del parts
+    await get_onboarding_service().handle_login_code_clear(event, user_id)
+
+
+async def _handle_bot_login_code_submit(event, user_id: int, parts: list[str]):
+    del parts
+    await get_onboarding_service().submit_login_code_by_keypad(event, user_id)
+
+
+async def _handle_bot_login_code_resend(event, user_id: int, parts: list[str]):
+    del parts
+    await get_onboarding_service().handle_login_code_resend(event, user_id)
+
+
 async def _handle_edit_targets(event, user_id: int, task_id: str):
     await start_select_task_targets(event, user_id, task_id, page=0)
 
@@ -492,6 +519,11 @@ _CUSTOM_ACTION_HANDLERS = {
     "bot_login_qr": _handle_bot_login_qr,
     "bot_login_phone": _handle_bot_login_phone,
     "bot_cancel_login": _handle_bot_cancel_login,
+    "bot_login_code_digit": _handle_bot_login_code_digit,
+    "bot_login_code_backspace": _handle_bot_login_code_backspace,
+    "bot_login_code_clear": _handle_bot_login_code_clear,
+    "bot_login_code_submit": _handle_bot_login_code_submit,
+    "bot_login_code_resend": _handle_bot_login_code_resend,
 }
 
 

@@ -202,6 +202,96 @@ class BotOnboardingService:
     """Bot-first user onboarding service."""
 
     @staticmethod
+    def _mask_login_code(buffer: str) -> str:
+        value = str(buffer or "")
+        return "未输入" if not value else "•" * len(value)
+
+    @staticmethod
+    def _build_login_code_buttons(login_id: str):
+        return [
+            [
+                Button.inline("1", data="bot_login_code_digit:1"),
+                Button.inline("2", data="bot_login_code_digit:2"),
+                Button.inline("3", data="bot_login_code_digit:3"),
+            ],
+            [
+                Button.inline("4", data="bot_login_code_digit:4"),
+                Button.inline("5", data="bot_login_code_digit:5"),
+                Button.inline("6", data="bot_login_code_digit:6"),
+            ],
+            [
+                Button.inline("7", data="bot_login_code_digit:7"),
+                Button.inline("8", data="bot_login_code_digit:8"),
+                Button.inline("9", data="bot_login_code_digit:9"),
+            ],
+            [
+                Button.inline("清空", data="bot_login_code_clear"),
+                Button.inline("0", data="bot_login_code_digit:0"),
+                Button.inline("删除", data="bot_login_code_backspace"),
+            ],
+            [
+                Button.inline("✅ 提交", data="bot_login_code_submit"),
+                Button.inline("🔄 重发验证码", data="bot_login_code_resend"),
+            ],
+            [Button.inline("⬅️ 取消绑定", data=f"bot_cancel_login:{login_id}")],
+        ]
+
+    def _build_login_code_prompt(
+        self,
+        *,
+        phone_number: str,
+        buffer: str,
+        detail: Optional[str] = None,
+    ) -> str:
+        masked = self._mask_login_code(buffer)
+        count = len(str(buffer or ""))
+        current_input = f"`{masked}`（已输入 {count} 位）" if count > 0 else "`未输入`"
+        lines = [
+            "📨 **验证码已发送**",
+            "",
+            f"手机号：`{phone_number or '未记录'}`",
+            "请使用下方数字按钮输入 Telegram 验证码，不要直接发送验证码消息。",
+            "为避免验证码被 Telegram 判定失效，Bot 不会在聊天中接收明文验证码。",
+            "",
+            f"当前输入：{current_input}",
+            "",
+            "验证码和本次绑定会话 15 分钟内有效。",
+            "若提示验证码已过期，请点击「🔄 重发验证码」后输入最新验证码。",
+            "",
+            "下一步：输入验证码后，若账号开启二步验证，Bot 会继续提示你输入密码。",
+        ]
+        if detail:
+            lines[6:6] = ["", f"⚠️ {detail}"]
+        return "\n".join(lines)
+
+    async def _render_login_code_prompt(
+        self,
+        event,
+        *,
+        tg_user_id: int,
+        login_id: str,
+        phone_number: str,
+        buffer: str,
+        detail: Optional[str] = None,
+    ) -> None:
+        text = self._build_login_code_prompt(
+            phone_number=phone_number,
+            buffer=buffer,
+            detail=detail,
+        )
+        await _send_or_edit(
+            event,
+            text,
+            buttons=self._build_login_code_buttons(login_id),
+        )
+        fsm_storage.update_data(
+            tg_user_id,
+            login_id=login_id,
+            phone_number=phone_number,
+            login_code_buffer=buffer,
+        )
+
+    @staticmethod
     async def _respond_bind_start_rate_limit(event, detail: str) -> None:
         message = f"⚠️ {detail}"
         if hasattr(event, "answer"):
@@ -1526,18 +1616,25 @@ class BotOnboardingService:
             login_id=login_id,
             expected_tg_user_id=data.get("expected_tg_user_id"),
             login_mode="phone_code",
+            phone_number=result.get("phone_number") or phone,
+            login_code_buffer="",
+        )
+        logger.info(
+            "bot login code keypad ready: sender={}, login_id={}, phone={}",
+            tg_user_id,
+            login_id,
+            result.get("phone_number") or phone,
         )
         message = await bot_client.send_message(
             tg_user_id,
-            "📨 **验证码已发送**\n\n"
-            f"手机号：`{result.get('phone_number') or phone}`\n"
-            "请直接回复 Telegram 验证码。\n"
-            "收到后系统会立即删除你的验证码消息，不会在聊天中保留。\n\n"
-            "验证码和本次绑定会话 15 分钟内有效，请尽快完成输入。\n\n"
-            "下一步：输入验证码后，若账号开启二步验证，Bot 会继续提示你输入密码。",
+            self._build_login_code_prompt(
+                phone_number=result.get("phone_number") or phone,
+                buffer="",
+            ),
             parse_mode="markdown",
-            buttons=[[Button.inline("⬅️ 取消绑定", data=f"bot_cancel_login:{login_id}")]],
+            buttons=self._build_login_code_buttons(login_id),
         )
+        fsm_storage.update_data(tg_user_id, login_code_message_id=getattr(message, "id", None))
         _track_login_message(tg_user_id, message)
 
     async def handle_login_code(self, event, tg_user_id: int, text: str) -> None:
@@ -1551,6 +1648,85 @@ class BotOnboardingService:
             fsm_storage.reset_state(tg_user_id)
             await bot_client.send_message(tg_user_id, "⚠️ 绑定会话已失效。\n下一步：请重新点击「📱 绑定账号」。")
             return
+        await bot_client.send_message(
+            tg_user_id,
+            "⚠️ 为避免验证码失效，请不要把验证码作为消息发送。请使用下方数字按钮输入。",
+        )
+
+    async def handle_login_code_digit(self, event, tg_user_id: int, digit: str) -> None:
+        if digit not in "0123456789":
+            if hasattr(event, "answer"):
+                await event.answer("验证码数字无效", alert=True)
+            return
+        data = fsm_storage.get_data(tg_user_id)
+        login_id = str(data.get("login_id") or "").strip()
+        if not login_id:
+            if hasattr(event, "answer"):
+                await event.answer("绑定会话已失效，请重新开始。", alert=True)
+            return
+        buffer = f"{data.get('login_code_buffer') or ''}{digit}"
+        logger.info(
+            "bot login code digit appended: sender={}, login_id={}, digits={}",
+            tg_user_id,
+            login_id,
+            len(buffer),
+        )
+        await self._render_login_code_prompt(
+            event,
+            tg_user_id=tg_user_id,
+            login_id=login_id,
+            phone_number=str(data.get("phone_number") or ""),
+            buffer=buffer,
+        )
+
+    async def handle_login_code_backspace(self, event, tg_user_id: int) -> None:
+        data = fsm_storage.get_data(tg_user_id)
+        login_id = str(data.get("login_id") or "").strip()
+        if not login_id:
+            if hasattr(event, "answer"):
+                await event.answer("绑定会话已失效，请重新开始。", alert=True)
+            return
+        buffer = str(data.get("login_code_buffer") or "")
+        if not buffer:
+            if hasattr(event, "answer"):
+                await event.answer("当前没有可删除的数字")
+            return
+        await self._render_login_code_prompt(
+            event,
+            tg_user_id=tg_user_id,
+            login_id=login_id,
+            phone_number=str(data.get("phone_number") or ""),
+            buffer=buffer[:-1],
+        )
+
+    async def handle_login_code_clear(self, event, tg_user_id: int) -> None:
+        data = fsm_storage.get_data(tg_user_id)
+        login_id = str(data.get("login_id") or "").strip()
+        if not login_id:
+            if hasattr(event, "answer"):
+                await event.answer("绑定会话已失效，请重新开始。", alert=True)
+            return
+        buffer = str(data.get("login_code_buffer") or "")
+        if not buffer:
+            if hasattr(event, "answer"):
+                await event.answer("当前验证码输入已为空")
+            return
+        await self._render_login_code_prompt(
+            event,
+            tg_user_id=tg_user_id,
+            login_id=login_id,
+            phone_number=str(data.get("phone_number") or ""),
+            buffer="",
+        )
+
+    async def handle_login_code_resend(self, event, tg_user_id: int) -> None:
+        data = fsm_storage.get_data(tg_user_id)
+        login_id = str(data.get("login_id") or "").strip()
+        phone_number = str(data.get("phone_number") or "").strip()
+        if not login_id or not phone_number:
+            if hasattr(event, "answer"):
+                await event.answer("绑定会话已失效，请重新开始。", alert=True)
+            return
 
         db_user_id = await self._get_db_user_id(tg_user_id)
         if db_user_id is None:
@@ -1559,11 +1735,69 @@ class BotOnboardingService:
             return
 
         try:
+            result = await get_login_service().submit_phone_number_data(
+                login_id=login_id,
+                user_id=db_user_id,
+                phone_number=phone_number,
+            )
+        except HTTPException as exc:
+            await self._render_login_code_prompt(
+                event,
+                tg_user_id=tg_user_id,
+                login_id=login_id,
+                phone_number=phone_number,
+                buffer=str(data.get("login_code_buffer") or ""),
+                detail=str(exc.detail),
+            )
+            return
+
+        logger.info(
+            "bot login code resent: sender={}, login_id={}, phone={}",
+            tg_user_id,
+            login_id,
+            result.get("phone_number") or phone_number,
+        )
+        await self._render_login_code_prompt(
+            event,
+            tg_user_id=tg_user_id,
+            login_id=login_id,
+            phone_number=result.get("phone_number") or phone_number,
+            buffer="",
+            detail="验证码已重新发送，请输入最新验证码。",
+        )
+
+    async def submit_login_code_by_keypad(self, event, tg_user_id: int) -> None:
+        data = fsm_storage.get_data(tg_user_id)
+        login_id = str(data.get("login_id") or "").strip()
+        code = str(data.get("login_code_buffer") or "").strip()
+        if not login_id:
+            if hasattr(event, "answer"):
+                await event.answer("绑定会话已失效，请重新开始。", alert=True)
+            return
+        if not code:
+            if hasattr(event, "answer"):
+                await event.answer("请先输入验证码", alert=True)
+            return
+
+        db_user_id = await self._get_db_user_id(tg_user_id)
+        if db_user_id is None:
+            fsm_storage.reset_state(tg_user_id)
+            await self.show_home(event, tg_user_id)
+            return
+
+        logger.info(
+            "bot login code submitted: sender={}, login_id={}, digits={}",
+            tg_user_id,
+            login_id,
+            len(code),
+        )
+        try:
             result = await get_login_service().submit_phone_code_data(
                 login_id=login_id,
                 user_id=db_user_id,
                 code=code,
                 expected_tg_user_id=data.get("expected_tg_user_id"),
+                input_mode="callback_keypad",
             )
         except HTTPException as exc:
             latest = await get_redis_login_manager().get_session(login_id)
@@ -1574,7 +1808,14 @@ class BotOnboardingService:
                     f"❌ {exc.detail}\n\n下一步：请重新点击「📱 绑定账号」开始新的手机号绑定。",
                 )
                 return
-            await bot_client.send_message(tg_user_id, f"❌ {exc.detail}")
+            await self._render_login_code_prompt(
+                event,
+                tg_user_id=tg_user_id,
+                login_id=login_id,
+                phone_number=str(data.get("phone_number") or ""),
+                buffer=code,
+                detail=str(exc.detail),
+            )
             return
 
         if result.get("status") == LoginStatus.PASSWORD_REQUIRED.value:
@@ -1584,20 +1825,20 @@ class BotOnboardingService:
                 login_id=login_id,
                 expected_tg_user_id=data.get("expected_tg_user_id"),
                 login_mode="phone_code",
+                login_code_buffer="",
             )
             hint = f"\n密码提示：`{result.get('password_hint')}`" if result.get("password_hint") else ""
-            message = await bot_client.send_message(
-                tg_user_id,
+            await _send_or_edit(
+                event,
                 "🔒 **该账号开启了二步验证**\n\n"
                 "请直接回复 Telegram 二步密码。\n"
                 "收到后系统会立即删除你的密码消息，不会在聊天里保留明文。"
                 f"{hint}\n\n"
                 "当前绑定会话 15 分钟内有效，请尽快完成。\n\n"
                 "下一步：输入正确密码后，系统会自动完成绑定。",
-                parse_mode="markdown",
                 buttons=[[Button.inline("⬅️ 取消绑定", data=f"bot_cancel_login:{login_id}")]],
+                parse_mode="markdown",
             )
-            _track_login_message(tg_user_id, message)
             return
 
         await self._send_login_success_message(
