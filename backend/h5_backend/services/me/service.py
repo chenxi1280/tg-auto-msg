@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import re
+import secrets
+import string
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, status
+from loguru import logger
 from sqlalchemy import and_, func, select
 from sqlalchemy.exc import IntegrityError
 
@@ -37,6 +40,11 @@ _NOTICE_URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
 
 class MeService:
     """Business service for 'My' page."""
+
+    @staticmethod
+    def _generate_reset_password(length: int = 14) -> str:
+        alphabet = string.ascii_letters + string.digits
+        return "".join(secrets.choice(alphabet) for _ in range(length))
 
     @staticmethod
     def _to_price_yuan(price_cents: int) -> str:
@@ -117,6 +125,29 @@ class MeService:
             if not user.bot_initial_password_viewable or not user.bot_initial_password_encrypted:
                 return None
             return get_crypto_manager().decrypt(user.bot_initial_password_encrypted)
+
+    async def reset_corrupted_bot_initial_password(self, user_id: int) -> str:
+        auth_service = get_auth_service()
+        new_password = self._generate_reset_password()
+
+        async with get_async_session() as session:
+            user = (
+                await session.execute(select(User).where(User.id == user_id).limit(1))
+            ).scalar_one_or_none()
+            if not user:
+                raise HTTPException(status_code=404, detail="用户不存在")
+
+            user.password_hash = auth_service.get_password_hash(new_password)
+            user.bot_initial_password_encrypted = None
+            user.bot_initial_password_viewable = False
+            user.password_changed_after_bot_registration = True
+            await session.commit()
+
+        logger.warning(
+            "Bot 初始密码解密失败，已按需重置用户密码: user_id={}",
+            user_id,
+        )
+        return new_password
 
     async def list_active_plans(self) -> List[Dict[str, Any]]:
         async with get_async_session() as session:

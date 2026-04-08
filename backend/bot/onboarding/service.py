@@ -80,6 +80,16 @@ def _normalize_email(raw_value: str) -> Optional[str]:
     return value or None
 
 
+def _is_initial_password_decrypt_error(exc: Exception) -> bool:
+    text = str(exc or "")
+    markers = (
+        "解密失败",
+        "密钥不匹配",
+        "密文损坏",
+    )
+    return any(marker in text for marker in markers)
+
+
 def _is_valid_username(value: str) -> bool:
     text = (value or "").strip()
     if len(text) < 3 or len(text) > 50:
@@ -748,7 +758,28 @@ class BotOnboardingService:
             await self.auto_register(event, tg_user_id)
             return
         me_service = get_me_service()
-        password = await me_service.get_bot_initial_password(db_user_id)
+        try:
+            password = await me_service.get_bot_initial_password(db_user_id)
+        except ValueError as exc:
+            if not _is_initial_password_decrypt_error(exc):
+                raise
+
+            logger.warning(
+                "Bot 初始密码读取失败，已触发按需重置: tg_user_id={}, user_id={}",
+                tg_user_id,
+                db_user_id,
+            )
+            new_password = await me_service.reset_corrupted_bot_initial_password(db_user_id)
+            await _send_or_edit(
+                event,
+                "🔐 **登录密码已重置**\n\n"
+                "检测到历史初始密码数据异常，系统已为你重置 Web 登录密码。\n\n"
+                f"新密码：`{new_password}`\n\n"
+                "该密码仅发送这一次，请尽快登录 Web 后立即修改密码。",
+                buttons=[[Button.inline("⬅️ 返回主菜单", data="bot_home")]],
+                parse_mode="markdown",
+            )
+            return
         if not password:
             await _send_or_edit(
                 event,
