@@ -30,6 +30,7 @@ from backend.bot.developer_apps.service import (
     ASSIGNMENT_CONTEXT_NEW,
 )
 from backend.bot.client_runtime.manager import _wait_for_qr_login, is_userbot_ready
+from backend.config.core.settings import settings
 from backend.bot.handlers.core.user_link import (
     clear_active_account_id,
     replace_linked_system_user_id,
@@ -54,6 +55,8 @@ from backend.utils.security.crypto import decrypt_string_session, encrypt_string
 class LoginService:
     """Login lifecycle and bind business service."""
     PHONE_CODE_MAX_ATTEMPTS = 5
+    BIND_START_COOLDOWN_SECONDS = max(1, int(settings.bind_start_cooldown_seconds or 120))
+    LOGIN_SESSION_TTL_SECONDS = max(1, int(settings.login_session_ttl_seconds or 900))
 
     @staticmethod
     def _normalize_ip_address(raw_ip: Optional[str]) -> Optional[str]:
@@ -88,6 +91,25 @@ class LoginService:
         if len(value) < 3:
             raise HTTPException(status_code=400, detail="请输入 Telegram 验证码")
         return value
+
+    async def _enforce_bind_start_cooldown(self, *, user_id: int) -> None:
+        retry_after = await get_redis_login_manager().acquire_bind_start_cooldown(
+            user_id,
+            ttl_seconds=self.BIND_START_COOLDOWN_SECONDS,
+        )
+        if retry_after > 0:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=(
+                    "操作过于频繁，请稍后再试。"
+                    f"为避免误绑定，2 分钟内只能发起 1 次 TG 账号绑定，"
+                    f"请在 {retry_after} 秒后重试。"
+                ),
+            )
+
+    async def enforce_bind_start_cooldown(self, *, user_id: int) -> None:
+        """Public wrapper so Bot/H5 binding entries share the same cooldown policy."""
+        await self._enforce_bind_start_cooldown(user_id=user_id)
 
     async def _load_session_for_user(self, *, login_id: str, user_id: int):
         login_manager = get_redis_login_manager()
@@ -298,6 +320,7 @@ class LoginService:
             await me_service.ensure_can_add_tg_account(user_id, existing_tg_user_id=existing_tg_user_id)
         except TgAccountLimitExceededError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        await self._enforce_bind_start_cooldown(user_id=user_id)
 
         developer_app_service = get_developer_app_service()
         credentials = await developer_app_service.choose_login_credentials_for_user(
@@ -325,6 +348,7 @@ class LoginService:
         return {
             "login_id": login_id,
             "expires_at": session.expires_at,
+            "expires_in_seconds": self.LOGIN_SESSION_TTL_SECONDS,
             "status": LoginStatus.PHONE_INPUT_REQUIRED.value,
         }
 
@@ -334,6 +358,7 @@ class LoginService:
             await me_service.ensure_can_add_tg_account(user_id)
         except TgAccountLimitExceededError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        await self._enforce_bind_start_cooldown(user_id=user_id)
         developer_app_service = get_developer_app_service()
         credentials = await developer_app_service.choose_login_credentials_for_user(user_id)
 
@@ -365,6 +390,7 @@ class LoginService:
             "login_id": login_id,
             "qr_url": qr_url,
             "expires_at": session.expires_at,
+            "expires_in_seconds": self.LOGIN_SESSION_TTL_SECONDS,
         }
 
     async def submit_phone_number_data(
@@ -413,6 +439,7 @@ class LoginService:
                 "login_id": login_id,
                 "status": LoginStatus.CODE_INPUT_REQUIRED.value,
                 "phone_number": normalized_phone,
+                "expires_in_seconds": self.LOGIN_SESSION_TTL_SECONDS,
             }
         except PhoneNumberInvalidError as exc:
             raise HTTPException(status_code=400, detail="手机号格式不正确，请检查国家区号和号码") from exc

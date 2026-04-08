@@ -68,11 +68,13 @@ class RedisLoginManager:
     BIND_KEY_PREFIX = "login:bind:"
     USER_KEY_PREFIX = "login:user:"
     SYSTEM_BIND_KEY_PREFIX = "login:system-bind:"
+    BIND_START_KEY_PREFIX = "login:bind-start:"
 
     # 会话过期时间（秒）
-    SESSION_TTL = 300      # 5 分钟
+    SESSION_TTL = max(1, int(settings.login_session_ttl_seconds or 900))      # 默认 15 分钟
     BIND_CODE_TTL = 600    # 10 分钟
     SYSTEM_BIND_TTL = 600  # 10 分钟
+    BIND_START_COOLDOWN_TTL = max(1, int(settings.bind_start_cooldown_seconds or 120))
 
     def __init__(self, redis_url: str | None = None):
         """
@@ -119,8 +121,9 @@ class RedisLoginManager:
         """
         r = await self._get_redis()
 
+        ttl_seconds = max(1, int(expires_in or self.SESSION_TTL))
         now = datetime.now()
-        expires_at = now + timedelta(seconds=expires_in)
+        expires_at = now + timedelta(seconds=ttl_seconds)
 
         session_data = {
             "login_id": login_id,
@@ -149,7 +152,7 @@ class RedisLoginManager:
 
         # 存储到 Redis 并设置过期时间
         await r.hset(key, mapping=session_data)
-        await r.expire(key, expires_in)
+        await r.expire(key, ttl_seconds)
 
         logger.info(f"创建登录会话: {login_id}")
         return LoginSession(**session_data)
@@ -226,6 +229,8 @@ class RedisLoginManager:
         self,
         login_id: str,
         status: LoginStatus,
+        refresh_ttl: bool = True,
+        expires_in: Optional[int] = None,
         **kwargs
     ) -> bool:
         """
@@ -254,8 +259,40 @@ class RedisLoginManager:
             if value is not None:
                 await r.hset(key, field, str(value))
 
+        active_statuses = {
+            LoginStatus.PENDING,
+            LoginStatus.SCANNING,
+            LoginStatus.PHONE_INPUT_REQUIRED,
+            LoginStatus.CODE_INPUT_REQUIRED,
+            LoginStatus.PASSWORD_REQUIRED,
+        }
+        if refresh_ttl and status in active_statuses:
+            ttl_seconds = max(1, int(expires_in or self.SESSION_TTL))
+            expires_at = datetime.now() + timedelta(seconds=ttl_seconds)
+            await r.hset(key, "expires_at", expires_at.isoformat())
+            await r.expire(key, ttl_seconds)
+
         logger.info(f"更新登录会话状态: {login_id} -> {status.value}")
         return True
+
+    async def acquire_bind_start_cooldown(
+        self,
+        user_id: int,
+        *,
+        ttl_seconds: Optional[int] = None,
+    ) -> int:
+        """Try to acquire per-user bind-start cooldown. Returns retry-after seconds when denied."""
+        r = await self._get_redis()
+        cooldown = max(1, int(ttl_seconds or self.BIND_START_COOLDOWN_TTL))
+        key = self.BIND_START_KEY_PREFIX + str(int(user_id))
+        acquired = await r.set(key, "1", nx=True, ex=cooldown)
+        if acquired:
+            return 0
+
+        ttl = int(await r.ttl(key) or 0)
+        if ttl <= 0:
+            return cooldown
+        return ttl
 
     async def delete_session(self, login_id: str) -> bool:
         """

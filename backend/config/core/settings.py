@@ -72,6 +72,16 @@ class Settings(BaseSettings):
         alias="BIND_LOCK_SECONDS",
         description="/bind 触发限流后的锁定时长（秒）"
     )
+    login_session_ttl_seconds: int = Field(
+        default=900,
+        alias="LOGIN_SESSION_TTL_SECONDS",
+        description="登录/绑定会话默认有效期（秒）"
+    )
+    bind_start_cooldown_seconds: int = Field(
+        default=120,
+        alias="BIND_START_COOLDOWN_SECONDS",
+        description="单个系统用户发起 TG 绑定的冷却时间（秒）"
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",

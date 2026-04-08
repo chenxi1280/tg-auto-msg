@@ -166,7 +166,8 @@ def _build_login_qr_caption(*, refreshed: bool = False) -> str:
     prefix = "🔄 **绑定入口已刷新**\n\n" if refreshed else "📱 **请改用手机号绑定账号**\n\n"
     return (
         prefix +
-        "Bot 端已不再提供扫码绑定，请点击「📱 绑定账号」后按提示输入手机号、验证码和 Telegram 二步密码。\n\n"
+        "Bot 端已不再提供扫码绑定，请点击「📱 绑定账号」后按提示输入手机号、验证码和 Telegram 二步密码。\n"
+        "绑定会话 15 分钟内有效，2 分钟内只能发起 1 次 TG 账号绑定。\n\n"
         "下一步：返回主菜单后重新点击「📱 绑定账号」继续。"
     )
 
@@ -199,6 +200,20 @@ def _friendly_login_error(message: str) -> str:
 
 class BotOnboardingService:
     """Bot-first user onboarding service."""
+
+    @staticmethod
+    async def _respond_bind_start_rate_limit(event, detail: str) -> None:
+        message = f"⚠️ {detail}"
+        if hasattr(event, "answer"):
+            try:
+                await event.answer("绑定过于频繁", alert=True)
+            except Exception:
+                pass
+        await _send_or_edit(
+            event,
+            message,
+            buttons=[[Button.inline("⬅️ 返回主菜单", data="bot_home")]],
+        )
 
     async def _build_primary_quick_buttons(
         self,
@@ -1199,6 +1214,13 @@ class BotOnboardingService:
                 limit_message=str(exc),
             )
             return
+        try:
+            await get_login_service().enforce_bind_start_cooldown(user_id=db_user_id)
+        except HTTPException as exc:
+            if exc.status_code == 429:
+                await self._respond_bind_start_rate_limit(event, str(exc.detail))
+                return
+            raise
 
         await self._cancel_existing_login_task(tg_user_id)
 
@@ -1285,6 +1307,9 @@ class BotOnboardingService:
                 existing_tg_user_id=existing_tg_user_id,
             )
         except HTTPException as exc:
+            if exc.status_code == 429:
+                await self._respond_bind_start_rate_limit(event, str(exc.detail))
+                return
             await self._respond_license_error(event, str(exc.detail))
             return
         login_id = str(login_session["login_id"])
@@ -1300,6 +1325,8 @@ class BotOnboardingService:
             "📱 **手机号绑定**\n\n"
             "请直接回复 Telegram 绑定手机号，需包含国家区号。\n"
             "示例：`+8613812345678`\n\n"
+            "本次绑定会话 15 分钟内有效。\n"
+            "为避免误绑定，2 分钟内只能发起 1 次 TG 账号绑定。\n\n"
             "下一步：发送手机号后，Bot 会向 Telegram 发起验证码绑定。",
             parse_mode="markdown",
             buttons=[[Button.inline("⬅️ 取消绑定", data=f"bot_cancel_login:{login_id}")]],
@@ -1506,6 +1533,7 @@ class BotOnboardingService:
             f"手机号：`{result.get('phone_number') or phone}`\n"
             "请直接回复 Telegram 验证码。\n"
             "收到后系统会立即删除你的验证码消息，不会在聊天中保留。\n\n"
+            "验证码和本次绑定会话 15 分钟内有效，请尽快完成输入。\n\n"
             "下一步：输入验证码后，若账号开启二步验证，Bot 会继续提示你输入密码。",
             parse_mode="markdown",
             buttons=[[Button.inline("⬅️ 取消绑定", data=f"bot_cancel_login:{login_id}")]],
@@ -1563,7 +1591,9 @@ class BotOnboardingService:
                 "🔒 **该账号开启了二步验证**\n\n"
                 "请直接回复 Telegram 二步密码。\n"
                 "收到后系统会立即删除你的密码消息，不会在聊天里保留明文。"
-                f"{hint}\n\n下一步：输入正确密码后，系统会自动完成绑定。",
+                f"{hint}\n\n"
+                "当前绑定会话 15 分钟内有效，请尽快完成。\n\n"
+                "下一步：输入正确密码后，系统会自动完成绑定。",
                 parse_mode="markdown",
                 buttons=[[Button.inline("⬅️ 取消绑定", data=f"bot_cancel_login:{login_id}")]],
             )
