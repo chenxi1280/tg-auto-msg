@@ -537,7 +537,19 @@ class LoginService:
         except (PhoneCodeInvalidError, PhoneCodeExpiredError) as exc:
             attempts += 1
             next_status = LoginStatus.ERROR if attempts >= self.PHONE_CODE_MAX_ATTEMPTS else LoginStatus.CODE_INPUT_REQUIRED
-            message = "验证码已过期，请重新发送验证码" if isinstance(exc, PhoneCodeExpiredError) else "验证码错误，请重新输入"
+            error_type = type(exc).__name__
+            is_expired = isinstance(exc, PhoneCodeExpiredError)
+            message = "验证码已过期，请重新发送验证码" if is_expired else "验证码错误，请重新输入"
+            logger.warning(
+                "手机号验证码校验失败: login_id={}, user_id={}, phone={}, developer_app_id={}, error_type={}, attempts={}, next_status={}",
+                login_id,
+                int(user_id),
+                f"{session.phone_number[:4]}***" if session.phone_number else "",
+                session.developer_app_id,
+                error_type,
+                attempts,
+                next_status.value,
+            )
             await get_redis_login_manager().update_status(
                 login_id,
                 next_status,
