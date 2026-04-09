@@ -72,7 +72,7 @@
         </template>
         <el-table v-if="!isCompact" :data="store.batches.slice(0, 6)" size="small">
           <el-table-column label="规格" width="120">
-            <template #default="{ row }">{{ planDisplayName(row.plan_code) }}</template>
+            <template #default="{ row }">{{ planDisplayName(row.plan_code, row.plan_display_name) }}</template>
           </el-table-column>
           <el-table-column label="已使用 / 总数" width="120">
             <template #default="{ row }">{{ row.used_count || 0 }} / {{ row.total_count || row.quantity }}</template>
@@ -86,7 +86,7 @@
           <div v-for="batch in store.batches.slice(0, 6)" :key="batch.batch_id" class="mobile-data-card">
             <div class="mobile-data-card__header">
               <div>
-                <div class="mobile-data-card__title">{{ planDisplayName(batch.plan_code) }}</div>
+                <div class="mobile-data-card__title">{{ planDisplayName(batch.plan_code, batch.plan_display_name) }}</div>
                 <div class="mobile-data-card__subtitle">{{ formatDateTime(batch.created_at) }}</div>
               </div>
               <el-tag :type="batch.payment_status === 'paid' ? 'success' : 'warning'">{{ batch.payment_status }}</el-tag>
@@ -117,7 +117,7 @@
       <el-table v-else-if="!isCompact" :data="store.cards.slice(0, 8)" size="small">
         <el-table-column prop="card_code" label="卡密" min-width="180" />
         <el-table-column label="规格" width="120">
-          <template #default="{ row }">{{ planDisplayName(row.plan_code) }}</template>
+          <template #default="{ row }">{{ planDisplayName(row.plan_code, row.plan_display_name) }}</template>
         </el-table-column>
         <el-table-column prop="card_source_type" label="来源" width="120" />
         <el-table-column label="状态" width="100">
@@ -132,7 +132,7 @@
           <div class="mobile-data-card__header">
             <div>
               <div class="mobile-data-card__title">{{ card.card_code }}</div>
-              <div class="mobile-data-card__subtitle">{{ planDisplayName(card.plan_code) }}</div>
+              <div class="mobile-data-card__subtitle">{{ planDisplayName(card.plan_code, card.plan_display_name) }}</div>
             </div>
             <el-tag :type="card.is_used ? 'warning' : 'success'">{{ card.is_used ? '已使用' : '可用' }}</el-tag>
           </div>
@@ -164,8 +164,8 @@ const store = useAdminConsoleStore()
 const { isCompact } = useResponsive()
 const canReadPricing = computed(() => store.hasPermission('pricing.read'))
 const canReadBatches = computed(() => store.hasPermission('batches.read'))
-const planDisplayName = (planCode?: string | null) =>
-  store.plans.find((plan) => plan.plan_code === planCode)?.display_name || '规格已记录'
+const planDisplayName = (planCode?: string | null, planDisplayNameValue?: string | null) =>
+  planDisplayNameValue || store.plans.find((plan) => plan.plan_code === planCode)?.display_name || '规格已记录'
 
 onMounted(async () => {
   const tasks: Promise<unknown>[] = [store.loadProfile()]

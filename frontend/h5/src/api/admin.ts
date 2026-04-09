@@ -149,6 +149,7 @@ export interface CardBatch {
   current_counterparty_account_id: number | null
   current_counterparty_name?: string | null
   plan_code: string
+  plan_display_name?: string | null
   quantity: number
   duration_days: number
   unit_price_cents: number
@@ -167,6 +168,7 @@ export interface AgentCard {
   id: number
   card_code: string
   plan_code: string | null
+  plan_display_name?: string | null
   duration_days: number | null
   is_active: boolean
   is_used: boolean
@@ -230,6 +232,7 @@ export interface OperationLog {
   counterparty_name: string | null
   amount_cents: number
   plan_code: string | null
+  plan_display_name?: string | null
   quantity: number | null
   batch_id: string | null
   funding_source: string | null

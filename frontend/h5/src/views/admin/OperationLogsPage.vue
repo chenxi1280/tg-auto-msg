@@ -78,8 +78,8 @@
         </el-table-column>
         <el-table-column label="规格 / 数量" min-width="170">
           <template #default="{ row }">
-            <span v-if="row.log_type === 'card_generate'">{{ planDisplayName(row.plan_code) }} / {{ row.quantity || 0 }}</span>
-            <span v-else>{{ planDisplayName(row.plan_code) }}</span>
+            <span v-if="row.log_type === 'card_generate'">{{ planDisplayName(row.plan_code, row.plan_display_name) }} / {{ row.quantity || 0 }}</span>
+            <span v-else>{{ planDisplayName(row.plan_code, row.plan_display_name) }}</span>
           </template>
         </el-table-column>
         <el-table-column label="金额" width="120">
@@ -124,7 +124,7 @@
             </div>
             <div class="mobile-data-card__row">
               <span class="mobile-data-card__label">规格/数量</span>
-              <span class="mobile-data-card__value">{{ planDisplayName(row.plan_code) }} / {{ row.quantity || 0 }}</span>
+              <span class="mobile-data-card__value">{{ planDisplayName(row.plan_code, row.plan_display_name) }} / {{ row.quantity || 0 }}</span>
             </div>
             <div class="mobile-data-card__row">
               <span class="mobile-data-card__label">金额</span>
@@ -209,7 +209,7 @@
             </div>
             <div class="mobile-data-card__row">
               <span class="mobile-data-card__label">规格</span>
-              <span class="mobile-data-card__value">{{ planDisplayName(detailRow.plan_code) }}</span>
+              <span class="mobile-data-card__value">{{ planDisplayName(detailRow.plan_code, detailRow.plan_display_name) }}</span>
             </div>
             <div class="mobile-data-card__row">
               <span class="mobile-data-card__label">批次号</span>
@@ -272,7 +272,8 @@ const canFilterAccounts = computed(() =>
   store.hasPermission('operation_logs.scope.read') && store.hasPermission('agents.read'),
 )
 
-const planDisplayName = (planCode?: string | null) => {
+const planDisplayName = (planCode?: string | null, planDisplayNameValue?: string | null) => {
+  if (planDisplayNameValue) return planDisplayNameValue
   if (!planCode) return '-'
   return store.plans.find((plan) => plan.plan_code === planCode)?.display_name || '规格已记录'
 }

@@ -80,7 +80,7 @@
       </template>
       <el-table v-if="!isCompact" :data="settlementRows" stripe>
         <el-table-column label="规格" width="140">
-          <template #default="{ row }">{{ planDisplayName(row.plan_code) }}</template>
+          <template #default="{ row }">{{ planDisplayName(row.plan_code, row.plan_display_name) }}</template>
         </el-table-column>
         <el-table-column label="已使用 / 总数" width="140">
           <template #default="{ row }">{{ row.used_count || 0 }} / {{ row.total_count || row.quantity }}</template>
@@ -101,7 +101,7 @@
         <div v-for="row in settlementRows" :key="row.batch_id" class="mobile-data-card">
           <div class="mobile-data-card__header">
             <div>
-              <div class="mobile-data-card__title">{{ planDisplayName(row.plan_code) }}</div>
+              <div class="mobile-data-card__title">{{ planDisplayName(row.plan_code, row.plan_display_name) }}</div>
               <div class="mobile-data-card__subtitle">{{ formatDateTime(row.created_at) }}</div>
             </div>
             <el-tag type="warning">待结清</el-tag>
@@ -152,7 +152,7 @@
       </template>
       <el-table v-if="!isCompact" :data="batchRows" stripe @row-click="handleBatchRowClick">
         <el-table-column label="规格" width="140">
-          <template #default="{ row }">{{ planDisplayName(row.plan_code) }}</template>
+          <template #default="{ row }">{{ planDisplayName(row.plan_code, row.plan_display_name) }}</template>
         </el-table-column>
         <el-table-column label="已使用 / 总数" width="140">
           <template #default="{ row }">{{ row.used_count || 0 }} / {{ row.total_count || row.quantity }}</template>
@@ -186,7 +186,7 @@
         <div v-for="row in batchRows" :key="row.batch_id" class="mobile-data-card">
           <div class="mobile-data-card__header">
             <div>
-              <div class="mobile-data-card__title">{{ planDisplayName(row.plan_code) }}</div>
+              <div class="mobile-data-card__title">{{ planDisplayName(row.plan_code, row.plan_display_name) }}</div>
               <div class="mobile-data-card__subtitle">{{ formatDateTime(row.created_at) }}</div>
             </div>
             <el-tag :type="row.payment_status === 'paid' ? 'success' : 'warning'">{{ paymentStatusLabel(row.payment_status) }}</el-tag>
@@ -286,7 +286,7 @@
         <el-table-column type="selection" width="48" />
         <el-table-column prop="card_code" label="卡密" min-width="180" />
         <el-table-column label="规格" width="140">
-          <template #default="{ row }">{{ planDisplayName(row.plan_code) }}</template>
+          <template #default="{ row }">{{ planDisplayName(row.plan_code, row.plan_display_name) }}</template>
         </el-table-column>
         <el-table-column prop="card_source_type" label="来源" width="120" />
         <el-table-column label="状态" width="100">
@@ -303,7 +303,7 @@
           <div class="mobile-data-card__header">
             <div>
               <div class="mobile-data-card__title">{{ row.card_code }}</div>
-              <div class="mobile-data-card__subtitle">{{ planDisplayName(row.plan_code) }} · {{ sourceTypeLabel(row.card_source_type) }}</div>
+              <div class="mobile-data-card__subtitle">{{ planDisplayName(row.plan_code, row.plan_display_name) }} · {{ sourceTypeLabel(row.card_source_type) }}</div>
             </div>
             <el-checkbox :model-value="isSelected(row.id)" @change="toggleCardSelection(row)" />
           </div>
@@ -397,7 +397,7 @@
           <div class="mobile-data-card__grid">
             <div class="mobile-data-card__row">
               <span class="mobile-data-card__label">规格</span>
-              <span class="mobile-data-card__value">{{ planDisplayName(resultDrawer.planCode) }}</span>
+              <span class="mobile-data-card__value">{{ planDisplayName(resultDrawer.planCode, resultDrawer.planDisplayName) }}</span>
             </div>
             <div class="mobile-data-card__row">
               <span class="mobile-data-card__label">生成数量</span>
@@ -538,6 +538,7 @@ const resultDrawer = reactive({
   visible: false,
   batchId: '',
   planCode: '',
+  planDisplayName: '',
   quantity: 0,
   totalAmountCents: 0,
   fundingSource: '',
@@ -650,9 +651,12 @@ const fundingSourceLabel = (status: string) => {
   if (status === 'platform') return '平台直生'
   return sourceTypeLabel(status)
 }
-const planDisplayName = (planCode?: string | null) => activePlans.value.find((plan) => plan.plan_code === planCode)?.display_name || '规格已记录'
+const planDisplayName = (planCode?: string | null, planDisplayNameValue?: string | null) =>
+  planDisplayNameValue ||
+  activePlans.value.find((plan) => plan.plan_code === planCode)?.display_name ||
+  '规格已记录'
 const buildBatchSummary = (row: Pick<CardBatch, 'plan_code' | 'used_count' | 'total_count' | 'quantity' | 'created_at'>) =>
-  `${planDisplayName(row.plan_code)} · 已使用 ${row.used_count || 0} / ${row.total_count || row.quantity} · ${formatDateTime(row.created_at)}`
+  `${planDisplayName(row.plan_code, (row as CardBatch).plan_display_name)} · 已使用 ${row.used_count || 0} / ${row.total_count || row.quantity} · ${formatDateTime(row.created_at)}`
 
 const scrollToCardSection = () => {
   requestAnimationFrame(() => {
@@ -710,6 +714,7 @@ const submitGenerateBatch = async () => {
     resultDrawer.visible = true
     resultDrawer.batchId = response.data.batch.batch_id
     resultDrawer.planCode = response.data.batch.plan_code
+    resultDrawer.planDisplayName = response.data.batch.plan_display_name || ''
     resultDrawer.quantity = response.data.batch.quantity
     resultDrawer.totalAmountCents = response.data.batch.total_amount_cents
     resultDrawer.fundingSource = isPlatformOperator.value ? 'platform' : batchForm.funding_source

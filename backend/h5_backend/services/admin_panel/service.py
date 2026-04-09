@@ -150,7 +150,13 @@ class AdminPanelService:
             "updated_at": plan.updated_at.isoformat() if plan.updated_at else None,
         }
 
-    def _serialize_batch(self, batch: CardBatch, *, current_counterparty_name: Optional[str] = None) -> Dict[str, Any]:
+    def _serialize_batch(
+        self,
+        batch: CardBatch,
+        *,
+        current_counterparty_name: Optional[str] = None,
+        plan_display_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
         return {
             "batch_id": batch.batch_id,
             "province_code": batch.province_code,
@@ -162,6 +168,7 @@ class AdminPanelService:
             "current_counterparty_account_id": batch.current_counterparty_account_id,
             "current_counterparty_name": current_counterparty_name,
             "plan_code": batch.plan_code,
+            "plan_display_name": plan_display_name,
             "quantity": batch.quantity,
             "duration_days": batch.duration_days,
             "unit_price_cents": int(batch.unit_price_cents or 0),
@@ -190,6 +197,7 @@ class AdminPanelService:
             "counterparty_name": item.get("counterparty_name"),
             "amount_cents": int(item.get("amount_cents") or 0),
             "plan_code": item.get("plan_code"),
+            "plan_display_name": item.get("plan_display_name"),
             "quantity": item.get("quantity"),
             "batch_id": item.get("batch_id"),
             "funding_source": item.get("funding_source"),
@@ -197,11 +205,12 @@ class AdminPanelService:
             "remark": item.get("remark"),
         }
 
-    def _serialize_card(self, card: ActivationCard) -> Dict[str, Any]:
+    def _serialize_card(self, card: ActivationCard, *, plan_display_name: Optional[str] = None) -> Dict[str, Any]:
         return {
             "id": card.id,
             "card_code": card.card_code,
             "plan_code": card.plan_code,
+            "plan_display_name": plan_display_name,
             "duration_days": card.duration_days,
             "is_active": card.is_active,
             "is_used": card.is_used,
@@ -249,6 +258,18 @@ class AdminPanelService:
     @staticmethod
     def _normalize_page(limit: int, offset: int) -> Tuple[int, int]:
         return max(1, min(500, int(limit))), max(0, int(offset))
+
+    @staticmethod
+    async def _build_plan_name_map_from_codes(session: Any, plan_codes: set[str]) -> Dict[str, str]:
+        normalized_codes = {code.strip() for code in plan_codes if code and code.strip()}
+        if not normalized_codes:
+            return {}
+        rows = (
+            await session.execute(
+                select(PricingPlan.plan_code, PricingPlan.display_name).where(PricingPlan.plan_code.in_(normalized_codes))
+            )
+        ).all()
+        return {str(plan_code): str(display_name or plan_code) for plan_code, display_name in rows if plan_code}
 
     @staticmethod
     def _parse_datetime_filter(value: Optional[str], *, is_end: bool = False) -> Optional[datetime]:
@@ -1318,12 +1339,17 @@ class AdminPanelService:
                 if row.current_counterparty_account_id is not None
             }
             counterparty_name_map = await self._build_account_name_map_from_ids(session, account_ids) if account_ids else {}
+            plan_name_map = await self._build_plan_name_map_from_codes(
+                session,
+                {str(row.plan_code) for row in rows if row.plan_code},
+            )
             items = [
                 self._serialize_batch(
                     row,
                     current_counterparty_name=counterparty_name_map.get(int(row.current_counterparty_account_id))
                     if row.current_counterparty_account_id is not None
                     else None,
+                    plan_display_name=plan_name_map.get(str(row.plan_code), str(row.plan_code or "")) if row.plan_code else None,
                 )
                 for row in rows
             ]
@@ -1392,8 +1418,18 @@ class AdminPanelService:
                     stmt.order_by(ActivationCard.created_at.desc(), ActivationCard.id.desc()).limit(limit).offset(offset)
                 )
             ).scalars().all()
+            plan_name_map = await self._build_plan_name_map_from_codes(
+                session,
+                {str(row.plan_code) for row in rows if row.plan_code},
+            )
             return {
-                "items": [self._serialize_card(row) for row in rows],
+                "items": [
+                    self._serialize_card(
+                        row,
+                        plan_display_name=plan_name_map.get(str(row.plan_code), str(row.plan_code or "")) if row.plan_code else None,
+                    )
+                    for row in rows
+                ],
                 "total": total,
                 "limit": limit,
                 "offset": offset,
@@ -1624,6 +1660,16 @@ class AdminPanelService:
                 item["operator_name"] = account_name_map.get(int(item["operator_account_id"])) if item.get("operator_account_id") else None
                 item["subject_name"] = account_name_map.get(int(item["subject_account_id"])) if item.get("subject_account_id") else None
                 item["counterparty_name"] = account_name_map.get(int(item["counterparty_account_id"])) if item.get("counterparty_account_id") else None
+            plan_name_map = await self._build_plan_name_map_from_codes(
+                session,
+                {str(item["plan_code"]) for item in items if item.get("plan_code")},
+            )
+            for item in items:
+                item["plan_display_name"] = (
+                    plan_name_map.get(str(item["plan_code"]), str(item["plan_code"]))
+                    if item.get("plan_code")
+                    else None
+                )
 
             if normalized_keyword:
                 items = [

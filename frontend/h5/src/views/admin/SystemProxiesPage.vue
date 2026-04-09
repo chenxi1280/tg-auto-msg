@@ -106,7 +106,7 @@
                 :value="option.account_id"
               />
             </el-select>
-            <el-button v-if="canAssignTargets" link type="primary" @click="assignProxy(row.proxy_id)">分配</el-button>
+            <el-button v-if="canAssignTargets" link type="primary" :disabled="!assignTargets[row.proxy_id]" @click="assignProxy(row.proxy_id)">分配</el-button>
             <el-button v-if="canCheck" link type="success" :loading="checkingId === row.proxy_id" @click="checkProxy(row.proxy_id)">检查</el-button>
             <el-button v-if="canAssign && row.assigned_account_id" link type="warning" @click="unassignProxy(row.proxy_id)">解绑</el-button>
             <el-button v-if="canWrite" link type="danger" @click="deleteProxy(row.proxy_id)">删除</el-button>
@@ -136,8 +136,22 @@
               <span class="mobile-data-card__value">{{ row.assigned_account_name || (row.assigned_account_id ? '已分配' : '未分配') }}</span>
             </div>
           </div>
+          <el-select
+            v-if="canAssignTargets"
+            v-model="assignTargets[row.proxy_id]"
+            filterable
+            clearable
+            placeholder="选择账号"
+          >
+            <el-option
+              v-for="option in accountOptions"
+              :key="option.account_id"
+              :label="option.label"
+              :value="option.account_id"
+            />
+          </el-select>
           <div class="mobile-action-bar">
-            <el-button v-if="canAssignTargets" @click="assignProxy(row.proxy_id)">分配</el-button>
+            <el-button v-if="canAssignTargets" :disabled="!assignTargets[row.proxy_id]" @click="assignProxy(row.proxy_id)">分配</el-button>
             <el-button v-if="canCheck" type="success" plain :loading="checkingId === row.proxy_id" @click="checkProxy(row.proxy_id)">检查</el-button>
             <el-button v-if="canAssign && row.assigned_account_id" type="warning" plain @click="unassignProxy(row.proxy_id)">解绑</el-button>
             <el-button v-if="canWrite" type="danger" plain @click="deleteProxy(row.proxy_id)">删除</el-button>
@@ -295,7 +309,7 @@ const checkProxy = async (proxyId: number) => {
   try {
     await adminCheckSystemProxy(proxyId)
     await loadData()
-    lastActionMessage.value = `代理 #${proxyId} 检查完成`
+    lastActionMessage.value = '代理检查完成'
     ElMessage.success(lastActionMessage.value)
   } finally {
     checkingId.value = null
