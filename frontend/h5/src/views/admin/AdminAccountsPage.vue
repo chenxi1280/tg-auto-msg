@@ -22,7 +22,7 @@
         </div>
       </template>
 
-      <el-table :data="accounts" stripe>
+      <el-table v-if="!isCompact" :data="accounts" stripe>
         <el-table-column prop="username" label="账号" min-width="160" />
         <el-table-column prop="display_name" label="显示名" min-width="160" />
         <el-table-column label="身份标签" width="120">
@@ -60,6 +60,36 @@
           </template>
         </el-table-column>
       </el-table>
+      <div v-else class="mobile-card-list">
+        <div v-for="row in accounts" :key="row.id" class="mobile-data-card">
+          <div class="mobile-data-card__header">
+            <div>
+              <div class="mobile-data-card__title">{{ row.display_name }}</div>
+              <div class="mobile-data-card__subtitle">{{ row.username }} · {{ roleLabel(row.role_code) }}</div>
+            </div>
+            <el-tag :type="row.status === 'active' ? 'success' : 'info'">{{ row.status === 'active' ? '启用' : '停用' }}</el-tag>
+          </div>
+          <div class="mobile-data-card__grid">
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">绑定角色</span>
+              <span class="mobile-data-card__value">{{ (row.assigned_roles || []).map((item) => item.display_name).join(' / ') || '-' }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">TG 绑定</span>
+              <span class="mobile-data-card__value">{{ row.tg_binding?.bind_status === 'bound' ? '已绑定' : '未绑定' }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">最近登录</span>
+              <span class="mobile-data-card__value">{{ formatDateTime(row.last_login_at) }}</span>
+            </div>
+          </div>
+          <div class="mobile-action-bar">
+            <el-button v-if="store.hasPermission('admin_accounts.write')" type="primary" plain @click="openEditDialog(row)">编辑</el-button>
+            <el-button v-if="canManageRoleBindings" type="success" plain @click="openRolesDialog(row)">绑定角色</el-button>
+            <el-button v-if="store.hasPermission('admin_accounts.reset_password')" type="warning" plain @click="openResetDialog(row)">重置密码</el-button>
+          </div>
+        </div>
+      </div>
 
       <div class="pagination-wrap">
         <el-pagination
@@ -75,7 +105,7 @@
       </div>
     </el-card>
 
-    <el-dialog v-model="createDialog.visible" title="新增后台账号" width="640px">
+    <ResponsiveFormLayer v-model="createDialog.visible" title="新增后台账号" width="640px">
       <el-form label-position="top">
         <el-row :gutter="16">
           <el-col :span="12">
@@ -138,9 +168,9 @@
         <el-button @click="createDialog.visible = false">取消</el-button>
         <el-button type="primary" :loading="creating" @click="submitCreate">创建</el-button>
       </template>
-    </el-dialog>
+    </ResponsiveFormLayer>
 
-    <el-dialog v-model="editDialog.visible" title="编辑后台账号" width="520px">
+    <ResponsiveFormLayer v-model="editDialog.visible" title="编辑后台账号" width="520px">
       <el-form label-position="top">
         <el-form-item label="显示名称">
           <el-input v-model.trim="editDialog.form.display_name" />
@@ -162,9 +192,9 @@
         <el-button @click="editDialog.visible = false">取消</el-button>
         <el-button type="primary" :loading="saving" @click="submitEdit">保存</el-button>
       </template>
-    </el-dialog>
+    </ResponsiveFormLayer>
 
-    <el-dialog v-model="rolesDialog.visible" title="绑定后台角色" width="520px">
+    <ResponsiveFormLayer v-model="rolesDialog.visible" title="绑定后台角色" width="520px">
       <el-form label-position="top">
         <el-form-item label="角色列表">
           <el-select v-model="rolesDialog.role_keys" multiple filterable>
@@ -176,9 +206,9 @@
         <el-button @click="rolesDialog.visible = false">取消</el-button>
         <el-button type="primary" :loading="savingRoles" @click="submitRoles">保存</el-button>
       </template>
-    </el-dialog>
+    </ResponsiveFormLayer>
 
-    <el-dialog v-model="resetDialog.visible" title="重置后台账号密码" width="420px">
+    <ResponsiveFormLayer v-model="resetDialog.visible" title="重置后台账号密码" width="420px">
       <el-form label-position="top">
         <el-form-item label="新密码">
           <el-input v-model="resetDialog.new_password" type="password" show-password />
@@ -188,7 +218,7 @@
         <el-button @click="resetDialog.visible = false">取消</el-button>
         <el-button type="primary" :loading="resettingPassword" @click="submitResetPassword">重置</el-button>
       </template>
-    </el-dialog>
+    </ResponsiveFormLayer>
   </div>
 </template>
 
@@ -206,8 +236,11 @@ import {
 } from '@/api/admin'
 import { useAdminConsoleStore } from '@/stores/adminConsole'
 import { formatDateTime, roleLabel } from '@/utils/adminConsole'
+import { useResponsive } from '@/composables/useResponsive'
+import ResponsiveFormLayer from '@/components/responsive/ResponsiveFormLayer.vue'
 
 const store = useAdminConsoleStore()
+const { isCompact } = useResponsive()
 const canReadRoles = computed(() => store.hasPermission('rbac.roles.read'))
 const canReadAgents = computed(() => store.hasPermission('agents.read'))
 const canManageRoleBindings = computed(() => store.hasPermission('admin_accounts.write') && canReadRoles.value)

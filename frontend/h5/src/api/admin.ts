@@ -12,6 +12,10 @@ const clearAdminStorage = () => {
   localStorage.removeItem(ADMIN_ACCESS_TOKEN_KEY)
 }
 
+const showAdminErrorMessage = (message: string) => {
+  ElMessage.error(message)
+}
+
 adminApi.interceptors.request.use((config) => {
   const token = localStorage.getItem(ADMIN_ACCESS_TOKEN_KEY) || ''
   if (token && config.headers) {
@@ -31,7 +35,7 @@ adminApi.interceptors.response.use(
         window.location.href = '/admin/login'
       }
     }
-    ElMessage.error(message)
+    showAdminErrorMessage(message)
     return Promise.reject(error)
   },
 )
@@ -143,6 +147,7 @@ export interface CardBatch {
   root_master_account_id: number | null
   current_liability_account_id: number | null
   current_counterparty_account_id: number | null
+  current_counterparty_name?: string | null
   plan_code: string
   quantity: number
   duration_days: number
@@ -151,6 +156,8 @@ export interface CardBatch {
   settlement_status: string
   payment_status: string
   export_count: number
+  used_count?: number
+  total_count?: number
   last_exported_at: string | null
   remark: string | null
   created_at: string | null
@@ -174,31 +181,6 @@ export interface AgentCard {
   card_source_type: string
   copy_status: string
   created_at: string | null
-}
-
-export interface ApprovalRequest {
-  request_id: string
-  province_code: string
-  request_type: string
-  requester_account_id: number
-  subject_account_id: number
-  approver_account_id: number
-  status: string
-  amount_cents: number | null
-  credit_delta_cents: number | null
-  payload_json: Record<string, any>
-  approved_at: string | null
-  rejected_at: string | null
-  created_at: string | null
-  updated_at: string | null
-}
-
-export interface BatchApprovalResult {
-  decision: string
-  success_count: number
-  failed_count: number
-  success_items: Array<{ request_id: string; result: ApprovalRequest }>
-  failed_items: Array<{ request_id: string; detail: string }>
 }
 
 export interface AdminAuditLog {
@@ -235,6 +217,24 @@ export interface FundLedger {
   operator_account_id: number | null
   operator_name: string | null
   created_at: string | null
+}
+
+export interface OperationLog {
+  log_type: 'recharge' | 'card_generate' | 'credit_settlement'
+  occurred_at: string | null
+  operator_account_id: number | null
+  operator_name: string | null
+  subject_account_id: number | null
+  subject_name: string | null
+  counterparty_account_id: number | null
+  counterparty_name: string | null
+  amount_cents: number
+  plan_code: string | null
+  quantity: number | null
+  batch_id: string | null
+  funding_source: string | null
+  ledger_scope: string | null
+  remark: string | null
 }
 
 export interface PurchaseSettings {
@@ -288,6 +288,7 @@ export interface LegacyProxy {
   response_time_ms: number | null
   usage_count: number
   assigned_account_id: string | null
+  assigned_account_name?: string | null
   last_check_at: string | null
   created_at: string | null
 }
@@ -526,6 +527,7 @@ export const adminListVisibleFundLedgers = (params?: {
 
 export const adminListCards = (params?: {
   plan_code?: string
+  batch_id?: string
   status?: string
   source_type?: string
   keyword?: string
@@ -536,6 +538,7 @@ export const adminListCards = (params?: {
 
 export const adminExportCardsXlsx = (params?: {
   plan_code?: string
+  batch_id?: string
   status?: string
   source_type?: string
   keyword?: string
@@ -548,50 +551,28 @@ export const adminCopyCards = (payload: {
 }): Promise<{ success: boolean; data: { count: number; copied_text: string } }> =>
   adminApi.post('/agent/cards/copy', payload)
 
-export const adminCreateRechargeRequest = (payload: {
+export const adminCreateRechargeEntry = (payload: {
   amount_cents: number
-  subject_account_id?: number
-  payload_json?: Record<string, any>
-}): Promise<{ success: boolean; data: ApprovalRequest }> =>
-  adminApi.post('/agent/approval-requests/recharge', { request_type: 'recharge', ...payload })
+  subject_account_id: number
+  remark?: string
+}): Promise<{ success: boolean; data: AgentAccount }> =>
+  adminApi.post('/admin/fund-ledgers/recharge', payload)
 
-export const adminCreateSettlementRequest = (payload: {
-  amount_cents?: number
-  subject_account_id?: number
-  payload_json?: Record<string, any>
-}): Promise<{ success: boolean; data: ApprovalRequest }> =>
-  adminApi.post('/agent/approval-requests/settlement', { request_type: 'settlement', ...payload })
+export const adminSettleBatchDirect = (
+  batchId: string,
+): Promise<{ success: boolean; data: CardBatch }> =>
+  adminApi.post(`/admin/card-batches/${encodeURIComponent(batchId)}/settle`)
 
-export const adminCreateCreditAdjustRequest = (payload: {
-  credit_delta_cents?: number
-  subject_account_id?: number
-  payload_json?: Record<string, any>
-}): Promise<{ success: boolean; data: ApprovalRequest }> =>
-  adminApi.post('/agent/approval-requests/credit-adjust', { request_type: 'credit_adjust', ...payload })
-
-export const adminListPendingApprovals = (): Promise<{ success: boolean; data: ApprovalRequest[] }> =>
-  adminApi.get('/agent/approval-requests/pending')
-
-export const adminListApprovalRequests = (params?: {
-  status?: string
-  request_type?: string
+export const adminListOperationLogs = (params?: {
+  log_type?: string
+  account_id?: number
   keyword?: string
+  date_from?: string
+  date_to?: string
   limit?: number
   offset?: number
-}): Promise<{ success: boolean; data: PaginatedResponse<ApprovalRequest> }> =>
-  adminApi.get('/agent/approval-requests', { params })
-
-export const adminApproveRequest = (requestId: string): Promise<{ success: boolean; data: ApprovalRequest }> =>
-  adminApi.post(`/agent/approval-requests/${encodeURIComponent(requestId)}/approve`)
-
-export const adminRejectRequest = (requestId: string): Promise<{ success: boolean; data: ApprovalRequest }> =>
-  adminApi.post(`/agent/approval-requests/${encodeURIComponent(requestId)}/reject`)
-
-export const adminBatchApproveRequests = (requestIds: string[]): Promise<{ success: boolean; data: BatchApprovalResult }> =>
-  adminApi.post('/agent/approval-requests/batch-approve', { request_ids: requestIds })
-
-export const adminBatchRejectRequests = (requestIds: string[]): Promise<{ success: boolean; data: BatchApprovalResult }> =>
-  adminApi.post('/agent/approval-requests/batch-reject', { request_ids: requestIds })
+}): Promise<{ success: boolean; data: PaginatedResponse<OperationLog> }> =>
+  adminApi.get('/admin/operation-logs', { params })
 
 export const adminListAuditLogs = (params?: {
   action?: string

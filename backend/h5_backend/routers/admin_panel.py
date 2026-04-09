@@ -1,7 +1,7 @@
 """RBAC admin panel and agent management API."""
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from backend.database.schema.models import AdminAccount
 from backend.h5_backend.dependencies import (
+    admin_has_permissions,
     get_current_admin_account,
     require_admin_permissions,
 )
@@ -69,16 +70,10 @@ class CopyCardsRequest(BaseModel):
     with_meta: bool = False
 
 
-class CreateApprovalRequest(BaseModel):
-    request_type: str = Field(..., min_length=1, max_length=32)
-    amount_cents: Optional[int] = Field(default=None, ge=0)
-    credit_delta_cents: Optional[int] = None
-    subject_account_id: Optional[int] = Field(default=None, ge=1)
-    payload_json: Optional[Dict[str, Any]] = None
-
-
-class BatchApprovalRequest(BaseModel):
-    request_ids: List[str] = Field(..., min_length=1, max_length=50)
+class DirectRechargeRequest(BaseModel):
+    subject_account_id: int = Field(..., ge=1)
+    amount_cents: int = Field(..., ge=1)
+    remark: Optional[str] = Field(default=None, max_length=255)
 
 
 def _client_ip(request: Request) -> Optional[str]:
@@ -375,9 +370,42 @@ async def list_visible_fund_ledgers(
     }
 
 
+@router.get("/api/admin/operation-logs")
+async def list_operation_logs(
+    log_type: Optional[str] = Query(default=None),
+    account_id: Optional[int] = Query(default=None, ge=1),
+    keyword: Optional[str] = Query(default=None),
+    date_from: Optional[str] = Query(default=None),
+    date_to: Optional[str] = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    current_admin: AdminAccount = Depends(get_current_admin_account),
+):
+    can_read_scope = admin_has_permissions(current_admin, "operation_logs.scope.read")
+    can_read_self = admin_has_permissions(current_admin, "operation_logs.read")
+    if not can_read_scope and not can_read_self:
+        raise HTTPException(status_code=403, detail="无权访问该后台资源")
+    service = get_admin_panel_service()
+    return {
+        "success": True,
+        "data": await service.list_operation_logs(
+            current_admin=current_admin,
+            log_type=log_type,
+            account_id=account_id,
+            keyword=keyword,
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+            offset=offset,
+            scope_only=can_read_scope,
+        ),
+    }
+
+
 @router.get("/api/agent/cards")
 async def list_cards(
     plan_code: Optional[str] = Query(default=None),
+    batch_id: Optional[str] = Query(default=None),
     status: Optional[str] = Query(default=None),
     source_type: Optional[str] = Query(default=None),
     keyword: Optional[str] = Query(default=None),
@@ -391,6 +419,7 @@ async def list_cards(
         "data": await service.list_cards(
             current_admin=current_admin,
             plan_code=plan_code,
+            batch_id=batch_id,
             status=status,
             source_type=source_type,
             keyword=keyword,
@@ -403,6 +432,7 @@ async def list_cards(
 @router.get("/api/agent/cards/export")
 async def export_cards(
     plan_code: Optional[str] = Query(default=None),
+    batch_id: Optional[str] = Query(default=None),
     status: Optional[str] = Query(default=None),
     source_type: Optional[str] = Query(default=None),
     keyword: Optional[str] = Query(default=None),
@@ -412,6 +442,7 @@ async def export_cards(
     file_bytes, total = await service.export_cards_xlsx(
         current_admin=current_admin,
         plan_code=plan_code,
+        batch_id=batch_id,
         status=status,
         source_type=source_type,
         keyword=keyword,
@@ -435,166 +466,36 @@ async def copy_cards(
     return {"success": True, "data": await service.copy_cards(current_admin=current_admin, card_ids=payload.card_ids, with_meta=payload.with_meta)}
 
 
-@router.post("/api/agent/approval-requests/recharge")
-async def create_recharge_request(
-    payload: CreateApprovalRequest,
+@router.post("/api/admin/fund-ledgers/recharge")
+async def direct_recharge(
+    payload: DirectRechargeRequest,
     request: Request,
     current_admin: AdminAccount = Depends(require_admin_permissions("agents.write")),
 ):
     service = get_admin_panel_service()
-    data = await service.create_approval_request(
+    data = await service.create_recharge_entry(
         current_admin=current_admin,
-        request_type="recharge",
+        subject_account_id=payload.subject_account_id,
         amount_cents=payload.amount_cents,
-        subject_account_id=payload.subject_account_id,
-        payload_json=payload.payload_json,
+        remark=payload.remark,
         ip_address=_client_ip(request),
     )
-    return {"success": True, "message": "充值审批已发起", "data": data}
+    return {"success": True, "message": "充值已直接入账", "data": data}
 
 
-@router.post("/api/agent/approval-requests/settlement")
-async def create_settlement_request(
-    payload: CreateApprovalRequest,
+@router.post("/api/admin/card-batches/{batch_id}/settle")
+async def direct_settle_batch(
+    batch_id: str,
     request: Request,
     current_admin: AdminAccount = Depends(require_admin_permissions("agents.write")),
 ):
     service = get_admin_panel_service()
-    data = await service.create_approval_request(
+    data = await service.settle_credit_batch(
         current_admin=current_admin,
-        request_type="settlement",
-        amount_cents=payload.amount_cents,
-        subject_account_id=payload.subject_account_id,
-        payload_json=payload.payload_json,
+        batch_id=batch_id,
         ip_address=_client_ip(request),
     )
-    return {"success": True, "message": "结算审批已发起", "data": data}
-
-
-@router.post("/api/agent/approval-requests/credit-adjust")
-async def create_credit_adjust_request(
-    payload: CreateApprovalRequest,
-    request: Request,
-    current_admin: AdminAccount = Depends(require_admin_permissions("agents.write")),
-):
-    service = get_admin_panel_service()
-    data = await service.create_approval_request(
-        current_admin=current_admin,
-        request_type="credit_adjust",
-        credit_delta_cents=payload.credit_delta_cents,
-        subject_account_id=payload.subject_account_id,
-        payload_json=payload.payload_json,
-        ip_address=_client_ip(request),
-    )
-    return {"success": True, "message": "调额审批已发起", "data": data}
-
-
-@router.post("/api/agent/approval-requests/batch-purchase")
-async def create_batch_purchase_request(
-    current_admin: AdminAccount = Depends(get_current_admin_account),
-):
-    raise HTTPException(status_code=410, detail="批次申请流程已下线，请改用余额生成或授信生成")
-
-
-@router.get("/api/agent/approval-requests/pending")
-async def list_pending_approvals(current_admin: AdminAccount = Depends(require_admin_permissions("approvals.read"))):
-    service = get_admin_panel_service()
-    return {"success": True, "data": await service.list_pending_approvals(current_admin=current_admin)}
-
-
-@router.get("/api/agent/approval-requests")
-async def list_approval_requests(
-    status: Optional[str] = Query(default="all"),
-    request_type: Optional[str] = Query(default="all"),
-    keyword: Optional[str] = Query(default=None),
-    limit: int = Query(default=200, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
-    current_admin: AdminAccount = Depends(require_admin_permissions("approvals.read")),
-):
-    service = get_admin_panel_service()
-    return {
-        "success": True,
-        "data": await service.list_approval_requests(
-            current_admin=current_admin,
-            status=status,
-            request_type=request_type,
-            keyword=keyword,
-            limit=limit,
-            offset=offset,
-        ),
-    }
-
-
-@router.post("/api/agent/approval-requests/{request_id}/approve")
-async def approve_request(
-    request_id: str,
-    request: Request,
-    current_admin: AdminAccount = Depends(require_admin_permissions("approvals.approve")),
-):
-    service = get_admin_panel_service()
-    data = await service.approve_request(current_admin=current_admin, request_id=request_id, ip_address=_client_ip(request))
-    return {"success": True, "message": "审批已通过", "data": data}
-
-
-@router.post("/api/agent/approval-requests/{request_id}/reject")
-async def reject_request(
-    request_id: str,
-    request: Request,
-    current_admin: AdminAccount = Depends(require_admin_permissions("approvals.reject")),
-):
-    service = get_admin_panel_service()
-    data = await service.reject_request(current_admin=current_admin, request_id=request_id, ip_address=_client_ip(request))
-    return {"success": True, "message": "审批已驳回", "data": data}
-
-
-@router.post("/api/agent/approval-requests/batch-approve")
-async def batch_approve_requests(
-    payload: BatchApprovalRequest,
-    request: Request,
-    current_admin: AdminAccount = Depends(require_admin_permissions("approvals.batch")),
-):
-    service = get_admin_panel_service()
-    data = await service.batch_process_requests(
-        current_admin=current_admin,
-        request_ids=payload.request_ids,
-        decision="approve",
-        ip_address=_client_ip(request),
-    )
-    return {"success": True, "message": "批量审批已执行", "data": data}
-
-
-@router.post("/api/agent/approval-requests/batch-reject")
-async def batch_reject_requests(
-    payload: BatchApprovalRequest,
-    request: Request,
-    current_admin: AdminAccount = Depends(require_admin_permissions("approvals.batch")),
-):
-    service = get_admin_panel_service()
-    data = await service.batch_process_requests(
-        current_admin=current_admin,
-        request_ids=payload.request_ids,
-        decision="reject",
-        ip_address=_client_ip(request),
-    )
-    return {"success": True, "message": "批量驳回已执行", "data": data}
-
-
-@router.post("/api/internal/tg-admin/approve-callback")
-async def tg_approve_callback(
-    request_id: str,
-    tg_user_id: int,
-):
-    service = get_admin_panel_service()
-    return {"success": True, "data": await service.handle_tg_approval_callback(tg_user_id=tg_user_id, request_id=request_id, decision="approve")}
-
-
-@router.post("/api/internal/tg-admin/reject-callback")
-async def tg_reject_callback(
-    request_id: str,
-    tg_user_id: int,
-):
-    service = get_admin_panel_service()
-    return {"success": True, "data": await service.handle_tg_approval_callback(tg_user_id=tg_user_id, request_id=request_id, decision="reject")}
+    return {"success": True, "message": "授信批次已直接结清", "data": data}
 
 
 @router.get("/api/agent/audit-logs")

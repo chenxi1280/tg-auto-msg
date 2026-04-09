@@ -159,12 +159,10 @@
         </div>
       </div>
 
-      <el-dialog
+      <ResponsiveFormLayer
         v-model="passwordDialogVisible"
         title="输入 Telegram 二步密码"
         width="420px"
-        :close-on-click-modal="false"
-        :close-on-press-escape="false"
       >
         <p class="dialog-tip">该账号已启用两步验证，请输入密码完成登录。</p>
         <p v-if="passwordHint" class="password-hint">密码提示：{{ passwordHint }}</p>
@@ -181,7 +179,7 @@
             提交密码
           </el-button>
         </template>
-      </el-dialog>
+      </ResponsiveFormLayer>
     </div>
   </div>
 </template>
@@ -202,6 +200,7 @@ import {
 } from '@/api/login'
 import { getLicenseStatus } from '@/api/me'
 import QRCode from 'qrcode'
+import ResponsiveFormLayer from '@/components/responsive/ResponsiveFormLayer.vue'
 
 const router = useRouter()
 type LoginMode = 'qr' | 'phone'
@@ -764,6 +763,16 @@ onUnmounted(() => {
     font-size: 2rem;
     letter-spacing: 0.15em;
     word-break: break-all;
+  }
+
+  .phone-actions,
+  .bind-actions {
+    flex-direction: column;
+  }
+
+  .phone-actions :deep(.el-button),
+  .bind-actions :deep(.el-button) {
+    width: 100%;
   }
 }
 </style>

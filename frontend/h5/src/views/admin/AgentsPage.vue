@@ -67,22 +67,25 @@
         <div class="card-header">
           <span>代理树与后台账号</span>
           <div class="header-actions">
-            <el-input v-model.trim="filters.search" clearable placeholder="搜索账号/显示名" style="width: 220px" />
-            <el-select v-model="filters.role_code" clearable placeholder="角色" style="width: 140px">
-              <el-option label="超管" value="super_admin" />
-              <el-option label="总代" value="master_agent" />
-              <el-option label="下级代理" value="sub_agent" />
-            </el-select>
-            <el-select v-model="filters.status" clearable placeholder="状态" style="width: 140px">
-              <el-option label="启用" value="active" />
-              <el-option label="停用" value="disabled" />
-            </el-select>
-            <el-button @click="loadAccountsPage(true)">查询</el-button>
-            <el-button @click="refreshData">刷新</el-button>
+            <el-button v-if="isCompact" class="mobile-filter-trigger" @click="filtersVisible = true">筛选条件</el-button>
+            <template v-else>
+              <el-input v-model.trim="filters.search" clearable placeholder="搜索账号/显示名" style="width: 220px" />
+              <el-select v-model="filters.role_code" clearable placeholder="角色" style="width: 140px">
+                <el-option label="超管" value="super_admin" />
+                <el-option label="总代" value="master_agent" />
+                <el-option label="下级代理" value="sub_agent" />
+              </el-select>
+              <el-select v-model="filters.status" clearable placeholder="状态" style="width: 140px">
+                <el-option label="启用" value="active" />
+                <el-option label="停用" value="disabled" />
+              </el-select>
+              <el-button @click="loadAccountsPage(true)">查询</el-button>
+              <el-button @click="refreshData">刷新</el-button>
+            </template>
           </div>
         </div>
       </template>
-      <el-table :data="accountRows" stripe>
+      <el-table v-if="!isCompact" :data="accountRows" stripe>
         <el-table-column label="账号" min-width="220">
           <template #default="{ row }">
             <div class="account-cell" :style="{ paddingLeft: `${12 + row.level_depth * 18}px` }">
@@ -152,6 +155,73 @@
           </template>
         </el-table-column>
       </el-table>
+      <div v-else class="mobile-card-list">
+        <div v-for="row in accountRows" :key="row.id" class="mobile-data-card">
+          <div class="mobile-data-card__header">
+            <div>
+              <div class="mobile-data-card__title">{{ row.display_name }}</div>
+              <div class="mobile-data-card__subtitle">{{ row.username }} · {{ roleLabel(row.role_code) }}</div>
+            </div>
+            <el-tag :type="row.is_credit_whitelisted ? 'success' : 'info'">
+              {{ row.is_credit_whitelisted ? '授信已开' : '普通模式' }}
+            </el-tag>
+          </div>
+          <div class="mobile-data-card__grid">
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">层级</span>
+              <span class="mobile-data-card__value">第 {{ row.level_depth + 1 }} 层</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">结算模式</span>
+              <span class="mobile-data-card__value">{{ settlementLabel(row.settlement_mode) }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">余额</span>
+              <span class="mobile-data-card__value">¥{{ centsToYuan(row.balance_cents) }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">总额度</span>
+              <span class="mobile-data-card__value">¥{{ centsToYuan(row.credit_limit_cents) }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">已分配</span>
+              <span class="mobile-data-card__value">¥{{ centsToYuan(row.allocated_credit_limit_cents) }}</span>
+            </div>
+          </div>
+          <div class="mobile-action-bar">
+            <el-button
+              v-if="store.canManageMasterCredit && row.role_code === 'master_agent'"
+              type="primary"
+              plain
+              @click="openCreditDialog(row, 'master')"
+            >
+              设置总代额度
+            </el-button>
+            <el-button
+              v-if="row.parent_account_id && store.hasPermission('agents.write')"
+              type="primary"
+              plain
+              @click="openCreditDialog(row, 'child')"
+            >
+              设置下级额度
+            </el-button>
+            <el-button
+              v-if="row.id !== store.profile?.account.id && store.hasPermission('agents.write')"
+              @click="openSettlementDialog(row)"
+            >
+              结算模式
+            </el-button>
+            <el-button
+              v-if="store.canManageMasterCredit"
+              type="warning"
+              plain
+              @click="toggleWhitelist(row)"
+            >
+              {{ row.is_credit_whitelisted ? '取消白名单' : '授信白名单' }}
+            </el-button>
+          </div>
+        </div>
+      </div>
       <div class="pagination-wrap">
         <el-pagination
           v-model:current-page="pagination.currentPage"
@@ -166,7 +236,7 @@
       </div>
     </el-card>
 
-    <el-dialog v-model="creditDialog.visible" :title="creditDialog.mode === 'master' ? '设置总代额度' : '设置下级额度'" width="420px">
+    <ResponsiveFormLayer v-model="creditDialog.visible" :title="creditDialog.mode === 'master' ? '设置总代额度' : '设置下级额度'" width="420px">
       <el-form label-position="top">
         <el-form-item label="目标账号">
           <el-input :model-value="creditDialog.account?.display_name || ''" disabled />
@@ -182,9 +252,9 @@
         <el-button @click="creditDialog.visible = false">取消</el-button>
         <el-button type="primary" :loading="submittingCredit" @click="submitCreditUpdate">保存</el-button>
       </template>
-    </el-dialog>
+    </ResponsiveFormLayer>
 
-    <el-dialog v-model="settlementDialog.visible" title="调整结算模式" width="420px">
+    <ResponsiveFormLayer v-model="settlementDialog.visible" title="调整结算模式" width="420px">
       <el-form label-position="top">
         <el-form-item label="目标账号">
           <el-input :model-value="settlementDialog.account?.display_name || ''" disabled />
@@ -201,7 +271,27 @@
         <el-button @click="settlementDialog.visible = false">取消</el-button>
         <el-button type="primary" :loading="submittingSettlementMode" @click="submitSettlementMode">保存</el-button>
       </template>
-    </el-dialog>
+    </ResponsiveFormLayer>
+
+    <el-drawer v-model="filtersVisible" title="筛选账号" size="100%" append-to-body>
+      <div class="mobile-card-list">
+        <el-input v-model.trim="filters.search" clearable placeholder="搜索账号/显示名" />
+        <el-select v-model="filters.role_code" clearable placeholder="角色">
+          <el-option label="超管" value="super_admin" />
+          <el-option label="总代" value="master_agent" />
+          <el-option label="下级代理" value="sub_agent" />
+        </el-select>
+        <el-select v-model="filters.status" clearable placeholder="状态">
+          <el-option label="启用" value="active" />
+          <el-option label="停用" value="disabled" />
+        </el-select>
+        <div class="mobile-action-bar">
+          <el-button @click="filtersVisible = false">关闭</el-button>
+          <el-button @click="refreshData">刷新</el-button>
+          <el-button type="primary" @click="applyMobileFilters">应用筛选</el-button>
+        </div>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -220,9 +310,13 @@ import {
 } from '@/api/admin'
 import { useAdminConsoleStore } from '@/stores/adminConsole'
 import { centsToYuan, roleLabel, settlementLabel, yuanToCents } from '@/utils/adminConsole'
+import { useResponsive } from '@/composables/useResponsive'
+import ResponsiveFormLayer from '@/components/responsive/ResponsiveFormLayer.vue'
 
 const store = useAdminConsoleStore()
+const { isCompact } = useResponsive()
 const lastActionMessage = ref('')
+const filtersVisible = ref(false)
 const accountRows = ref<AgentAccount[]>([])
 const totalAccounts = ref(0)
 const pagination = reactive({
@@ -308,6 +402,11 @@ const handlePageChange = async () => {
 const handleSizeChange = async () => {
   pagination.currentPage = 1
   await loadAccountsPage()
+}
+
+const applyMobileFilters = async () => {
+  filtersVisible.value = false
+  await loadAccountsPage(true)
 }
 
 const submitCreateMaster = async () => {
@@ -445,6 +544,7 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .card-tip {
@@ -471,5 +571,12 @@ onMounted(async () => {
   display: flex;
   justify-content: flex-end;
   margin-top: 16px;
+}
+
+@media (max-width: 768px) {
+  .card-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 </style>

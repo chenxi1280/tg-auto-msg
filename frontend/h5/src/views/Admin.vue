@@ -1,7 +1,7 @@
 <template>
   <div class="admin-console" v-loading="store.loading.profile && !store.profile">
     <el-container class="admin-shell">
-      <el-aside class="admin-aside" width="240px">
+      <el-aside v-if="!isMobile" class="admin-aside" width="240px">
         <div class="brand-block">
           <img class="brand-logo" src="/quanqiu.png" alt="全球通" />
           <div>
@@ -20,7 +20,10 @@
 
       <el-container>
         <el-header class="admin-header">
-          <div>
+          <div class="header-main">
+            <el-button v-if="isMobile" class="menu-trigger" circle @click="mobileMenuVisible = true">
+              <el-icon><Menu /></el-icon>
+            </el-button>
             <div class="page-title">{{ route.meta.title || '管理后台' }}</div>
             <el-breadcrumb separator="/">
               <el-breadcrumb-item>后台</el-breadcrumb-item>
@@ -32,8 +35,21 @@
               <strong>{{ store.profile.account.display_name }}</strong>
               <span>{{ roleLabel(store.profile.account.role_code) }} · {{ store.profile.province_code }}</span>
             </div>
-            <el-button @click="refreshProfile">刷新</el-button>
-            <el-button type="danger" plain @click="handleLogout">退出</el-button>
+            <template v-if="!isMobile">
+              <el-button @click="refreshProfile">刷新</el-button>
+              <el-button type="danger" plain @click="handleLogout">退出</el-button>
+            </template>
+            <el-dropdown v-else trigger="click">
+              <el-button circle>
+                <el-icon><MoreFilled /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item @click="refreshProfile">刷新</el-dropdown-item>
+                  <el-dropdown-item divided @click="handleLogout">退出登录</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </div>
         </el-header>
         <el-main class="admin-main">
@@ -41,40 +57,89 @@
         </el-main>
       </el-container>
     </el-container>
+
+    <el-drawer
+      v-model="mobileMenuVisible"
+      class="mobile-admin-drawer"
+      title="后台导航"
+      :size="drawerSize"
+      append-to-body
+      direction="ltr"
+    >
+      <div class="mobile-brand-block">
+        <img class="brand-logo" src="/quanqiu.png" alt="全球通" />
+        <div>
+          <div class="brand-title">省级后台</div>
+          <div class="brand-subtitle">Element Admin Console</div>
+        </div>
+      </div>
+      <div class="mobile-menu-group">
+        <div class="mobile-menu-title">常用功能</div>
+        <div class="mobile-menu-list">
+          <el-button
+            v-for="item in mainMenus"
+            :key="item.path"
+            class="mobile-menu-button"
+            :type="activeMenu === item.path ? 'primary' : 'default'"
+            @click="navigateTo(item.path)"
+          >
+            {{ item.title }}
+          </el-button>
+        </div>
+      </div>
+      <div v-if="systemMenus.length" class="mobile-menu-group">
+        <div class="mobile-menu-title">系统后台</div>
+        <div class="mobile-menu-list">
+          <el-button
+            v-for="item in systemMenus"
+            :key="item.path"
+            class="mobile-menu-button"
+            :type="activeMenu === item.path ? 'primary' : 'default'"
+            @click="navigateTo(item.path)"
+          >
+            {{ item.title }}
+          </el-button>
+        </div>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { Menu, MoreFilled } from '@element-plus/icons-vue'
 import { clearAdminAccessToken, adminLogout } from '@/api/admin'
 import { useAdminConsoleStore } from '@/stores/adminConsole'
 import { roleLabel } from '@/utils/adminConsole'
+import { useResponsive } from '@/composables/useResponsive'
 
 const router = useRouter()
 const route = useRoute()
 const store = useAdminConsoleStore()
+const { isMobile, width } = useResponsive()
+const mobileMenuVisible = ref(false)
 
 const menuItems = [
   { path: '/admin/dashboard', title: '仪表盘', permissions: ['dashboard.read'], group: 'main' },
   { path: '/admin/security', title: '账户与安全', permissions: ['security.read'], group: 'main' },
-  { path: '/admin/agents', title: '代理管理', permissions: ['agents.read'], group: 'main' },
   { path: '/admin/pricing', title: '统一价格', permissions: ['pricing.read'], group: 'main' },
   { path: '/admin/ledgers', title: '资金流水', permissions: ['ledgers.read'], group: 'main' },
-  { path: '/admin/batches', title: '卡密批次', permissions: ['batches.read'], group: 'main' },
-  { path: '/admin/approvals', title: '审批中心', permissions: ['approvals.read'], group: 'main' },
+  { path: '/admin/operation-logs', title: '操作日志', permissions: ['operation_logs.read', 'operation_logs.scope.read'], group: 'main' },
+  { path: '/admin/card-center', title: '卡密中心', permissions: ['batches.read', 'legacy_cards.read'], group: 'main' },
   { path: '/admin/audit', title: '审计日志', permissions: ['audit.read', 'audit.system.read'], group: 'main' },
+  { path: '/admin/account-center', title: '账号中心', permissions: ['users.read', 'agents.read'], group: 'system' },
+  { path: '/admin/license-plans', title: '卡密规格', permissions: ['legacy_cards.read'], group: 'system' },
   { path: '/admin/system-settings', title: '系统配置', permissions: ['system.settings.read'], group: 'system' },
   { path: '/admin/developer-apps', title: '开发者应用', permissions: ['developer_apps.read'], group: 'system' },
   { path: '/admin/system-proxies', title: '系统代理', permissions: ['system_proxies.read'], group: 'system' },
-  { path: '/admin/legacy-cards', title: '旧卡密总后台', permissions: ['legacy_cards.read'], group: 'system' },
-  { path: '/admin/users-auth', title: '用户与授权', permissions: ['users.read'], group: 'system' },
   { path: '/admin/admin-accounts', title: '后台账号', permissions: ['admin_accounts.read'], group: 'system' },
   { path: '/admin/rbac-roles', title: '角色管理', permissions: ['rbac.roles.read'], group: 'system' },
   { path: '/admin/rbac-permissions', title: '权限管理', permissions: ['rbac.permissions.read'], group: 'system' },
 ] as const
 
 const activeMenu = computed(() => route.path)
+const drawerSize = computed(() => (width.value <= 768 ? '88%' : '360px'))
 const canAccessMenu = (permissions: readonly string[]) => store.hasAnyPermission([...permissions])
 const mainMenus = computed(() => menuItems.filter((item) => item.group === 'main' && canAccessMenu(item.permissions)))
 const systemMenus = computed(() => menuItems.filter((item) => item.group === 'system' && canAccessMenu(item.permissions)))
@@ -82,6 +147,13 @@ const accessibleMenus = computed(() => [...mainMenus.value, ...systemMenus.value
 
 const refreshProfile = async () => {
   await store.loadProfile()
+}
+
+const navigateTo = async (path: string) => {
+  mobileMenuVisible.value = false
+  if (route.path !== path) {
+    await router.push(path)
+  }
 }
 
 const ensureRouteAccess = async () => {
@@ -115,6 +187,7 @@ onMounted(async () => {
 watch(
   () => [route.fullPath, (store.profile?.roles || []).join('|'), (store.profile?.permissions || []).join('|')],
   async () => {
+    mobileMenuVisible.value = false
     await ensureRouteAccess()
   },
 )
@@ -264,6 +337,12 @@ watch(
   padding: 0 24px;
 }
 
+.header-main {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
 .page-title {
   margin-bottom: 6px;
   font-size: 22px;
@@ -293,21 +372,80 @@ watch(
   color: #476082;
 }
 
+.menu-trigger {
+  flex-shrink: 0;
+}
+
+.mobile-brand-block {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 20px;
+}
+
+.mobile-menu-group + .mobile-menu-group {
+  margin-top: 20px;
+}
+
+.mobile-menu-title {
+  margin-bottom: 10px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.mobile-menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mobile-menu-button {
+  justify-content: flex-start;
+  min-height: 44px;
+}
+
 .admin-main {
   padding: 24px;
 }
 
 @media (max-width: 960px) {
+  .admin-aside {
+    display: none;
+  }
+
   .admin-header {
     height: auto;
     padding: 16px;
     flex-direction: column;
-    align-items: flex-start;
+    align-items: stretch;
     gap: 12px;
+  }
+
+  .header-main,
+  .header-actions {
+    justify-content: space-between;
+  }
+
+  .account-pill {
+    min-width: 0;
+    flex: 1;
   }
 
   .admin-main {
     padding: 16px;
+  }
+}
+
+@media (max-width: 768px) {
+  .page-title {
+    margin-bottom: 4px;
+    font-size: 18px;
+  }
+
+  .admin-main {
+    padding: 12px;
   }
 }
 </style>

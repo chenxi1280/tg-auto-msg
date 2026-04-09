@@ -64,13 +64,8 @@ export default defineConfig({
             }
             return
           }
-          if (
-            id.endsWith('/src/views/Admin.vue') ||
-            id.endsWith('/src/api/admin.ts') ||
-            id.endsWith('/src/stores/adminConsole.ts') ||
-            id.includes('/src/utils/adminConsole')
-          ) {
-            return 'admin-core'
+          if (id.includes('/src/utils/adminConsole')) {
+            return 'admin-utils'
           }
         },
       }

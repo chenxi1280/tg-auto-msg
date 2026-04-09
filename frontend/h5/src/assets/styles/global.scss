@@ -152,3 +152,153 @@ a:hover {
 .p-3 { padding: 1rem; }
 .p-4 { padding: 1.5rem; }
 .p-5 { padding: 2rem; }
+
+.page-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.mobile-filter-panel {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.mobile-filter-trigger {
+  display: none;
+}
+
+.mobile-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mobile-data-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  background: #fff;
+  padding: 16px;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+}
+
+.mobile-data-card__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.mobile-data-card__title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.mobile-data-card__subtitle {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.mobile-data-card__grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.mobile-data-card__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.mobile-data-card__label {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.mobile-data-card__value {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: right;
+  word-break: break-word;
+}
+
+.mobile-action-bar {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.mobile-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.desktop-table {
+  display: block;
+}
+
+.mobile-card-view {
+  display: none;
+}
+
+@media (max-width: 960px) {
+  .page-stack {
+    gap: 16px;
+  }
+
+  .stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .mobile-filter-trigger {
+    display: inline-flex;
+  }
+}
+
+@media (max-width: 768px) {
+  .stats-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .desktop-table {
+    display: none !important;
+  }
+
+  .mobile-card-view {
+    display: block;
+  }
+
+  .mobile-action-bar :is(.el-button, .el-select, .el-input, .el-input-number) {
+    width: 100%;
+  }
+
+  .el-dialog {
+    width: 100% !important;
+    max-width: 100%;
+    margin: 0 !important;
+    border-radius: 0 !important;
+  }
+
+  .el-dialog__body {
+    max-height: calc(100vh - 120px);
+    overflow-y: auto;
+  }
+}

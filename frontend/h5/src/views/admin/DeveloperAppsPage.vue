@@ -87,7 +87,7 @@
           批量检查
         </el-button>
       </div>
-      <el-table :data="apps" stripe @selection-change="handleSelectionChange">
+      <el-table v-if="!isCompact" :data="apps" stripe @selection-change="handleSelectionChange">
         <el-table-column type="selection" width="48" />
         <el-table-column prop="app_name" label="应用名" min-width="160" />
         <el-table-column prop="api_id" label="API ID" width="100" />
@@ -121,6 +121,40 @@
           </template>
         </el-table-column>
       </el-table>
+      <div v-else class="mobile-card-list">
+        <div v-for="row in apps" :key="row.id" class="mobile-data-card">
+          <div class="mobile-data-card__header">
+            <div>
+              <div class="mobile-data-card__title">{{ row.app_name }}</div>
+              <div class="mobile-data-card__subtitle">API ID {{ row.api_id }}</div>
+            </div>
+            <el-checkbox :model-value="selectedAppIds.includes(row.id)" @change="toggleAppSelection(row.id)" />
+          </div>
+          <div class="mobile-data-card__grid">
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">状态</span>
+              <span class="mobile-data-card__value">{{ row.is_active ? '启用' : '停用' }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">健康</span>
+              <span class="mobile-data-card__value">{{ row.health_status || '-' }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">容量 / 权重</span>
+              <span class="mobile-data-card__value">{{ row.max_accounts || '不限' }} / {{ row.selection_weight }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">备注</span>
+              <span class="mobile-data-card__value">{{ row.notes || '-' }}</span>
+            </div>
+          </div>
+          <div class="mobile-action-bar">
+            <el-button v-if="canWrite" type="primary" plain @click="openEdit(row)">编辑</el-button>
+            <el-button v-if="canCheck" type="success" plain @click="setDefault(row)">设为默认</el-button>
+            <el-button v-if="canCheck" type="warning" plain :loading="checkingId === row.id" @click="check(row)">检查</el-button>
+          </div>
+        </div>
+      </div>
       <div class="pagination-wrap">
         <el-pagination
           v-model:current-page="pagination.currentPage"
@@ -135,7 +169,7 @@
       </div>
     </el-card>
 
-    <el-dialog v-model="editor.visible" title="编辑开发者应用" width="520px">
+    <ResponsiveFormLayer v-model="editor.visible" title="编辑开发者应用" width="520px">
       <el-form label-position="top">
         <el-form-item label="应用名">
           <el-input v-model.trim="editor.app_name" :disabled="!canWrite" />
@@ -160,7 +194,7 @@
         <el-button @click="editor.visible = false">取消</el-button>
         <el-button v-if="canWrite" type="primary" :loading="savingEditor" @click="saveEditor">保存</el-button>
       </template>
-    </el-dialog>
+    </ResponsiveFormLayer>
   </div>
 </template>
 
@@ -178,8 +212,11 @@ import {
 } from '@/api/admin'
 import { useAdminConsoleStore } from '@/stores/adminConsole'
 import { formatDateTime } from '@/utils/adminConsole'
+import { useResponsive } from '@/composables/useResponsive'
+import ResponsiveFormLayer from '@/components/responsive/ResponsiveFormLayer.vue'
 
 const store = useAdminConsoleStore()
+const { isCompact } = useResponsive()
 const canWrite = computed(() => store.hasPermission('developer_apps.write'))
 const canCheck = computed(() => store.hasPermission('developer_apps.check'))
 const apps = ref<DeveloperApp[]>([])
@@ -218,6 +255,14 @@ const currentDefaultAppLabel = computed(() => {
     ? `${settings.default_developer_app_name}（不可用）`
     : settings.default_developer_app_name
 })
+
+const toggleAppSelection = (appId: number) => {
+  if (selectedAppIds.value.includes(appId)) {
+    selectedAppIds.value = selectedAppIds.value.filter((item) => item !== appId)
+    return
+  }
+  selectedAppIds.value = [...selectedAppIds.value, appId]
+}
 
 const createForm = reactive({
   app_name: '',

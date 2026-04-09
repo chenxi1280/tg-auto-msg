@@ -71,34 +71,92 @@
       </el-card>
     </div>
 
+    <el-card v-if="canDirectSettle && settlementRows.length" shadow="hover">
+      <template #header>
+        <div class="card-header">
+          <span>待结算授信批次</span>
+          <span class="card-tip">当前由你负责结清的授信批次可在这里直接完成结算</span>
+        </div>
+      </template>
+      <el-table v-if="!isCompact" :data="settlementRows" stripe>
+        <el-table-column label="规格" width="140">
+          <template #default="{ row }">{{ planDisplayName(row.plan_code) }}</template>
+        </el-table-column>
+        <el-table-column label="已使用 / 总数" width="140">
+          <template #default="{ row }">{{ row.used_count || 0 }} / {{ row.total_count || row.quantity }}</template>
+        </el-table-column>
+        <el-table-column label="金额" width="120">
+          <template #default="{ row }">¥{{ centsToYuan(row.total_amount_cents) }}</template>
+        </el-table-column>
+        <el-table-column label="对手方" width="140">
+          <template #default="{ row }">{{ row.current_counterparty_name || '待上级结清' }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="120" fixed="right">
+          <template #default="{ row }">
+            <el-button type="primary" link :loading="settlingBatchId === row.batch_id" @click="settleBatch(row.batch_id)">直接结清</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div v-else class="mobile-card-list">
+        <div v-for="row in settlementRows" :key="row.batch_id" class="mobile-data-card">
+          <div class="mobile-data-card__header">
+            <div>
+              <div class="mobile-data-card__title">{{ planDisplayName(row.plan_code) }}</div>
+              <div class="mobile-data-card__subtitle">{{ formatDateTime(row.created_at) }}</div>
+            </div>
+            <el-tag type="warning">待结清</el-tag>
+          </div>
+          <div class="mobile-data-card__grid">
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">金额</span>
+              <span class="mobile-data-card__value">¥{{ centsToYuan(row.total_amount_cents) }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">已使用 / 总数</span>
+              <span class="mobile-data-card__value">{{ row.used_count || 0 }} / {{ row.total_count || row.quantity }}</span>
+            </div>
+          </div>
+          <div class="mobile-action-bar">
+            <el-button type="primary" :loading="settlingBatchId === row.batch_id" @click="settleBatch(row.batch_id)">直接结清</el-button>
+          </div>
+        </div>
+      </div>
+    </el-card>
+
     <el-card shadow="hover">
       <template #header>
         <div class="card-header">
           <span>卡密批次</span>
           <div class="header-actions">
-            <el-select v-model="batchFilters.plan_code" clearable placeholder="规格" style="width: 140px">
-              <el-option v-for="plan in activePlans" :key="plan.plan_code" :label="plan.display_name" :value="plan.plan_code" />
-            </el-select>
-            <el-select v-model="batchFilters.payment_status" placeholder="支付状态" style="width: 140px">
-              <el-option label="全部支付" value="all" />
-              <el-option label="已支付" value="paid" />
-              <el-option label="授信" value="credit" />
-            </el-select>
-            <el-select v-model="batchFilters.settlement_status" placeholder="结算状态" style="width: 140px">
-              <el-option label="全部结算" value="all" />
-              <el-option label="已结算" value="settled" />
-              <el-option label="待结算" value="pending" />
-            </el-select>
-            <el-input v-model.trim="batchFilters.keyword" clearable placeholder="搜索批次号/规格" style="width: 220px" />
-            <el-button @click="loadBatchRows(true)">查询</el-button>
-            <el-button @click="loadBatchRows()">刷新</el-button>
+            <el-button v-if="isCompact" class="mobile-filter-trigger" @click="batchFiltersVisible = true">筛选条件</el-button>
+            <template v-else>
+              <el-select v-model="batchFilters.plan_code" clearable placeholder="规格" style="width: 140px">
+                <el-option v-for="plan in activePlans" :key="plan.plan_code" :label="plan.display_name" :value="plan.plan_code" />
+              </el-select>
+              <el-select v-model="batchFilters.payment_status" placeholder="支付状态" style="width: 140px">
+                <el-option label="全部支付" value="all" />
+                <el-option label="已支付" value="paid" />
+                <el-option label="授信" value="credit" />
+              </el-select>
+              <el-select v-model="batchFilters.settlement_status" placeholder="结算状态" style="width: 140px">
+                <el-option label="全部结算" value="all" />
+                <el-option label="已结算" value="settled" />
+                <el-option label="待结算" value="pending" />
+              </el-select>
+              <el-input v-model.trim="batchFilters.keyword" clearable placeholder="搜索规格" style="width: 220px" />
+              <el-button @click="loadBatchRows(true)">查询</el-button>
+              <el-button @click="loadBatchRows()">刷新</el-button>
+            </template>
           </div>
         </div>
       </template>
-      <el-table :data="batchRows" stripe>
-        <el-table-column prop="batch_id" label="批次号" min-width="200" />
-        <el-table-column prop="plan_code" label="规格" width="120" />
-        <el-table-column prop="quantity" label="数量" width="100" />
+      <el-table v-if="!isCompact" :data="batchRows" stripe @row-click="handleBatchRowClick">
+        <el-table-column label="规格" width="140">
+          <template #default="{ row }">{{ planDisplayName(row.plan_code) }}</template>
+        </el-table-column>
+        <el-table-column label="已使用 / 总数" width="140">
+          <template #default="{ row }">{{ row.used_count || 0 }} / {{ row.total_count || row.quantity }}</template>
+        </el-table-column>
         <el-table-column label="单价" width="120">
           <template #default="{ row }">¥{{ centsToYuan(row.unit_price_cents) }}</template>
         </el-table-column>
@@ -118,7 +176,48 @@
         <el-table-column label="时间" min-width="160">
           <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
         </el-table-column>
+        <el-table-column label="操作" width="120" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" @click.stop="openBatchDetails(row)">查看明细</el-button>
+          </template>
+        </el-table-column>
       </el-table>
+      <div v-else class="mobile-card-list">
+        <div v-for="row in batchRows" :key="row.batch_id" class="mobile-data-card">
+          <div class="mobile-data-card__header">
+            <div>
+              <div class="mobile-data-card__title">{{ planDisplayName(row.plan_code) }}</div>
+              <div class="mobile-data-card__subtitle">{{ formatDateTime(row.created_at) }}</div>
+            </div>
+            <el-tag :type="row.payment_status === 'paid' ? 'success' : 'warning'">{{ paymentStatusLabel(row.payment_status) }}</el-tag>
+          </div>
+          <div class="mobile-data-card__grid">
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">已使用 / 总数</span>
+              <span class="mobile-data-card__value">{{ row.used_count || 0 }} / {{ row.total_count || row.quantity }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">单价</span>
+              <span class="mobile-data-card__value">¥{{ centsToYuan(row.unit_price_cents) }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">总额</span>
+              <span class="mobile-data-card__value">¥{{ centsToYuan(row.total_amount_cents) }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">结算</span>
+              <span class="mobile-data-card__value">{{ settlementStatusLabel(row.settlement_status) }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">时间</span>
+              <span class="mobile-data-card__value">{{ formatDateTime(row.created_at) }}</span>
+            </div>
+          </div>
+          <div class="mobile-action-bar">
+            <el-button type="primary" plain @click="openBatchDetails(row)">查看该批次明细</el-button>
+          </div>
+        </div>
+      </div>
       <div class="pagination-wrap">
         <el-pagination
           v-model:current-page="batchPagination.currentPage"
@@ -133,40 +232,62 @@
       </div>
     </el-card>
 
+    <div ref="cardSectionRef">
     <el-card shadow="hover">
       <template #header>
         <div class="card-header">
-          <span>卡密明细</span>
+          <div class="header-title-stack">
+            <span>卡密明细</span>
+            <span v-if="activeBatchDetail.summary" class="card-tip">{{ activeBatchDetail.summary }}</span>
+          </div>
           <div class="header-actions">
-            <el-select v-model="cardFilters.plan_code" clearable placeholder="规格" style="width: 140px">
-              <el-option v-for="plan in activePlans" :key="plan.plan_code" :label="plan.display_name" :value="plan.plan_code" />
-            </el-select>
-            <el-select v-model="cardFilters.status" placeholder="卡密状态" style="width: 140px">
-              <el-option label="全部状态" value="all" />
-              <el-option label="可用" value="available" />
-              <el-option label="已使用" value="used" />
-            </el-select>
-            <el-select v-model="cardFilters.source_type" placeholder="来源" style="width: 140px">
-              <el-option label="全部来源" value="all" />
-              <el-option label="余额" value="balance" />
-              <el-option label="授信" value="credit" />
-              <el-option label="平台直生" value="platform" />
-              <el-option label="审批（历史）" value="approval" />
-            </el-select>
-            <el-input v-model.trim="cardFilters.keyword" clearable placeholder="搜索卡密/批次" style="width: 220px" />
-            <el-button @click="loadCardRows(true)">查询</el-button>
-            <el-button v-if="canExportCards" @click="exportExcel">导出 Excel</el-button>
-            <el-button v-if="canCopyCards" type="primary" :disabled="!selectedCards.length" @click="copySelectedCards(false)">复制卡密</el-button>
-            <el-button v-if="canCopyCards" type="primary" plain :disabled="!selectedCards.length" @click="copySelectedCards(true)">复制卡密+元数据</el-button>
+            <el-button v-if="isCompact" class="mobile-filter-trigger" @click="cardFiltersVisible = true">筛选条件</el-button>
+            <template v-else>
+              <el-select v-model="cardFilters.plan_code" clearable placeholder="规格" style="width: 140px">
+                <el-option v-for="plan in activePlans" :key="plan.plan_code" :label="plan.display_name" :value="plan.plan_code" />
+              </el-select>
+              <el-select v-model="cardFilters.status" placeholder="卡密状态" style="width: 140px">
+                <el-option label="全部状态" value="all" />
+                <el-option label="可用" value="available" />
+                <el-option label="已使用" value="used" />
+              </el-select>
+              <el-select v-model="cardFilters.source_type" placeholder="来源" style="width: 140px">
+                <el-option label="全部来源" value="all" />
+                <el-option label="余额" value="balance" />
+                <el-option label="授信" value="credit" />
+                <el-option label="平台直生" value="platform" />
+                <el-option label="旧系统" value="legacy" />
+              </el-select>
+              <el-input v-model.trim="cardFilters.keyword" clearable placeholder="搜索卡密/规格" style="width: 220px" />
+              <el-button @click="loadCardRows(true)">查询</el-button>
+              <el-button v-if="canExportCards" @click="exportExcel">导出 Excel</el-button>
+              <el-button v-if="canCopyCards" type="primary" :disabled="!selectedCards.length" @click="copySelectedCards(false)">复制卡密</el-button>
+              <el-button v-if="canCopyCards" type="primary" plain :disabled="!selectedCards.length" @click="copySelectedCards(true)">复制卡密+元数据</el-button>
+              <el-button v-if="activeBatchDetail.batchId" @click="clearBatchDetailFilter">清除批次筛选</el-button>
+            </template>
           </div>
         </div>
       </template>
+      <el-alert
+        v-if="activeBatchDetail.batchId"
+        title="当前正在查看指定批次的全部卡密"
+        type="info"
+        :closable="false"
+      >
+        <template #default>
+          <div class="detail-alert-content">
+            <span>{{ activeBatchDetail.summary }}</span>
+            <el-button link type="primary" @click="clearBatchDetailFilter">返回全部卡密</el-button>
+          </div>
+        </template>
+      </el-alert>
       <div class="selection-bar">已选择 {{ selectedCards.length }} 条卡密，当前总数 {{ cardTotal }}，单次最多复制 10 条</div>
-      <el-table :data="cardRows" stripe @selection-change="handleSelectionChange">
+      <el-table v-if="!isCompact" :data="cardRows" stripe @selection-change="handleSelectionChange">
         <el-table-column type="selection" width="48" />
         <el-table-column prop="card_code" label="卡密" min-width="180" />
-        <el-table-column prop="plan_code" label="规格" width="120" />
-        <el-table-column prop="batch_id" label="批次" min-width="180" />
+        <el-table-column label="规格" width="140">
+          <template #default="{ row }">{{ planDisplayName(row.plan_code) }}</template>
+        </el-table-column>
         <el-table-column prop="card_source_type" label="来源" width="120" />
         <el-table-column label="状态" width="100">
           <template #default="{ row }">
@@ -177,6 +298,31 @@
           <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
         </el-table-column>
       </el-table>
+      <div v-else class="mobile-card-list">
+        <div v-for="row in cardRows" :key="row.id" class="mobile-data-card">
+          <div class="mobile-data-card__header">
+            <div>
+              <div class="mobile-data-card__title">{{ row.card_code }}</div>
+              <div class="mobile-data-card__subtitle">{{ planDisplayName(row.plan_code) }} · {{ sourceTypeLabel(row.card_source_type) }}</div>
+            </div>
+            <el-checkbox :model-value="isSelected(row.id)" @change="toggleCardSelection(row)" />
+          </div>
+          <div class="mobile-data-card__grid">
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">来源</span>
+              <span class="mobile-data-card__value">{{ row.card_source_type }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">状态</span>
+              <span class="mobile-data-card__value">{{ row.is_used ? '已使用' : '可用' }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">时间</span>
+              <span class="mobile-data-card__value">{{ formatDateTime(row.created_at) }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
       <div class="pagination-wrap">
         <el-pagination
           v-model:current-page="cardPagination.currentPage"
@@ -190,6 +336,93 @@
         />
       </div>
     </el-card>
+    </div>
+
+    <el-drawer v-model="batchFiltersVisible" title="筛选卡密批次" size="100%" append-to-body>
+      <div class="mobile-card-list">
+        <el-select v-model="batchFilters.plan_code" clearable placeholder="规格">
+          <el-option v-for="plan in activePlans" :key="plan.plan_code" :label="plan.display_name" :value="plan.plan_code" />
+        </el-select>
+        <el-select v-model="batchFilters.payment_status" placeholder="支付状态">
+          <el-option label="全部支付" value="all" />
+          <el-option label="已支付" value="paid" />
+          <el-option label="授信" value="credit" />
+        </el-select>
+        <el-select v-model="batchFilters.settlement_status" placeholder="结算状态">
+          <el-option label="全部结算" value="all" />
+          <el-option label="已结算" value="settled" />
+          <el-option label="待结算" value="pending" />
+        </el-select>
+        <el-input v-model.trim="batchFilters.keyword" clearable placeholder="搜索规格" />
+        <div class="mobile-action-bar">
+          <el-button @click="batchFiltersVisible = false">关闭</el-button>
+          <el-button @click="loadBatchRows()">刷新</el-button>
+          <el-button type="primary" @click="applyBatchFilters">应用筛选</el-button>
+        </div>
+      </div>
+    </el-drawer>
+
+    <el-drawer v-model="cardFiltersVisible" title="筛选卡密明细" size="100%" append-to-body>
+      <div class="mobile-card-list">
+        <el-select v-model="cardFilters.plan_code" clearable placeholder="规格">
+          <el-option v-for="plan in activePlans" :key="plan.plan_code" :label="plan.display_name" :value="plan.plan_code" />
+        </el-select>
+        <el-select v-model="cardFilters.status" placeholder="卡密状态">
+          <el-option label="全部状态" value="all" />
+          <el-option label="可用" value="available" />
+          <el-option label="已使用" value="used" />
+        </el-select>
+        <el-select v-model="cardFilters.source_type" placeholder="来源">
+          <el-option label="全部来源" value="all" />
+          <el-option label="余额" value="balance" />
+          <el-option label="授信" value="credit" />
+          <el-option label="平台直生" value="platform" />
+          <el-option label="旧系统" value="legacy" />
+        </el-select>
+        <el-input v-model.trim="cardFilters.keyword" clearable placeholder="搜索卡密/规格" />
+        <div class="mobile-action-bar">
+          <el-button v-if="canExportCards" @click="exportExcel">导出 Excel</el-button>
+          <el-button v-if="canCopyCards" type="primary" plain :disabled="!selectedCards.length" @click="copySelectedCards(false)">复制卡密</el-button>
+          <el-button v-if="canCopyCards" type="primary" :disabled="!selectedCards.length" @click="copySelectedCards(true)">复制卡密+元数据</el-button>
+          <el-button v-if="activeBatchDetail.batchId" @click="clearBatchDetailFilter">清除批次筛选</el-button>
+          <el-button @click="cardFiltersVisible = false">关闭</el-button>
+          <el-button type="primary" @click="applyCardFilters">应用筛选</el-button>
+        </div>
+      </div>
+    </el-drawer>
+
+    <el-drawer v-model="resultDrawer.visible" title="卡密生成完成" size="420px" append-to-body>
+      <div class="mobile-card-list">
+        <div class="mobile-data-card">
+          <div class="mobile-data-card__grid">
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">规格</span>
+              <span class="mobile-data-card__value">{{ planDisplayName(resultDrawer.planCode) }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">生成数量</span>
+              <span class="mobile-data-card__value">{{ resultDrawer.quantity || 0 }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">总金额</span>
+              <span class="mobile-data-card__value">¥{{ centsToYuan(resultDrawer.totalAmountCents) }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">资金来源</span>
+              <span class="mobile-data-card__value">{{ fundingSourceLabel(resultDrawer.fundingSource) }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">创建时间</span>
+              <span class="mobile-data-card__value">{{ formatDateTime(resultDrawer.createdAt) }}</span>
+            </div>
+          </div>
+        </div>
+        <div class="mobile-action-bar">
+          <el-button @click="resultDrawer.visible = false">关闭</el-button>
+          <el-button type="primary" @click="jumpToGeneratedBatchDetail">查看该批次明细</el-button>
+        </div>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -203,21 +436,28 @@ import {
   adminGenerateCardBatch,
   adminListCardBatches,
   adminListCards,
+  adminSettleBatchDirect,
 } from '@/api/admin'
 import { useAdminConsoleStore } from '@/stores/adminConsole'
 import { centsToYuan, formatDateTime } from '@/utils/adminConsole'
+import { useResponsive } from '@/composables/useResponsive'
 
 const store = useAdminConsoleStore()
+const { isCompact } = useResponsive()
 const canGenerateBatches = computed(() => store.hasPermission('batches.generate'))
 const canExportCards = computed(() => store.hasPermission('batches.export'))
 const canCopyCards = computed(() => store.hasPermission('batches.copy'))
-const canReadApprovals = computed(() => store.hasPermission('approvals.read'))
 const canReadPricing = computed(() => store.hasPermission('pricing.read'))
 const canReadLedgers = computed(() => store.hasPermission('ledgers.read'))
+const canDirectSettle = computed(() => store.hasPermission('agents.write'))
 const isPlatformOperator = computed(() => store.hasRole('super_admin'))
 const submittingBatch = ref(false)
+const settlingBatchId = ref('')
 const selectedCards = ref<AgentCard[]>([])
+const cardSectionRef = ref<HTMLElement | null>(null)
 const lastActionMessage = ref('')
+const batchFiltersVisible = ref(false)
+const cardFiltersVisible = ref(false)
 const batchRows = ref<CardBatch[]>([])
 const cardRows = ref<AgentCard[]>([])
 const batchTotal = ref(0)
@@ -238,6 +478,14 @@ const generationTip = computed(() => {
   }
   return '默认先扣余额生成；余额不足时，只有授信白名单代理可走授信兜底'
 })
+const settlementRows = computed(() =>
+  batchRows.value.filter(
+    (row) =>
+      row.payment_status === 'credit' &&
+      row.settlement_status === 'pending' &&
+      Number(row.current_liability_account_id || 0) === Number(store.profile?.account.id || 0),
+  ),
+)
 const balanceWarning = computed(() => {
   if (isPlatformOperator.value) return ''
   const amount = estimatedBatchAmountCents.value
@@ -274,10 +522,27 @@ const batchFilters = reactive({
 })
 
 const cardFilters = reactive({
+  batch_id: '',
   plan_code: '',
   status: 'all',
   source_type: 'all',
   keyword: '',
+})
+
+const activeBatchDetail = reactive({
+  batchId: '',
+  summary: '',
+})
+
+const resultDrawer = reactive({
+  visible: false,
+  batchId: '',
+  planCode: '',
+  quantity: 0,
+  totalAmountCents: 0,
+  fundingSource: '',
+  createdAt: '' as string | null,
+  summary: '',
 })
 
 const initDefaultPlan = () => {
@@ -315,6 +580,7 @@ const loadBatchRows = async (resetPage = false) => {
 const loadCardRows = async (resetPage = false) => {
   if (resetPage) cardPagination.currentPage = 1
   const response = await adminListCards({
+    batch_id: cardFilters.batch_id || undefined,
     plan_code: cardFilters.plan_code || undefined,
     status: cardFilters.status === 'all' ? undefined : cardFilters.status,
     source_type: cardFilters.source_type === 'all' ? undefined : cardFilters.source_type,
@@ -339,9 +605,6 @@ const refreshData = async () => {
   if (canReadPricing.value) {
     tasks.push(store.loadPlans())
   }
-  if (canReadApprovals.value) {
-    tasks.push(store.loadApprovalRequests({ status: 'pending', limit: 100 }))
-  }
   await Promise.all(tasks)
   initDefaultPlan()
 }
@@ -364,8 +627,57 @@ const handleCardSizeChange = async () => {
   await loadCardRows()
 }
 
+const applyBatchFilters = async () => {
+  batchFiltersVisible.value = false
+  await loadBatchRows(true)
+}
+
+const applyCardFilters = async () => {
+  cardFiltersVisible.value = false
+  await loadCardRows(true)
+}
+
 const paymentStatusLabel = (status: string) => (status === 'paid' ? '已支付' : status === 'credit' ? '授信' : status || '-')
 const settlementStatusLabel = (status: string) => (status === 'settled' ? '已结算' : status === 'pending' ? '待结算' : status || '-')
+const sourceTypeLabel = (status: string) => {
+  if (status === 'balance') return '余额'
+  if (status === 'credit') return '授信'
+  if (status === 'platform') return '平台直生'
+  if (status === 'legacy') return '旧系统'
+  return status || '-'
+}
+const fundingSourceLabel = (status: string) => {
+  if (status === 'platform') return '平台直生'
+  return sourceTypeLabel(status)
+}
+const planDisplayName = (planCode?: string | null) => activePlans.value.find((plan) => plan.plan_code === planCode)?.display_name || '规格已记录'
+const buildBatchSummary = (row: Pick<CardBatch, 'plan_code' | 'used_count' | 'total_count' | 'quantity' | 'created_at'>) =>
+  `${planDisplayName(row.plan_code)} · 已使用 ${row.used_count || 0} / ${row.total_count || row.quantity} · ${formatDateTime(row.created_at)}`
+
+const scrollToCardSection = () => {
+  requestAnimationFrame(() => {
+    cardSectionRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  })
+}
+
+const openBatchDetails = async (row: CardBatch) => {
+  activeBatchDetail.batchId = row.batch_id
+  activeBatchDetail.summary = buildBatchSummary(row)
+  cardFilters.batch_id = row.batch_id
+  await loadCardRows(true)
+  scrollToCardSection()
+}
+
+const handleBatchRowClick = async (row: CardBatch) => {
+  await openBatchDetails(row)
+}
+
+const clearBatchDetailFilter = async () => {
+  activeBatchDetail.batchId = ''
+  activeBatchDetail.summary = ''
+  cardFilters.batch_id = ''
+  await loadCardRows(true)
+}
 
 const submitGenerateBatch = async () => {
   if (!canGenerateBatches.value) {
@@ -395,15 +707,47 @@ const submitGenerateBatch = async () => {
       tasks.push(store.loadSelfLedgers())
     }
     await Promise.all(tasks)
-    lastActionMessage.value = `批次 ${response.data.batch.batch_id} 已生成，共 ${response.data.batch.quantity} 张，金额 ¥${centsToYuan(response.data.batch.total_amount_cents)}`
+    resultDrawer.visible = true
+    resultDrawer.batchId = response.data.batch.batch_id
+    resultDrawer.planCode = response.data.batch.plan_code
+    resultDrawer.quantity = response.data.batch.quantity
+    resultDrawer.totalAmountCents = response.data.batch.total_amount_cents
+    resultDrawer.fundingSource = isPlatformOperator.value ? 'platform' : batchForm.funding_source
+    resultDrawer.createdAt = response.data.batch.created_at
+    resultDrawer.summary = buildBatchSummary(response.data.batch)
+    lastActionMessage.value = `新卡密已生成，共 ${response.data.batch.quantity} 张，金额 ¥${centsToYuan(response.data.batch.total_amount_cents)}`
     ElMessage.success('卡密批次已生成')
   } finally {
     submittingBatch.value = false
   }
 }
 
+const jumpToGeneratedBatchDetail = async () => {
+  if (!resultDrawer.batchId) {
+    resultDrawer.visible = false
+    return
+  }
+  const matchingBatch = batchRows.value.find((item) => item.batch_id === resultDrawer.batchId)
+  activeBatchDetail.batchId = resultDrawer.batchId
+  activeBatchDetail.summary = matchingBatch ? buildBatchSummary(matchingBatch) : resultDrawer.summary
+  cardFilters.batch_id = resultDrawer.batchId
+  resultDrawer.visible = false
+  await loadCardRows(true)
+  scrollToCardSection()
+}
+
 const handleSelectionChange = (rows: AgentCard[]) => {
   selectedCards.value = rows
+}
+
+const isSelected = (cardId: number) => selectedCards.value.some((item) => item.id === cardId)
+
+const toggleCardSelection = (row: AgentCard) => {
+  if (isSelected(row.id)) {
+    selectedCards.value = selectedCards.value.filter((item) => item.id !== row.id)
+    return
+  }
+  selectedCards.value = [...selectedCards.value, row]
 }
 
 const copySelectedCards = async (withMeta: boolean) => {
@@ -431,6 +775,7 @@ const exportExcel = async () => {
   }
   const file = await adminExportCardsXlsx({
     plan_code: cardFilters.plan_code || undefined,
+    batch_id: cardFilters.batch_id || undefined,
     status: cardFilters.status === 'all' ? undefined : cardFilters.status,
     source_type: cardFilters.source_type === 'all' ? undefined : cardFilters.source_type,
     keyword: cardFilters.keyword || undefined,
@@ -442,6 +787,26 @@ const exportExcel = async () => {
   anchor.click()
   window.URL.revokeObjectURL(url)
   lastActionMessage.value = '卡密 Excel 已导出'
+}
+
+const settleBatch = async (batchId: string) => {
+  if (!canDirectSettle.value) {
+    ElMessage.warning('当前账号无权直接结清授信批次')
+    return
+  }
+  settlingBatchId.value = batchId
+  try {
+    const response = await adminSettleBatchDirect(batchId)
+    const tasks: Promise<unknown>[] = [store.loadProfile(), loadBatchRows(), loadCardRows()]
+    if (canReadLedgers.value) {
+      tasks.push(store.loadSelfLedgers())
+    }
+    await Promise.all(tasks)
+    lastActionMessage.value = '授信批次已直接结清'
+    ElMessage.success('授信批次已直接结清')
+  } finally {
+    settlingBatchId.value = ''
+  }
 }
 
 onMounted(async () => {
@@ -498,6 +863,21 @@ onMounted(async () => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
+}
+
+.header-title-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.detail-alert-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .pagination-wrap {
@@ -509,5 +889,12 @@ onMounted(async () => {
 .card-tip {
   color: #94a3b8;
   font-size: 12px;
+}
+
+@media (max-width: 768px) {
+  .detail-alert-content {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }
 </style>

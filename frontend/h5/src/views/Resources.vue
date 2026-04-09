@@ -81,7 +81,7 @@
         </el-empty>
 
         <div v-else class="table-wrap">
-          <el-table :data="resources" stripe v-loading="loading">
+          <el-table v-if="!isCompact" :data="resources" stripe v-loading="loading">
             <el-table-column prop="title" label="名称" min-width="200">
               <template #default="{ row }">
                 <div class="resource-name">
@@ -143,6 +143,33 @@
               </template>
             </el-table-column>
           </el-table>
+          <div v-else class="mobile-card-list" v-loading="loading">
+            <div v-for="row in resources" :key="row.resource_id" class="mobile-data-card">
+              <div class="mobile-data-card__header">
+                <div>
+                  <div class="mobile-data-card__title">{{ row.title }}</div>
+                  <div class="mobile-data-card__subtitle">{{ row.username ? `@${row.username}` : getPeerTypeName(row.peer_type) }}</div>
+                </div>
+                <el-tag :type="getPeerTypeColor(row.peer_type)" size="small">
+                  {{ getPeerTypeName(row.peer_type) }}
+                </el-tag>
+              </div>
+              <div class="mobile-data-card__grid">
+                <div class="mobile-data-card__row">
+                  <span class="mobile-data-card__label">成员数</span>
+                  <span class="mobile-data-card__value">{{ row.participants_count ? formatNumber(row.participants_count) : '-' }}</span>
+                </div>
+                <div class="mobile-data-card__row">
+                  <span class="mobile-data-card__label">同步时间</span>
+                  <span class="mobile-data-card__value">{{ row.last_sync_at ? formatDateTime(row.last_sync_at) : '-' }}</span>
+                </div>
+              </div>
+              <div class="mobile-action-bar">
+                <el-button type="primary" plain @click="viewResource(row)">查看</el-button>
+                <el-button type="success" plain @click="goCreateTask(row)">建任务</el-button>
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- 分页 -->
@@ -168,11 +195,13 @@ import { Search, Refresh } from '@element-plus/icons-vue'
 import { useAccountStore } from '@/stores/account'
 import { useUserStore } from '@/stores/user'
 import type { Resource } from '@/api/resource'
+import { useResponsive } from '@/composables/useResponsive'
 
 const accountStore = useAccountStore()
 const userStore = useUserStore()
 const route = useRoute()
 const router = useRouter()
+const { isCompact } = useResponsive()
 
 // 状态
 const accounts = computed(() => accountStore.accounts)
@@ -229,7 +258,7 @@ const syncResources = async () => {
 
 // 查看资源详情
 const viewResource = (resource: Resource) => {
-  ElMessage.info(`资源 ID: ${resource.resource_id}, Peer ID: ${resource.peer_id}`)
+  ElMessage.info(`资源「${resource.title}」已选中，可直接继续建任务或查看同步状态`)
 }
 
 const goCreateTask = (resource: Resource) => {

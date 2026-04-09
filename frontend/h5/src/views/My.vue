@@ -18,10 +18,6 @@
               <div class="card-title">基本信息</div>
             </template>
             <div class="info-row">
-              <span class="label">用户 ID</span>
-              <span class="value">{{ profile?.user.id || '-' }}</span>
-            </div>
-            <div class="info-row">
               <span class="label">用户名</span>
               <span class="value">{{ profile?.user.username || '-' }}</span>
             </div>
@@ -127,7 +123,7 @@
             <div class="plan-list">
               <div class="plan-item" :key="profile.current_authorization.authorization_id">
                 <div class="plan-main">
-                  <strong>{{ profile.current_authorization.account_name || (profile.current_authorization.account_id ? `绑定账号 ${profile.current_authorization.account_id.slice(0, 8)}...` : '未绑定 TG 账号') }}</strong>
+                  <strong>{{ profile.current_authorization.account_name || '未绑定 TG 账号' }}</strong>
                   <span>{{ profile.current_authorization.status === 'active' ? '生效中' : profile.current_authorization.status === 'expired' ? '已过期' : '未启用' }}</span>
                 </div>
                 <div class="plan-sub">
@@ -155,15 +151,14 @@
         </el-col>
       </el-row>
 
-      <el-dialog
+      <ResponsiveFormLayer
         v-model="renewDialogVisible"
         title="续费当前授权"
         width="420px"
-        destroy-on-close
       >
         <div v-if="renewTargetSlot">
           <p class="dialog-tip">为当前唯一授权追加新的卡密时长。</p>
-          <p class="password-hint">绑定账号：{{ renewTargetSlot.account_name || renewTargetSlot.account_id || '未绑定账号' }}</p>
+          <p class="password-hint">绑定账号：{{ renewTargetSlot.account_name || '未绑定账号' }}</p>
           <p class="password-hint">当前到期：{{ formatDateTime(renewTargetSlot.end_at) }}</p>
           <el-input
             v-model.trim="renewCardCode"
@@ -177,13 +172,12 @@
             确认续费
           </el-button>
         </template>
-      </el-dialog>
+      </ResponsiveFormLayer>
 
-      <el-dialog
+      <ResponsiveFormLayer
         v-model="editDialogVisible"
         title="修改基本信息"
         width="520px"
-        destroy-on-close
       >
         <el-form label-position="top">
           <el-form-item label="邮箱">
@@ -223,7 +217,7 @@
             保存
           </el-button>
         </template>
-      </el-dialog>
+      </ResponsiveFormLayer>
     </div>
   </div>
 </template>
@@ -235,6 +229,7 @@ import { ElMessage } from 'element-plus'
 import type { CurrentAuthorization, MeProfile, PricingPlan } from '@/api/me'
 import { activateCard, changePassword, getMe, updateProfile } from '@/api/me'
 import { createBotBindLink } from '@/api/login'
+import ResponsiveFormLayer from '@/components/responsive/ResponsiveFormLayer.vue'
 
 const router = useRouter()
 const loading = ref(false)

@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 from loguru import logger
 from sqlalchemy import select
+from telethon import Button
 from telethon.errors import MessageNotModifiedError
 
 from backend.bot.client_runtime.manager import bot_client
@@ -38,6 +39,13 @@ class BotNoticeManager:
         if message_text and target_url:
             return f"{message_text}\n\n{target_url}"
         return message_text or target_url
+
+    @staticmethod
+    def _build_notice_buttons() -> list[list[Any]]:
+        return [
+            [Button.inline("📖 帮助", data="bot_help"), Button.inline("📱 绑定账号", data="bot_login_account")],
+            [Button.inline("🏠 返回主菜单", data="bot_home")],
+        ]
 
     async def get_notice_entry(self) -> dict[str, Any]:
         raw = await get_me_service().get_public_notice_entry()
@@ -142,12 +150,14 @@ class BotNoticeManager:
 
     async def _send_notice_message(self, tg_user_id: int, *, message_text: str, target_url: str):
         text = self._render_notice_text(message_text=message_text, target_url=target_url)
+        buttons = self._build_notice_buttons()
         try:
             return await bot_client.send_message(
                 int(tg_user_id),
                 text,
                 parse_mode="html",
                 link_preview=True,
+                buttons=buttons,
             )
         except Exception as exc:
             logger.warning("公告消息按 HTML 发送失败，回退纯文本: tg_user_id={}, error={}", tg_user_id, type(exc).__name__)
@@ -156,6 +166,7 @@ class BotNoticeManager:
                 text,
                 parse_mode=None,
                 link_preview=True,
+                buttons=buttons,
             )
 
     async def _edit_notice_message(
@@ -167,6 +178,7 @@ class BotNoticeManager:
         target_url: str,
     ) -> bool:
         text = self._render_notice_text(message_text=message_text, target_url=target_url)
+        buttons = self._build_notice_buttons()
         try:
             await bot_client.edit_message(
                 int(tg_user_id),
@@ -174,6 +186,7 @@ class BotNoticeManager:
                 text=text,
                 parse_mode="html",
                 link_preview=True,
+                buttons=buttons,
             )
             return True
         except MessageNotModifiedError:
@@ -192,6 +205,7 @@ class BotNoticeManager:
                 text=text,
                 parse_mode=None,
                 link_preview=True,
+                buttons=buttons,
             )
             return True
         except MessageNotModifiedError:

@@ -10,12 +10,9 @@ import uuid
 
 from fastapi import HTTPException
 from loguru import logger
-from sqlalchemy import Select, and_, func, or_, select
+from sqlalchemy import Select, and_, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
-from telethon import Button
-
-from backend.bot.client_runtime.manager import bot_client
 from backend.config.core.settings import settings
 from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import (
@@ -28,7 +25,6 @@ from backend.database.schema.models import (
     AgentFundLedger,
     AdminRole,
     AdminRolePermission,
-    ApprovalRequest,
     CardBatch,
     PricingPlan,
 )
@@ -154,7 +150,7 @@ class AdminPanelService:
             "updated_at": plan.updated_at.isoformat() if plan.updated_at else None,
         }
 
-    def _serialize_batch(self, batch: CardBatch) -> Dict[str, Any]:
+    def _serialize_batch(self, batch: CardBatch, *, current_counterparty_name: Optional[str] = None) -> Dict[str, Any]:
         return {
             "batch_id": batch.batch_id,
             "province_code": batch.province_code,
@@ -164,6 +160,7 @@ class AdminPanelService:
             "root_master_account_id": batch.root_master_account_id,
             "current_liability_account_id": batch.current_liability_account_id,
             "current_counterparty_account_id": batch.current_counterparty_account_id,
+            "current_counterparty_name": current_counterparty_name,
             "plan_code": batch.plan_code,
             "quantity": batch.quantity,
             "duration_days": batch.duration_days,
@@ -172,9 +169,32 @@ class AdminPanelService:
             "settlement_status": batch.settlement_status,
             "payment_status": batch.payment_status,
             "export_count": int(batch.export_count or 0),
+            "used_count": int(getattr(batch, "used_count", 0) or 0),
+            "total_count": int(batch.quantity or 0),
             "last_exported_at": batch.last_exported_at.isoformat() if batch.last_exported_at else None,
             "remark": batch.remark,
             "created_at": batch.created_at.isoformat() if batch.created_at else None,
+        }
+
+    @staticmethod
+    def _serialize_operation_log(item: Dict[str, Any]) -> Dict[str, Any]:
+        occurred_at = item.get("occurred_at")
+        return {
+            "log_type": item.get("log_type"),
+            "occurred_at": occurred_at.isoformat() if isinstance(occurred_at, datetime) else occurred_at,
+            "operator_account_id": item.get("operator_account_id"),
+            "operator_name": item.get("operator_name"),
+            "subject_account_id": item.get("subject_account_id"),
+            "subject_name": item.get("subject_name"),
+            "counterparty_account_id": item.get("counterparty_account_id"),
+            "counterparty_name": item.get("counterparty_name"),
+            "amount_cents": int(item.get("amount_cents") or 0),
+            "plan_code": item.get("plan_code"),
+            "quantity": item.get("quantity"),
+            "batch_id": item.get("batch_id"),
+            "funding_source": item.get("funding_source"),
+            "ledger_scope": item.get("ledger_scope"),
+            "remark": item.get("remark"),
         }
 
     def _serialize_card(self, card: ActivationCard) -> Dict[str, Any]:
@@ -196,24 +216,6 @@ class AdminPanelService:
             "card_source_type": card.card_source_type,
             "copy_status": card.copy_status,
             "created_at": card.created_at.isoformat() if card.created_at else None,
-        }
-
-    def _serialize_approval_request(self, row: ApprovalRequest) -> Dict[str, Any]:
-        return {
-            "request_id": row.request_id,
-            "province_code": row.province_code,
-            "request_type": row.request_type,
-            "requester_account_id": row.requester_account_id,
-            "subject_account_id": row.subject_account_id,
-            "approver_account_id": row.approver_account_id,
-            "status": row.status,
-            "amount_cents": int(row.amount_cents or 0) if row.amount_cents is not None else None,
-            "credit_delta_cents": int(row.credit_delta_cents or 0) if row.credit_delta_cents is not None else None,
-            "payload_json": row.payload_json or {},
-            "approved_at": row.approved_at.isoformat() if row.approved_at else None,
-            "rejected_at": row.rejected_at.isoformat() if row.rejected_at else None,
-            "created_at": row.created_at.isoformat() if row.created_at else None,
-            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
 
     @staticmethod
@@ -247,6 +249,22 @@ class AdminPanelService:
     @staticmethod
     def _normalize_page(limit: int, offset: int) -> Tuple[int, int]:
         return max(1, min(500, int(limit))), max(0, int(offset))
+
+    @staticmethod
+    def _parse_datetime_filter(value: Optional[str], *, is_end: bool = False) -> Optional[datetime]:
+        normalized = (value or "").strip()
+        if not normalized:
+            return None
+        try:
+            if len(normalized) == 10:
+                parsed = datetime.fromisoformat(normalized)
+                return parsed + timedelta(days=1) if is_end else parsed
+            parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone().replace(tzinfo=None)
+            return parsed
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="时间筛选格式无效") from exc
 
     async def _list_descendant_ids(self, session: Any, root_account_id: int) -> List[int]:
         pending = [int(root_account_id)]
@@ -679,88 +697,6 @@ class AdminPanelService:
                     remark="总代授信批次结算完成，冲减平台侧欠款",
                 )
             )
-
-    async def _find_super_admin_approver(self, session: Any, province_code: str) -> AdminAccount:
-        approver = (
-            await session.execute(
-                select(AdminAccount)
-                .where(
-                    AdminAccount.role_code == ROLE_SUPER_ADMIN,
-                    AdminAccount.province_code == province_code,
-                    AdminAccount.status == "active",
-                )
-                .order_by(AdminAccount.id.asc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        if approver is None:
-            approver = (
-                await session.execute(
-                    select(AdminAccount)
-                    .where(
-                        AdminAccount.role_code == ROLE_SUPER_ADMIN,
-                        AdminAccount.status == "active",
-                    )
-                    .order_by(AdminAccount.id.asc())
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-        if approver is None:
-            raise HTTPException(status_code=400, detail="当前未配置可用的超管审批账号")
-        return approver
-
-    async def _notify_approval_request(self, request: ApprovalRequest) -> None:
-        async with get_async_session() as session:
-            approver = await session.get(AdminAccount, int(request.approver_account_id))
-            binding = (
-                await session.execute(
-                    select(AdminAccountTgBinding)
-                    .where(
-                        AdminAccountTgBinding.admin_account_id == int(request.approver_account_id),
-                        AdminAccountTgBinding.bind_status == "bound",
-                    )
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-            requester = await session.get(AdminAccount, int(request.requester_account_id))
-            subject = await session.get(AdminAccount, int(request.subject_account_id))
-        if approver is None or binding is None or binding.tg_user_id is None:
-            return
-        amount_text = ""
-        if request.amount_cents is not None:
-            amount_text = f"\n金额：{int(request.amount_cents) / 100:.2f} 元"
-        if request.credit_delta_cents is not None:
-            amount_text += f"\n额度变化：{int(request.credit_delta_cents) / 100:.2f} 元"
-        payload = request.payload_json or {}
-        extra_lines: List[str] = []
-        if payload.get("plan_code"):
-            extra_lines.append(f"规格：{payload.get('plan_code')}")
-        if payload.get("quantity"):
-            extra_lines.append(f"数量：{payload.get('quantity')}")
-        if payload.get("batch_id"):
-            extra_lines.append(f"批次：{payload.get('batch_id')}")
-        extra_text = ""
-        if extra_lines:
-            extra_text = "\n" + "\n".join(extra_lines)
-        text = (
-            f"审批待处理\n"
-            f"申请单号：{request.request_id}\n"
-            f"类型：{request.request_type}\n"
-            f"发起人：{requester.display_name if requester else request.requester_account_id}\n"
-            f"主体：{subject.display_name if subject else request.subject_account_id}"
-            f"{amount_text}{extra_text}\n"
-            f"时间：{request.created_at.strftime('%Y-%m-%d %H:%M:%S') if request.created_at else '-'}"
-        )
-        buttons = [
-            [
-                Button.inline("确认", data=f"admapp:approve:{request.request_id}"),
-                Button.inline("驳回", data=f"admapp:reject:{request.request_id}"),
-            ]
-        ]
-        try:
-            await bot_client.send_message(int(binding.tg_user_id), text, buttons=buttons)
-        except Exception as exc:
-            logger.warning("发送审批 TG 通知失败: request_id={}, error_type={}", request.request_id, type(exc).__name__)
 
     async def get_profile(self, current_admin: AdminAccount) -> Dict[str, Any]:
         async with get_async_session() as session:
@@ -1358,7 +1294,39 @@ class AdminPanelService:
                     stmt.order_by(CardBatch.created_at.desc()).limit(limit).offset(offset)
                 )
             ).scalars().all()
-            items = [self._serialize_batch(row) for row in rows]
+            batch_ids = [row.batch_id for row in rows if row.batch_id]
+            used_count_map: Dict[str, int] = {}
+            if batch_ids:
+                used_rows = await session.execute(
+                    select(ActivationCard.batch_id, func.count(ActivationCard.id))
+                    .where(
+                        ActivationCard.batch_id.in_(batch_ids),
+                        ActivationCard.is_used.is_(True),
+                    )
+                    .group_by(ActivationCard.batch_id)
+                )
+                used_count_map = {
+                    str(batch_id): int(count or 0)
+                    for batch_id, count in used_rows.all()
+                    if batch_id
+                }
+            for row in rows:
+                setattr(row, "used_count", used_count_map.get(str(row.batch_id), 0))
+            account_ids = {
+                int(row.current_counterparty_account_id)
+                for row in rows
+                if row.current_counterparty_account_id is not None
+            }
+            counterparty_name_map = await self._build_account_name_map_from_ids(session, account_ids) if account_ids else {}
+            items = [
+                self._serialize_batch(
+                    row,
+                    current_counterparty_name=counterparty_name_map.get(int(row.current_counterparty_account_id))
+                    if row.current_counterparty_account_id is not None
+                    else None,
+                )
+                for row in rows
+            ]
             return {
                 "items": items,
                 "total": total,
@@ -1377,6 +1345,7 @@ class AdminPanelService:
         *,
         current_admin: AdminAccount,
         plan_code: Optional[str] = None,
+        batch_id: Optional[str] = None,
         status: Optional[str] = None,
         source_type: Optional[str] = None,
         keyword: Optional[str] = None,
@@ -1392,6 +1361,10 @@ class AdminPanelService:
             if normalized_plan:
                 stmt = stmt.where(ActivationCard.plan_code == normalized_plan)
                 count_stmt = count_stmt.where(ActivationCard.plan_code == normalized_plan)
+            normalized_batch_id = (batch_id or "").strip()
+            if normalized_batch_id:
+                stmt = stmt.where(ActivationCard.batch_id == normalized_batch_id)
+                count_stmt = count_stmt.where(ActivationCard.batch_id == normalized_batch_id)
             normalized_status = (status or "").strip().lower()
             if normalized_status == "available":
                 stmt = stmt.where(ActivationCard.is_used.is_(False))
@@ -1545,6 +1518,250 @@ class AdminPanelService:
                 "offset": offset,
             }
 
+    async def list_operation_logs(
+        self,
+        *,
+        current_admin: AdminAccount,
+        log_type: Optional[str] = None,
+        account_id: Optional[int] = None,
+        keyword: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        limit: int = 20,
+        offset: int = 0,
+        scope_only: bool = True,
+    ) -> Dict[str, Any]:
+        limit, offset = self._normalize_page(limit, offset)
+        normalized_type = (log_type or "").strip().lower()
+        if normalized_type and normalized_type not in {"all", "recharge", "card_generate", "credit_settlement"}:
+            raise HTTPException(status_code=400, detail="不支持的操作日志类型")
+        normalized_keyword = (keyword or "").strip().lower()
+        started_at = self._parse_datetime_filter(date_from)
+        ended_at = self._parse_datetime_filter(date_to, is_end=True)
+        if started_at and ended_at and started_at >= ended_at:
+            raise HTTPException(status_code=400, detail="时间范围无效")
+
+        async with get_async_session() as session:
+            visible_ids = await self._visible_account_ids(session, current_admin) if scope_only else [int(current_admin.id)]
+            visible_id_set = set(visible_ids)
+            if account_id is not None and int(account_id) not in visible_id_set:
+                raise HTTPException(status_code=403, detail="无权查看该账号操作记录")
+
+            items: List[Dict[str, Any]] = []
+            account_name_ids: set[int] = set()
+
+            if normalized_type in {"", "all", "recharge", "credit_settlement"}:
+                ledger_stmt = select(AgentFundLedger).where(
+                    AgentFundLedger.account_id.in_(visible_ids),
+                    AgentFundLedger.biz_type.in_(["recharge", "credit_settlement"]),
+                )
+                if account_id is not None:
+                    ledger_stmt = ledger_stmt.where(AgentFundLedger.account_id == int(account_id))
+                if started_at is not None:
+                    ledger_stmt = ledger_stmt.where(AgentFundLedger.created_at >= started_at)
+                if ended_at is not None:
+                    ledger_stmt = ledger_stmt.where(AgentFundLedger.created_at < ended_at)
+                ledger_rows = (await session.execute(ledger_stmt)).scalars().all()
+                for row in ledger_rows:
+                    account_name_ids.add(int(row.account_id))
+                    if row.counterparty_account_id is not None:
+                        account_name_ids.add(int(row.counterparty_account_id))
+                    if row.operator_account_id is not None:
+                        account_name_ids.add(int(row.operator_account_id))
+                    items.append(
+                        {
+                            "log_type": "recharge" if row.biz_type == "recharge" else "credit_settlement",
+                            "occurred_at": row.created_at,
+                            "operator_account_id": int(row.operator_account_id) if row.operator_account_id is not None else None,
+                            "subject_account_id": int(row.account_id),
+                            "counterparty_account_id": int(row.counterparty_account_id) if row.counterparty_account_id is not None else None,
+                            "amount_cents": int(row.amount_cents or 0),
+                            "plan_code": None,
+                            "quantity": None,
+                            "batch_id": row.related_batch_id,
+                            "funding_source": None,
+                            "ledger_scope": row.ledger_scope,
+                            "remark": row.remark,
+                        }
+                    )
+
+            if normalized_type in {"", "all", "card_generate"}:
+                batch_stmt = select(CardBatch).where(CardBatch.owner_account_id.in_(visible_ids))
+                if account_id is not None:
+                    batch_stmt = batch_stmt.where(CardBatch.owner_account_id == int(account_id))
+                if started_at is not None:
+                    batch_stmt = batch_stmt.where(CardBatch.created_at >= started_at)
+                if ended_at is not None:
+                    batch_stmt = batch_stmt.where(CardBatch.created_at < ended_at)
+                batch_rows = (await session.execute(batch_stmt)).scalars().all()
+                for row in batch_rows:
+                    account_name_ids.add(int(row.creator_account_id))
+                    account_name_ids.add(int(row.owner_account_id))
+                    if row.direct_parent_account_id is not None:
+                        account_name_ids.add(int(row.direct_parent_account_id))
+                    if row.root_master_account_id is not None:
+                        account_name_ids.add(int(row.root_master_account_id))
+                    funding_source = self._extract_batch_funding_source(row)
+                    items.append(
+                        {
+                            "log_type": "card_generate",
+                            "occurred_at": row.created_at,
+                            "operator_account_id": int(row.creator_account_id),
+                            "subject_account_id": int(row.owner_account_id),
+                            "counterparty_account_id": int(row.direct_parent_account_id) if row.direct_parent_account_id is not None else None,
+                            "amount_cents": int(row.total_amount_cents or 0),
+                            "plan_code": row.plan_code,
+                            "quantity": int(row.quantity or 0),
+                            "batch_id": row.batch_id,
+                            "funding_source": funding_source,
+                            "ledger_scope": "platform" if funding_source == "platform" else "channel",
+                            "remark": row.remark,
+                        }
+                    )
+
+            account_name_map = await self._build_account_name_map_from_ids(session, account_name_ids)
+            for item in items:
+                item["operator_name"] = account_name_map.get(int(item["operator_account_id"])) if item.get("operator_account_id") else None
+                item["subject_name"] = account_name_map.get(int(item["subject_account_id"])) if item.get("subject_account_id") else None
+                item["counterparty_name"] = account_name_map.get(int(item["counterparty_account_id"])) if item.get("counterparty_account_id") else None
+
+            if normalized_keyword:
+                items = [
+                    item
+                    for item in items
+                    if any(
+                        normalized_keyword in str(field or "").lower()
+                        for field in (
+                            item.get("operator_name"),
+                            item.get("subject_name"),
+                            item.get("counterparty_name"),
+                            item.get("remark"),
+                            item.get("batch_id"),
+                            item.get("plan_code"),
+                        )
+                    )
+                ]
+
+            items.sort(
+                key=lambda item: (
+                    item.get("occurred_at") or datetime.min,
+                    item.get("batch_id") or "",
+                    item.get("subject_account_id") or 0,
+                ),
+                reverse=True,
+            )
+
+            total = len(items)
+            paged_items = items[offset : offset + limit]
+            recharge_items = [item for item in items if item["log_type"] == "recharge"]
+            generate_items = [item for item in items if item["log_type"] == "card_generate"]
+            settlement_items = [item for item in items if item["log_type"] == "credit_settlement"]
+
+            return {
+                "items": [self._serialize_operation_log(item) for item in paged_items],
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "stats": {
+                    "recharge_count": len(recharge_items),
+                    "recharge_amount_cents": sum(int(item["amount_cents"] or 0) for item in recharge_items),
+                    "card_generate_count": len(generate_items),
+                    "card_generate_amount_cents": sum(int(item["amount_cents"] or 0) for item in generate_items),
+                    "credit_settlement_count": len(settlement_items),
+                    "credit_settlement_amount_cents": sum(int(item["amount_cents"] or 0) for item in settlement_items),
+                },
+            }
+
+    async def create_recharge_entry(
+        self,
+        *,
+        current_admin: AdminAccount,
+        subject_account_id: int,
+        amount_cents: int,
+        remark: Optional[str] = None,
+        ip_address: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        amount = int(amount_cents or 0)
+        if amount <= 0:
+            raise HTTPException(status_code=400, detail="充值金额必须大于 0")
+
+        async with get_async_session() as session:
+            operator = await session.get(AdminAccount, int(current_admin.id))
+            subject = await self._ensure_visible_account(session, operator, int(subject_account_id))
+            if operator.role_code != ROLE_SUPER_ADMIN and int(subject.parent_account_id or 0) != int(operator.id):
+                raise HTTPException(status_code=403, detail="只能为直系下级直接充值入账")
+
+            subject.balance_cents = int(subject.balance_cents or 0) + amount
+            session.add(
+                AgentFundLedger(
+                    ledger_scope="platform" if operator.role_code == ROLE_SUPER_ADMIN else "channel",
+                    account_id=int(subject.id),
+                    counterparty_account_id=int(operator.id) if int(subject.id) != int(operator.id) else None,
+                    biz_type="recharge",
+                    direction="in",
+                    amount_cents=amount,
+                    balance_after_cents=int(subject.balance_cents or 0),
+                    credit_used_after_cents=int(subject.credit_used_cents or 0),
+                    operator_account_id=int(operator.id),
+                    remark=(remark or "").strip() or "后台直接充值入账",
+                )
+            )
+            await self._append_audit(
+                session,
+                actor=operator,
+                action="agent.direct_recharge",
+                target_type="admin_account",
+                target_id=str(subject.id),
+                detail={"amount_cents": amount, "remark": (remark or "").strip() or None},
+                ip_address=ip_address,
+            )
+            await session.flush()
+            await session.refresh(subject)
+            return self._serialize_admin_account(subject)
+
+    async def settle_credit_batch(
+        self,
+        *,
+        current_admin: AdminAccount,
+        batch_id: str,
+        ip_address: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        normalized_batch_id = str(batch_id or "").strip()
+        if not normalized_batch_id:
+            raise HTTPException(status_code=400, detail="batch_id 不能为空")
+
+        async with get_async_session() as session:
+            operator = await session.get(AdminAccount, int(current_admin.id))
+            batch = await session.get(CardBatch, normalized_batch_id)
+            if batch is None:
+                raise HTTPException(status_code=404, detail="待结算批次不存在")
+            visible_ids = await self._visible_account_ids(session, operator)
+            if int(batch.owner_account_id or 0) not in set(visible_ids):
+                raise HTTPException(status_code=403, detail="无权访问该授信批次")
+            if int(batch.current_liability_account_id or 0) != int(operator.id):
+                raise HTTPException(status_code=403, detail="该批次当前不由此账号负责结清")
+
+            request_id = f"direct-settle-{uuid.uuid4().hex[:20]}"
+            await self._apply_settlement_for_batch(
+                session,
+                subject=operator,
+                batch=batch,
+                operator=operator,
+                request_id=request_id,
+            )
+            await self._append_audit(
+                session,
+                actor=operator,
+                action="agent.direct_settlement",
+                target_type="card_batch",
+                target_id=batch.batch_id,
+                detail={"batch_id": batch.batch_id, "request_id": request_id},
+                ip_address=ip_address,
+            )
+            await session.flush()
+            await session.refresh(batch)
+            return self._serialize_batch(batch)
+
     async def _build_account_name_map(
         self,
         session: Any,
@@ -1567,11 +1784,39 @@ class AdminPanelService:
             for account in accounts
         }
 
+    async def _build_account_name_map_from_ids(
+        self,
+        session: Any,
+        account_ids: Iterable[int],
+    ) -> Dict[int, str]:
+        normalized_ids = sorted({int(account_id) for account_id in account_ids if int(account_id) > 0})
+        if not normalized_ids:
+            return {}
+        accounts = (
+            await session.execute(select(AdminAccount).where(AdminAccount.id.in_(normalized_ids)))
+        ).scalars().all()
+        return {
+            int(account.id): account.display_name or account.username or f"#{account.id}"
+            for account in accounts
+        }
+
+    @staticmethod
+    def _extract_batch_funding_source(batch: CardBatch) -> str:
+        remark = (batch.remark or "").strip()
+        if "funding_source=" in remark:
+            funding_source = remark.split("funding_source=", 1)[1].split()[0].strip().lower()
+            if funding_source in {"platform", "balance", "credit"}:
+                return funding_source
+        if batch.payment_status == "credit":
+            return "credit"
+        return "balance"
+
     async def export_cards_xlsx(
         self,
         *,
         current_admin: AdminAccount,
         plan_code: Optional[str] = None,
+        batch_id: Optional[str] = None,
         status: Optional[str] = None,
         source_type: Optional[str] = None,
         keyword: Optional[str] = None,
@@ -1579,6 +1824,7 @@ class AdminPanelService:
         cards_page = await self.list_cards(
             current_admin=current_admin,
             plan_code=plan_code,
+            batch_id=batch_id,
             status=status,
             source_type=source_type,
             keyword=keyword,
@@ -1654,348 +1900,6 @@ class AdminPanelService:
                 "count": len(rows),
                 "copied_text": copied_text,
             }
-
-    async def create_approval_request(
-        self,
-        *,
-        current_admin: AdminAccount,
-        request_type: str,
-        amount_cents: Optional[int] = None,
-        credit_delta_cents: Optional[int] = None,
-        subject_account_id: Optional[int] = None,
-        payload_json: Optional[Dict[str, Any]] = None,
-        ip_address: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        request_type = (request_type or "").strip()
-        if request_type not in {"recharge", "settlement", "credit_adjust"}:
-            raise HTTPException(status_code=400, detail="不支持的审批类型")
-        async with get_async_session() as session:
-            subject = await self._ensure_visible_account(session, current_admin, int(subject_account_id or current_admin.id))
-            normalized_payload = dict(payload_json or {})
-
-            if request_type == "recharge":
-                if int(amount_cents or 0) <= 0:
-                    raise HTTPException(status_code=400, detail="充值金额必须大于 0")
-            elif request_type == "credit_adjust":
-                requested_limit = int(normalized_payload.get("credit_limit_cents") or credit_delta_cents or 0)
-                if requested_limit < 0:
-                    raise HTTPException(status_code=400, detail="目标额度不能为负数")
-                credit_delta_cents = requested_limit
-                normalized_payload["credit_limit_cents"] = requested_limit
-            elif request_type == "settlement":
-                batch_id = str(normalized_payload.get("batch_id") or "").strip()
-                if not batch_id:
-                    raise HTTPException(status_code=400, detail="结算审批必须指定授信批次")
-                batch = await session.get(CardBatch, batch_id)
-                if batch is None or int(batch.current_liability_account_id or 0) != int(subject.id):
-                    raise HTTPException(status_code=404, detail="待结算批次不存在")
-                if batch.payment_status != "credit" or batch.settlement_status == "settled":
-                    raise HTTPException(status_code=400, detail="该批次不是待结算授信批次")
-                pending_rows = (
-                    await session.execute(
-                        select(ApprovalRequest)
-                        .where(
-                            ApprovalRequest.request_type == "settlement",
-                            ApprovalRequest.status == "pending",
-                            ApprovalRequest.subject_account_id == int(subject.id),
-                        )
-                    )
-                ).scalars().all()
-                if any(str((row.payload_json or {}).get("batch_id") or "") == batch_id for row in pending_rows):
-                    raise HTTPException(status_code=409, detail="该批次已有待处理结算审批")
-                amount_cents = int(batch.total_amount_cents or 0)
-                normalized_payload = {
-                    **normalized_payload,
-                    "batch_id": batch.batch_id,
-                    "plan_code": batch.plan_code,
-                    "quantity": int(batch.quantity or 0),
-                    "quoted_amount_cents": int(batch.total_amount_cents or 0),
-                    "current_counterparty_account_id": batch.current_counterparty_account_id,
-                }
-
-            if current_admin.role_code == ROLE_SUPER_ADMIN:
-                approver = current_admin
-            elif subject.parent_account_id is None:
-                approver = await self._find_super_admin_approver(session, current_admin.province_code)
-            else:
-                approver = await session.get(AdminAccount, int(subject.parent_account_id))
-                if approver is None:
-                    raise HTTPException(status_code=400, detail="审批上级不存在")
-            row = ApprovalRequest(
-                province_code=current_admin.province_code,
-                request_type=request_type,
-                requester_account_id=int(current_admin.id),
-                subject_account_id=int(subject.id),
-                approver_account_id=int(approver.id),
-                status="pending",
-                amount_cents=int(amount_cents) if amount_cents is not None else None,
-                credit_delta_cents=int(credit_delta_cents) if credit_delta_cents is not None else None,
-                payload_json=normalized_payload,
-            )
-            session.add(row)
-            await self._append_audit(
-                session,
-                actor=current_admin,
-                action="agent.create_approval_request",
-                target_type="approval_request",
-                target_id=row.request_id,
-                detail={"request_type": request_type, "approver_account_id": int(approver.id), "subject_account_id": int(subject.id)},
-                ip_address=ip_address,
-            )
-            await session.flush()
-            await session.refresh(row)
-        await self._notify_approval_request(row)
-        return self._serialize_approval_request(row)
-
-    async def list_pending_approvals(self, *, current_admin: AdminAccount) -> List[Dict[str, Any]]:
-        async with get_async_session() as session:
-            rows = (
-                await session.execute(
-                    select(ApprovalRequest)
-                    .where(
-                        ApprovalRequest.approver_account_id == int(current_admin.id),
-                        ApprovalRequest.status == "pending",
-                    )
-                    .order_by(ApprovalRequest.created_at.desc())
-                )
-            ).scalars().all()
-            return [self._serialize_approval_request(row) for row in rows]
-
-    async def list_approval_requests(
-        self,
-        *,
-        current_admin: AdminAccount,
-        status: Optional[str] = None,
-        request_type: Optional[str] = None,
-        keyword: Optional[str] = None,
-        limit: int = 200,
-        offset: int = 0,
-    ) -> Dict[str, Any]:
-        limit, offset = self._normalize_page(limit, offset)
-        async with get_async_session() as session:
-            visible_ids = await self._visible_account_ids(session, current_admin)
-            stmt = select(ApprovalRequest).where(ApprovalRequest.province_code == current_admin.province_code)
-            count_stmt = select(func.count(ApprovalRequest.request_id)).where(ApprovalRequest.province_code == current_admin.province_code)
-            if current_admin.role_code != ROLE_SUPER_ADMIN:
-                scope_condition = or_(
-                    ApprovalRequest.approver_account_id == int(current_admin.id),
-                    ApprovalRequest.requester_account_id.in_(visible_ids),
-                    ApprovalRequest.subject_account_id.in_(visible_ids),
-                )
-                stmt = stmt.where(scope_condition)
-                count_stmt = count_stmt.where(scope_condition)
-            normalized_status = (status or "").strip().lower()
-            if normalized_status and normalized_status != "all":
-                stmt = stmt.where(ApprovalRequest.status == normalized_status)
-                count_stmt = count_stmt.where(ApprovalRequest.status == normalized_status)
-            normalized_type = (request_type or "").strip().lower()
-            if normalized_type and normalized_type != "all":
-                stmt = stmt.where(ApprovalRequest.request_type == normalized_type)
-                count_stmt = count_stmt.where(ApprovalRequest.request_type == normalized_type)
-            normalized_keyword = (keyword or "").strip()
-            if normalized_keyword:
-                keyword_value = f"%{normalized_keyword}%"
-                keyword_condition = ApprovalRequest.request_id.ilike(keyword_value)
-                stmt = stmt.where(keyword_condition)
-                count_stmt = count_stmt.where(keyword_condition)
-            total = int((await session.execute(count_stmt)).scalar_one() or 0)
-            rows = (
-                await session.execute(
-                    stmt.order_by(ApprovalRequest.created_at.desc(), ApprovalRequest.request_id.desc()).limit(limit).offset(offset)
-                )
-            ).scalars().all()
-            items = [self._serialize_approval_request(row) for row in rows]
-            return {
-                "items": items,
-                "total": total,
-                "limit": limit,
-                "offset": offset,
-                "stats": {
-                    "page_pending_count": sum(1 for item in items if item["status"] == "pending"),
-                    "page_pending_amount_cents": sum(int(item["amount_cents"] or 0) for item in items if item["status"] == "pending"),
-                },
-            }
-
-    async def _apply_approval_effect(self, session: Any, request: ApprovalRequest, operator: AdminAccount) -> None:
-        subject = await session.get(AdminAccount, int(request.subject_account_id))
-        if subject is None:
-            raise HTTPException(status_code=404, detail="审批主体账号不存在")
-        amount = int(request.amount_cents or 0)
-        if request.request_type == "recharge":
-            subject.balance_cents = int(subject.balance_cents or 0) + amount
-            session.add(
-                AgentFundLedger(
-                    ledger_scope="channel" if operator.role_code != ROLE_SUPER_ADMIN else "platform",
-                    account_id=int(subject.id),
-                    counterparty_account_id=int(operator.id),
-                    biz_type=request.request_type,
-                    direction="in",
-                    amount_cents=amount,
-                    balance_after_cents=int(subject.balance_cents or 0),
-                    credit_used_after_cents=int(subject.credit_used_cents or 0),
-                    related_request_id=request.request_id,
-                    operator_account_id=int(operator.id),
-                    remark=f"审批通过: {request.request_type}",
-                )
-            )
-        elif request.request_type == "settlement":
-            payload = request.payload_json or {}
-            batch_id = str(payload.get("batch_id") or "").strip()
-            if not batch_id:
-                raise HTTPException(status_code=400, detail="结算审批缺少 batch_id")
-            batch = await session.get(CardBatch, batch_id)
-            if batch is None or int(batch.current_liability_account_id or 0) != int(subject.id):
-                raise HTTPException(status_code=404, detail="待结算批次不存在")
-            await self._apply_settlement_for_batch(
-                session,
-                subject=subject,
-                batch=batch,
-                operator=operator,
-                request_id=request.request_id,
-            )
-        elif request.request_type == "credit_adjust":
-            payload = request.payload_json or {}
-            requested_limit = int(payload.get("credit_limit_cents") or request.credit_delta_cents or 0)
-            if operator.role_code == ROLE_SUPER_ADMIN and subject.role_code == ROLE_MASTER_AGENT:
-                if int(subject.allocated_credit_limit_cents or 0) > requested_limit:
-                    raise HTTPException(status_code=400, detail="总代已分配额度超过目标值")
-                subject.credit_limit_cents = requested_limit
-            else:
-                parent, row = await self._ensure_direct_parent_or_master_override(session, operator, subject)
-                old_limit = int(row.delegated_credit_limit_cents or 0)
-                new_allocated = int(parent.allocated_credit_limit_cents or 0) - old_limit + requested_limit
-                if new_allocated > int(parent.credit_limit_cents or 0):
-                    raise HTTPException(status_code=400, detail="目标额度超过上级可分配额度")
-                parent.allocated_credit_limit_cents = new_allocated
-                row.delegated_credit_limit_cents = requested_limit
-                row.last_adjusted_by = int(operator.id)
-                subject.credit_limit_cents = requested_limit
-    async def approve_request(
-        self,
-        *,
-        current_admin: AdminAccount,
-        request_id: str,
-        ip_address: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        async with get_async_session() as session:
-            row = await session.get(ApprovalRequest, (request_id or "").strip())
-            if row is None:
-                raise HTTPException(status_code=404, detail="审批单不存在")
-            if row.status != "pending":
-                raise HTTPException(status_code=409, detail="审批单已处理，请勿重复操作")
-            if current_admin.role_code != ROLE_SUPER_ADMIN and int(row.approver_account_id) != int(current_admin.id):
-                raise HTTPException(status_code=403, detail="无权审批该请求")
-            operator = await session.get(AdminAccount, int(current_admin.id))
-            await self._apply_approval_effect(session, row, operator)
-            row.status = "approved"
-            row.approved_at = datetime.now()
-            await self._append_audit(
-                session,
-                actor=operator,
-                action="agent.approve_request",
-                target_type="approval_request",
-                target_id=row.request_id,
-                detail={"request_type": row.request_type},
-                ip_address=ip_address,
-            )
-            await session.flush()
-            await session.refresh(row)
-            return self._serialize_approval_request(row)
-
-    async def reject_request(
-        self,
-        *,
-        current_admin: AdminAccount,
-        request_id: str,
-        ip_address: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        async with get_async_session() as session:
-            row = await session.get(ApprovalRequest, (request_id or "").strip())
-            if row is None:
-                raise HTTPException(status_code=404, detail="审批单不存在")
-            if row.status != "pending":
-                raise HTTPException(status_code=409, detail="审批单已处理，请勿重复操作")
-            if current_admin.role_code != ROLE_SUPER_ADMIN and int(row.approver_account_id) != int(current_admin.id):
-                raise HTTPException(status_code=403, detail="无权审批该请求")
-            operator = await session.get(AdminAccount, int(current_admin.id))
-            row.status = "rejected"
-            row.rejected_at = datetime.now()
-            await self._append_audit(
-                session,
-                actor=operator,
-                action="agent.reject_request",
-                target_type="approval_request",
-                target_id=row.request_id,
-                detail={"request_type": row.request_type},
-                ip_address=ip_address,
-            )
-            await session.flush()
-            await session.refresh(row)
-            return self._serialize_approval_request(row)
-
-    async def batch_process_requests(
-        self,
-        *,
-        current_admin: AdminAccount,
-        request_ids: Sequence[str],
-        decision: str,
-        ip_address: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        normalized_ids = [str(item or "").strip() for item in request_ids if str(item or "").strip()]
-        if not normalized_ids:
-            raise HTTPException(status_code=400, detail="请选择要处理的审批单")
-        if len(normalized_ids) > 50:
-            raise HTTPException(status_code=400, detail="单次最多批量处理 50 个审批单")
-
-        success_items: List[Dict[str, Any]] = []
-        failed_items: List[Dict[str, Any]] = []
-        for request_id in normalized_ids:
-            try:
-                if decision == "approve":
-                    result = await self.approve_request(
-                        current_admin=current_admin,
-                        request_id=request_id,
-                        ip_address=ip_address,
-                    )
-                else:
-                    result = await self.reject_request(
-                        current_admin=current_admin,
-                        request_id=request_id,
-                        ip_address=ip_address,
-                    )
-                success_items.append({"request_id": request_id, "result": result})
-            except HTTPException as exc:
-                failed_items.append({"request_id": request_id, "detail": exc.detail})
-            except Exception as exc:  # pragma: no cover - defensive fallback
-                logger.exception("批量审批失败: request_id={}", request_id)
-                failed_items.append({"request_id": request_id, "detail": str(exc) or type(exc).__name__})
-
-        return {
-            "decision": decision,
-            "success_count": len(success_items),
-            "failed_count": len(failed_items),
-            "success_items": success_items,
-            "failed_items": failed_items,
-        }
-
-    async def handle_tg_approval_callback(self, *, tg_user_id: int, request_id: str, decision: str) -> Dict[str, Any]:
-        async with get_async_session() as session:
-            binding = (
-                await session.execute(
-                    select(AdminAccountTgBinding)
-                    .where(
-                        AdminAccountTgBinding.tg_user_id == int(tg_user_id),
-                        AdminAccountTgBinding.bind_status == "bound",
-                    )
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-            if binding is None:
-                raise HTTPException(status_code=404, detail="当前 TG 账号未绑定后台账号")
-            account = await session.get(AdminAccount, int(binding.admin_account_id))
-        if decision == "approve":
-            return await self.approve_request(current_admin=account, request_id=request_id)
-        return await self.reject_request(current_admin=account, request_id=request_id)
 
     async def list_audit_logs(
         self,

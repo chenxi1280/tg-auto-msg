@@ -38,7 +38,7 @@
     <div class="main">
       <div class="container">
         <div class="table-wrap">
-          <el-table :data="proxies" stripe v-loading="loading">
+          <el-table v-if="!isCompact" :data="proxies" stripe v-loading="loading">
             <el-table-column prop="host" label="主机" min-width="150" />
             <el-table-column prop="port" label="端口" width="80" />
             <el-table-column prop="proxy_type" label="类型" width="100">
@@ -62,9 +62,7 @@
             <el-table-column prop="usage_count" label="使用次数" width="90" align="right" />
             <el-table-column label="分配账号" width="150">
               <template #default="{ row }">
-                <span v-if="row.assigned_account_id">
-                  {{ row.assigned_account_id.slice(0, 8) }}...
-                </span>
+                <span v-if="row.assigned_account_id">已分配</span>
                 <span v-else class="text-muted">未分配</span>
               </template>
             </el-table-column>
@@ -90,12 +88,42 @@
               </template>
             </el-table-column>
           </el-table>
+          <div v-else class="mobile-card-list" v-loading="loading">
+            <div v-for="row in proxies" :key="row.proxy_id" class="mobile-data-card">
+              <div class="mobile-data-card__header">
+                <div>
+                  <div class="mobile-data-card__title">{{ row.host }}:{{ row.port }}</div>
+                  <div class="mobile-data-card__subtitle">{{ row.proxy_type.toUpperCase() }}</div>
+                </div>
+                <el-tag :type="row.is_healthy ? 'success' : 'danger'">{{ row.is_healthy ? '健康' : '异常' }}</el-tag>
+              </div>
+              <div class="mobile-data-card__grid">
+                <div class="mobile-data-card__row">
+                  <span class="mobile-data-card__label">响应时间</span>
+                  <span class="mobile-data-card__value">{{ row.response_time_ms ? `${row.response_time_ms}ms` : '-' }}</span>
+                </div>
+                <div class="mobile-data-card__row">
+                  <span class="mobile-data-card__label">使用次数</span>
+                  <span class="mobile-data-card__value">{{ row.usage_count }}</span>
+                </div>
+                <div class="mobile-data-card__row">
+                  <span class="mobile-data-card__label">分配账号</span>
+                  <span class="mobile-data-card__value">{{ row.assigned_account_id ? '已分配' : '未分配' }}</span>
+                </div>
+              </div>
+              <div class="mobile-action-bar">
+                <el-button @click="handleCheckHealth(row)">检查</el-button>
+                <el-button :disabled="!row.assigned_account_id" @click="handleUnassign(row)">解绑</el-button>
+                <el-button type="danger" plain @click="handleDelete(row)">删除</el-button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
 
     <!-- 添加代理对话框 -->
-    <el-dialog v-model="showAddDialog" title="添加代理" width="500px">
+    <ResponsiveFormLayer v-model="showAddDialog" title="添加代理" width="500px">
       <el-form :model="proxyForm" label-width="80px">
         <el-form-item label="类型">
           <el-select v-model="proxyForm.proxy_type">
@@ -122,7 +150,7 @@
           确定
         </el-button>
       </template>
-    </el-dialog>
+    </ResponsiveFormLayer>
   </div>
 </template>
 
@@ -133,9 +161,12 @@ import { Plus, Refresh, CircleCheck } from '@element-plus/icons-vue'
 import { useProxyStore } from '@/stores/proxy'
 import { useAccountStore } from '@/stores/account'
 import type { Proxy } from '@/api/proxy'
+import { useResponsive } from '@/composables/useResponsive'
+import ResponsiveFormLayer from '@/components/responsive/ResponsiveFormLayer.vue'
 
 const proxyStore = useProxyStore()
 const accountStore = useAccountStore()
+const { isCompact } = useResponsive()
 
 // 状态
 const proxies = computed(() => proxyStore.proxies)

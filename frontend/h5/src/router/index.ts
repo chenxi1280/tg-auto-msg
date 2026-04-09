@@ -102,10 +102,10 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '账户与安全', requiresAdminSession: true, permissions: ['security.read'] }
       },
       {
-        path: 'agents',
-        name: 'AdminAgents',
-        component: () => import('@/views/admin/AgentsPage.vue'),
-        meta: { title: '代理管理', requiresAdminSession: true, permissions: ['agents.read'] }
+        path: 'account-center',
+        name: 'AdminAccountCenter',
+        component: () => import('@/views/admin/AccountCenterPage.vue'),
+        meta: { title: '账号中心', requiresAdminSession: true, permissions: ['users.read', 'agents.read'] }
       },
       {
         path: 'pricing',
@@ -120,16 +120,23 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '资金流水', requiresAdminSession: true, permissions: ['ledgers.read'] }
       },
       {
-        path: 'batches',
-        name: 'AdminBatches',
-        component: () => import('@/views/admin/BatchesPage.vue'),
-        meta: { title: '卡密批次', requiresAdminSession: true, permissions: ['batches.read'] }
+        path: 'operation-logs',
+        name: 'AdminOperationLogs',
+        component: () => import('@/views/admin/OperationLogsPage.vue'),
+        meta: { title: '操作日志', requiresAdminSession: true, permissions: ['operation_logs.read', 'operation_logs.scope.read'] }
       },
       {
-        path: 'approvals',
-        name: 'AdminApprovals',
-        component: () => import('@/views/admin/ApprovalsPage.vue'),
-        meta: { title: '审批中心', requiresAdminSession: true, permissions: ['approvals.read'] }
+        path: 'card-center',
+        name: 'AdminCardCenter',
+        component: () => import('@/views/admin/CardCenterPage.vue'),
+        meta: { title: '卡密中心', requiresAdminSession: true, permissions: ['batches.read', 'legacy_cards.read'] }
+      },
+      {
+        path: 'license-plans',
+        name: 'AdminLicensePlans',
+        component: () => import('@/views/admin/LegacyCardsPage.vue'),
+        props: { mode: 'plans' },
+        meta: { title: '卡密规格', requiresAdminSession: true, permissions: ['legacy_cards.read'] }
       },
       {
         path: 'audit',
@@ -158,14 +165,26 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'legacy-cards',
         name: 'AdminLegacyCards',
-        component: () => import('@/views/admin/LegacyCardsPage.vue'),
+        redirect: '/admin/license-plans',
         meta: { title: '旧卡密总后台', requiresAdminSession: true, permissions: ['legacy_cards.read'] }
       },
       {
         path: 'users-auth',
         name: 'AdminUsersAuth',
-        component: () => import('@/views/admin/UsersAuthPage.vue'),
+        redirect: '/admin/account-center?tab=users',
         meta: { title: '用户与授权', requiresAdminSession: true, permissions: ['users.read'] }
+      },
+      {
+        path: 'agents',
+        name: 'AdminAgents',
+        redirect: '/admin/account-center?tab=agents',
+        meta: { title: '代理管理', requiresAdminSession: true, permissions: ['agents.read'] }
+      },
+      {
+        path: 'batches',
+        name: 'AdminBatches',
+        redirect: '/admin/card-center?tab=cards',
+        meta: { title: '卡密批次', requiresAdminSession: true, permissions: ['batches.read'] }
       },
       {
         path: 'admin-accounts',

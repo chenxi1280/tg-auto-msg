@@ -35,7 +35,7 @@
       <template #header>
         <div class="card-header">
           <span>线下充值入账</span>
-          <span class="card-tip">由直接上级或超管确认后增加余额</span>
+          <span class="card-tip">直接上级或超管可在这里直接把线下充值记入余额</span>
         </div>
       </template>
       <el-form class="recharge-form" inline>
@@ -56,7 +56,7 @@
           <el-input v-model.trim="rechargeForm.remark" placeholder="线下充值说明" style="width: 240px" />
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" :loading="submittingRecharge" @click="submitRecharge">发起充值审批</el-button>
+          <el-button type="primary" :loading="submittingRecharge" @click="submitRecharge">直接入账</el-button>
         </el-form-item>
       </el-form>
     </el-card>
@@ -66,25 +66,28 @@
         <div class="card-header">
           <span>我的资金流水</span>
           <div class="header-actions">
-            <el-select v-model="selfFilters.biz_type" style="width: 160px">
-              <el-option label="全部业务" value="all" />
-              <el-option label="充值入账" value="recharge" />
-              <el-option label="余额扣费" value="consume_balance" />
-              <el-option label="授信生成" value="credit_generate" />
-              <el-option label="授信结清" value="credit_settlement" />
-            </el-select>
-            <el-select v-model="selfFilters.direction" style="width: 140px">
-              <el-option label="全部方向" value="all" />
-              <el-option label="入账" value="in" />
-              <el-option label="扣减" value="out" />
-            </el-select>
-            <el-input v-model.trim="selfFilters.keyword" clearable placeholder="搜索对手方/备注/批次" style="width: 240px" />
-            <el-button @click="loadSelfLedgers(true)">查询</el-button>
-            <el-button @click="loadSelfLedgers()">刷新</el-button>
+            <el-button v-if="isCompact" class="mobile-filter-trigger" @click="selfFiltersVisible = true">筛选条件</el-button>
+            <template v-else>
+              <el-select v-model="selfFilters.biz_type" style="width: 160px">
+                <el-option label="全部业务" value="all" />
+                <el-option label="充值入账" value="recharge" />
+                <el-option label="余额扣费" value="consume_balance" />
+                <el-option label="授信生成" value="credit_generate" />
+                <el-option label="授信结清" value="credit_settlement" />
+              </el-select>
+              <el-select v-model="selfFilters.direction" style="width: 140px">
+                <el-option label="全部方向" value="all" />
+                <el-option label="入账" value="in" />
+                <el-option label="扣减" value="out" />
+              </el-select>
+              <el-input v-model.trim="selfFilters.keyword" clearable placeholder="搜索对手方/备注/批次" style="width: 240px" />
+              <el-button @click="loadSelfLedgers(true)">查询</el-button>
+              <el-button @click="loadSelfLedgers()">刷新</el-button>
+            </template>
           </div>
         </div>
       </template>
-      <el-table :data="selfLedgerRows" stripe>
+      <el-table v-if="!isCompact" :data="selfLedgerRows" stripe>
         <el-table-column label="业务类型" width="130">
           <template #default="{ row }">{{ ledgerBizLabel(row.biz_type) }}</template>
         </el-table-column>
@@ -109,6 +112,35 @@
           <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
         </el-table-column>
       </el-table>
+      <div v-else class="mobile-card-list">
+        <div v-for="row in selfLedgerRows" :key="row.id" class="mobile-data-card">
+          <div class="mobile-data-card__header">
+            <div>
+              <div class="mobile-data-card__title">{{ ledgerBizLabel(row.biz_type) }}</div>
+              <div class="mobile-data-card__subtitle">{{ formatDateTime(row.created_at) }}</div>
+            </div>
+            <el-tag :type="row.direction === 'in' ? 'success' : 'warning'">{{ row.direction === 'in' ? '入账' : '扣减' }}</el-tag>
+          </div>
+          <div class="mobile-data-card__grid">
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">金额</span>
+              <span class="mobile-data-card__value">¥{{ centsToYuan(row.amount_cents) }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">对手方</span>
+              <span class="mobile-data-card__value">{{ row.counterparty_name || '-' }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">余额后</span>
+              <span class="mobile-data-card__value">{{ row.balance_after_cents == null ? '-' : `¥${centsToYuan(row.balance_after_cents)}` }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">备注</span>
+              <span class="mobile-data-card__value">{{ row.remark || '-' }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
       <div class="pagination-wrap">
         <el-pagination
           v-model:current-page="selfPagination.currentPage"
@@ -128,36 +160,39 @@
         <div class="card-header">
           <span>下级资金流水审计</span>
           <div class="header-actions">
-            <el-select v-model="visibleLedgerAccountId" clearable filterable placeholder="筛选账号" style="width: 240px" @change="loadVisibleLedgers(true)">
-              <el-option
-                v-for="account in store.accounts"
-                :key="account.id"
-                :label="`${account.display_name} (${account.username})`"
-                :value="account.id"
-              />
-            </el-select>
-            <el-select v-model="visibleFilters.biz_type" style="width: 160px">
-              <el-option label="全部业务" value="all" />
-              <el-option label="充值入账" value="recharge" />
-              <el-option label="余额扣费" value="consume_balance" />
-              <el-option label="授信生成" value="credit_generate" />
-              <el-option label="授信结清" value="credit_settlement" />
-            </el-select>
-            <el-select v-model="visibleFilters.direction" style="width: 140px">
-              <el-option label="全部方向" value="all" />
-              <el-option label="入账" value="in" />
-              <el-option label="扣减" value="out" />
-            </el-select>
-            <el-input v-model.trim="visibleFilters.keyword" clearable placeholder="搜索账号/备注/批次" style="width: 240px" />
-            <el-button @click="loadVisibleLedgers(true)">查询</el-button>
-            <el-button @click="loadVisibleLedgers()">刷新</el-button>
+            <el-button v-if="isCompact" class="mobile-filter-trigger" @click="visibleFiltersVisible = true">筛选条件</el-button>
+            <template v-else>
+              <el-select v-model="visibleLedgerAccountId" clearable filterable placeholder="筛选账号" style="width: 240px" @change="loadVisibleLedgers(true)">
+                <el-option
+                  v-for="account in store.accounts"
+                  :key="account.id"
+                  :label="`${account.display_name} (${account.username})`"
+                  :value="account.id"
+                />
+              </el-select>
+              <el-select v-model="visibleFilters.biz_type" style="width: 160px">
+                <el-option label="全部业务" value="all" />
+                <el-option label="充值入账" value="recharge" />
+                <el-option label="余额扣费" value="consume_balance" />
+                <el-option label="授信生成" value="credit_generate" />
+                <el-option label="授信结清" value="credit_settlement" />
+              </el-select>
+              <el-select v-model="visibleFilters.direction" style="width: 140px">
+                <el-option label="全部方向" value="all" />
+                <el-option label="入账" value="in" />
+                <el-option label="扣减" value="out" />
+              </el-select>
+              <el-input v-model.trim="visibleFilters.keyword" clearable placeholder="搜索账号/备注/批次" style="width: 240px" />
+              <el-button @click="loadVisibleLedgers(true)">查询</el-button>
+              <el-button @click="loadVisibleLedgers()">刷新</el-button>
+            </template>
           </div>
         </div>
       </template>
       <div class="selection-bar">当前审计流水 {{ visibleTotal }} 条，当前页 {{ visibleLedgerRows.length }} 条</div>
-      <el-table :data="visibleLedgerRows" stripe>
+        <el-table v-if="!isCompact" :data="visibleLedgerRows" stripe>
         <el-table-column label="主体账号" min-width="170">
-          <template #default="{ row }">{{ row.account_name || row.account_id }}</template>
+          <template #default="{ row }">{{ row.account_name || '未命名账号' }}</template>
         </el-table-column>
         <el-table-column label="业务类型" width="130">
           <template #default="{ row }">{{ ledgerBizLabel(row.biz_type) }}</template>
@@ -178,6 +213,35 @@
           <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
         </el-table-column>
       </el-table>
+      <div v-else class="mobile-card-list">
+        <div v-for="row in visibleLedgerRows" :key="row.id" class="mobile-data-card">
+          <div class="mobile-data-card__header">
+            <div>
+              <div class="mobile-data-card__title">{{ row.account_name || '未命名账号' }}</div>
+              <div class="mobile-data-card__subtitle">{{ formatDateTime(row.created_at) }}</div>
+            </div>
+            <el-tag>{{ ledgerBizLabel(row.biz_type) }}</el-tag>
+          </div>
+          <div class="mobile-data-card__grid">
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">金额</span>
+              <span class="mobile-data-card__value">¥{{ centsToYuan(row.amount_cents) }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">对手方</span>
+              <span class="mobile-data-card__value">{{ row.counterparty_name || '-' }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">操作人</span>
+              <span class="mobile-data-card__value">{{ row.operator_name || '-' }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">备注</span>
+              <span class="mobile-data-card__value">{{ row.remark || '-' }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
       <div class="pagination-wrap">
         <el-pagination
           v-model:current-page="visiblePagination.currentPage"
@@ -191,6 +255,60 @@
         />
       </div>
     </el-card>
+
+    <el-drawer v-model="selfFiltersVisible" title="筛选我的流水" size="100%" append-to-body>
+      <div class="mobile-card-list">
+        <el-select v-model="selfFilters.biz_type">
+          <el-option label="全部业务" value="all" />
+          <el-option label="充值入账" value="recharge" />
+          <el-option label="余额扣费" value="consume_balance" />
+          <el-option label="授信生成" value="credit_generate" />
+          <el-option label="授信结清" value="credit_settlement" />
+        </el-select>
+        <el-select v-model="selfFilters.direction">
+          <el-option label="全部方向" value="all" />
+          <el-option label="入账" value="in" />
+          <el-option label="扣减" value="out" />
+        </el-select>
+        <el-input v-model.trim="selfFilters.keyword" clearable placeholder="搜索对手方/备注/批次" />
+        <div class="mobile-action-bar">
+          <el-button @click="selfFiltersVisible = false">关闭</el-button>
+          <el-button @click="loadSelfLedgers()">刷新</el-button>
+          <el-button type="primary" @click="applySelfFilters">应用筛选</el-button>
+        </div>
+      </div>
+    </el-drawer>
+
+    <el-drawer v-model="visibleFiltersVisible" title="筛选下级流水" size="100%" append-to-body>
+      <div class="mobile-card-list">
+        <el-select v-model="visibleLedgerAccountId" clearable filterable placeholder="筛选账号">
+          <el-option
+            v-for="account in store.accounts"
+            :key="account.id"
+            :label="`${account.display_name} (${account.username})`"
+            :value="account.id"
+          />
+        </el-select>
+        <el-select v-model="visibleFilters.biz_type">
+          <el-option label="全部业务" value="all" />
+          <el-option label="充值入账" value="recharge" />
+          <el-option label="余额扣费" value="consume_balance" />
+          <el-option label="授信生成" value="credit_generate" />
+          <el-option label="授信结清" value="credit_settlement" />
+        </el-select>
+        <el-select v-model="visibleFilters.direction">
+          <el-option label="全部方向" value="all" />
+          <el-option label="入账" value="in" />
+          <el-option label="扣减" value="out" />
+        </el-select>
+        <el-input v-model.trim="visibleFilters.keyword" clearable placeholder="搜索账号/备注/批次" />
+        <div class="mobile-action-bar">
+          <el-button @click="visibleFiltersVisible = false">关闭</el-button>
+          <el-button @click="loadVisibleLedgers()">刷新</el-button>
+          <el-button type="primary" @click="applyVisibleFilters">应用筛选</el-button>
+        </div>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -199,19 +317,22 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { FundLedger } from '@/api/admin'
 import {
-  adminCreateRechargeRequest,
+  adminCreateRechargeEntry,
   adminListSelfFundLedgers,
   adminListVisibleFundLedgers,
 } from '@/api/admin'
 import { useAdminConsoleStore } from '@/stores/adminConsole'
 import { centsToYuan, formatDateTime, ledgerBizLabel, yuanToCents } from '@/utils/adminConsole'
+import { useResponsive } from '@/composables/useResponsive'
 
 const store = useAdminConsoleStore()
+const { isCompact } = useResponsive()
 const canCreateRecharge = computed(() => store.hasPermission('agents.write'))
-const canReadApprovals = computed(() => store.hasPermission('approvals.read'))
 const submittingRecharge = ref(false)
 const visibleLedgerAccountId = ref<number | undefined>(undefined)
 const lastActionMessage = ref('')
+const selfFiltersVisible = ref(false)
+const visibleFiltersVisible = ref(false)
 const selfLedgerRows = ref<FundLedger[]>([])
 const visibleLedgerRows = ref<FundLedger[]>([])
 const selfTotal = ref(0)
@@ -249,7 +370,9 @@ const visibleFilters = reactive({
 
 const rechargeTargets = computed(() => {
   if (!store.profile) return []
-  return store.accounts.length ? store.accounts : [store.profile.account]
+  if (!store.accounts.length) return [store.profile.account]
+  if (store.hasRole('super_admin')) return store.accounts
+  return store.accounts.filter((account) => account.parent_account_id === store.profile?.account.id)
 })
 
 const selfInRows = computed(() => selfLedgerRows.value.filter((row) => row.direction === 'in'))
@@ -317,9 +440,19 @@ const handleVisibleSizeChange = async () => {
   await loadVisibleLedgers()
 }
 
+const applySelfFilters = async () => {
+  selfFiltersVisible.value = false
+  await loadSelfLedgers(true)
+}
+
+const applyVisibleFilters = async () => {
+  visibleFiltersVisible.value = false
+  await loadVisibleLedgers(true)
+}
+
 const submitRecharge = async () => {
   if (!canCreateRecharge.value) {
-    ElMessage.warning('当前账号无权发起充值审批')
+    ElMessage.warning('当前账号无权直接充值入账')
     return
   }
   if (!rechargeForm.subject_account_id || rechargeForm.amount_yuan <= 0) {
@@ -328,20 +461,21 @@ const submitRecharge = async () => {
   }
   submittingRecharge.value = true
   try {
-    const response = await adminCreateRechargeRequest({
+    const amountCents = yuanToCents(rechargeForm.amount_yuan)
+    const response = await adminCreateRechargeEntry({
       subject_account_id: rechargeForm.subject_account_id,
-      amount_cents: yuanToCents(rechargeForm.amount_yuan),
-      payload_json: rechargeForm.remark ? { remark: rechargeForm.remark } : undefined,
+      amount_cents: amountCents,
+      remark: rechargeForm.remark || undefined,
     })
     rechargeForm.amount_yuan = 0
     rechargeForm.remark = ''
-    const tasks: Promise<unknown>[] = [loadSelfLedgers(true), loadVisibleLedgers(true)]
-    if (canReadApprovals.value) {
-      tasks.push(store.loadApprovalRequests({ status: 'pending', limit: 100 }))
+    const tasks: Promise<unknown>[] = [store.loadProfile(), loadSelfLedgers(true), loadVisibleLedgers(true)]
+    if (canCreateRecharge.value || store.canViewVisibleLedgers) {
+      tasks.push(store.loadAccounts())
     }
     await Promise.all(tasks)
-    lastActionMessage.value = `充值审批 ${response.data.request_id} 已发起，等待上级确认入账`
-    ElMessage.success('充值审批已发起')
+    lastActionMessage.value = `${response.data.display_name} 已直接充值入账 ¥${centsToYuan(amountCents)}`
+    ElMessage.success('充值已直接入账')
   } finally {
     submittingRecharge.value = false
   }
@@ -353,12 +487,9 @@ onMounted(async () => {
   if (canCreateRecharge.value || store.canViewVisibleLedgers) {
     tasks.push(store.loadAccounts())
   }
-  if (canReadApprovals.value) {
-    tasks.push(store.loadApprovalRequests({ status: 'pending', limit: 100 }))
-  }
   await Promise.all(tasks)
   if (store.profile) {
-    rechargeForm.subject_account_id = store.profile.account.id
+    rechargeForm.subject_account_id = rechargeTargets.value[0]?.id || store.profile.account.id
   }
 })
 </script>
@@ -401,6 +532,7 @@ onMounted(async () => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .card-tip {

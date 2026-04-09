@@ -1,9 +1,9 @@
 <template>
-  <div class="page-stack">
+  <div class="page-stack" :class="{ 'single-pane-mode': singlePaneMode }">
     <el-alert v-if="lastActionMessage" :title="lastActionMessage" type="success" :closable="true" @close="lastActionMessage = ''" />
 
     <el-tabs v-model="activeTab" type="border-card">
-      <el-tab-pane label="卡密规格" name="plans">
+      <el-tab-pane v-if="props.mode === 'all' || props.mode === 'plans'" label="卡密规格" name="plans">
         <div class="page-stack">
           <el-card shadow="hover">
             <template #header>
@@ -63,7 +63,7 @@
         </div>
       </el-tab-pane>
 
-      <el-tab-pane label="卡密总览" name="cards">
+      <el-tab-pane v-if="props.mode === 'all'" label="卡密总览" name="cards">
         <div class="page-stack">
           <el-card shadow="hover">
             <template #header>
@@ -143,7 +143,7 @@
         </div>
       </el-tab-pane>
 
-      <el-tab-pane label="历史授权" name="slots">
+      <el-tab-pane v-if="props.mode === 'all' || props.mode === 'slots'" label="历史授权" name="slots">
         <el-card shadow="hover">
           <template #header>
             <div class="card-header">
@@ -160,13 +160,17 @@
             </div>
           </template>
           <el-table :data="licenseSlots" stripe>
-            <el-table-column prop="authorization_id" label="授权单号" min-width="180" />
             <el-table-column prop="owner_username" label="所属用户" width="140" />
             <el-table-column prop="status" label="状态" width="120" />
             <el-table-column prop="current_account_username" label="当前账号" width="140" />
             <el-table-column prop="total_duration_days" label="总天数" width="100" />
             <el-table-column label="到期时间" min-width="160">
               <template #default="{ row }">{{ formatDateTime(row.end_at) }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="120" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="openSlotDetail(row)">查看详情</el-button>
+              </template>
             </el-table-column>
           </el-table>
           <div class="pagination-wrap">
@@ -185,7 +189,7 @@
       </el-tab-pane>
     </el-tabs>
 
-    <el-dialog v-model="planEditor.visible" title="编辑卡密规格" width="520px">
+    <ResponsiveFormLayer v-model="planEditor.visible" title="编辑卡密规格" width="520px">
       <el-form label-position="top">
         <el-form-item label="名称">
           <el-input v-model.trim="planEditor.display_name" :disabled="!canWrite" />
@@ -210,7 +214,21 @@
         <el-button @click="planEditor.visible = false">取消</el-button>
         <el-button v-if="canWrite" type="primary" :loading="savingPlan" @click="savePlan">保存</el-button>
       </template>
-    </el-dialog>
+    </ResponsiveFormLayer>
+
+    <el-drawer v-model="slotDetailVisible" title="授权详情" size="420px" append-to-body>
+      <div v-if="slotDetail" class="page-stack">
+        <el-descriptions :column="1" border>
+          <el-descriptions-item label="授权单号">{{ slotDetail.authorization_id }}</el-descriptions-item>
+          <el-descriptions-item label="所属用户">{{ slotDetail.owner_username || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="当前账号">{{ slotDetail.current_account_username || slotDetail.current_account_phone || '未绑定 TG 账号' }}</el-descriptions-item>
+          <el-descriptions-item label="状态">{{ slotDetail.status }}</el-descriptions-item>
+          <el-descriptions-item label="总天数">{{ slotDetail.total_duration_days }}</el-descriptions-item>
+          <el-descriptions-item label="开始时间">{{ formatDateTime(slotDetail.start_at) }}</el-descriptions-item>
+          <el-descriptions-item label="到期时间">{{ formatDateTime(slotDetail.end_at) }}</el-descriptions-item>
+        </el-descriptions>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -232,16 +250,29 @@ import {
 } from '@/api/admin'
 import { useAdminConsoleStore } from '@/stores/adminConsole'
 import { centsToYuan, formatDateTime, yuanToCents } from '@/utils/adminConsole'
+import ResponsiveFormLayer from '@/components/responsive/ResponsiveFormLayer.vue'
+
+const props = withDefaults(
+  defineProps<{
+    mode?: 'all' | 'plans' | 'slots'
+  }>(),
+  {
+    mode: 'all',
+  },
+)
 
 const store = useAdminConsoleStore()
 const canWrite = computed(() => store.hasPermission('legacy_cards.write'))
 const canExport = computed(() => store.hasPermission('legacy_cards.export'))
-const activeTab = ref('plans')
+const activeTab = ref(props.mode === 'slots' ? 'slots' : 'plans')
+const singlePaneMode = computed(() => props.mode !== 'all')
 const plans = ref<AgentPlan[]>([])
 const licenseSlots = ref<LicenseAuthorization[]>([])
 const cards = ref<LicenseCardsPageData>({ items: [], total: 0, limit: 50, offset: 0 })
 const slotTotal = ref(0)
 const lastActionMessage = ref('')
+const slotDetailVisible = ref(false)
+const slotDetail = ref<LicenseAuthorization | null>(null)
 
 const creatingPlan = ref(false)
 const savingPlan = ref(false)
@@ -333,6 +364,11 @@ const loadSlots = async (resetPage = false) => {
     slotPagination.currentPage -= 1
     await loadSlots()
   }
+}
+
+const openSlotDetail = (row: LicenseAuthorization) => {
+  slotDetail.value = row
+  slotDetailVisible.value = true
 }
 
 const loadData = async () => {
@@ -469,6 +505,10 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   gap: 20px;
+}
+
+:deep(.single-pane-mode .el-tabs__header) {
+  display: none;
 }
 
 .card-header {

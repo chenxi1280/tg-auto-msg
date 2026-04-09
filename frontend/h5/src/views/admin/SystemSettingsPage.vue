@@ -141,4 +141,16 @@ onMounted(async () => {
   align-items: center;
   justify-content: space-between;
 }
+
+@media (max-width: 768px) {
+  .page-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .card-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+}
 </style>
