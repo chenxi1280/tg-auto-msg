@@ -8,6 +8,7 @@ from io import BytesIO
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 from loguru import logger
@@ -26,6 +27,7 @@ from backend.database.schema.models import (
     AppSetting,
     PricingPlan,
     Proxy,
+    TaskLog,
     TelegramDeveloperApp,
     User,
     UserAuthorization,
@@ -37,6 +39,7 @@ from backend.h5_backend.services.licensing.service import (
     get_authorization_overview,
     list_user_authorizations,
 )
+from backend.config.core.settings import settings
 
 
 CARD_ALPHABET = string.ascii_uppercase + string.digits
@@ -579,6 +582,58 @@ class AdminLicenseService:
         result = await self.get_bot_notice_settings()
         result["refresh_summary"] = refresh_summary
         return result
+
+    async def get_today_system_stats(self) -> Dict[str, Any]:
+        timezone_name = settings.timezone or "Asia/Shanghai"
+        now = datetime.now(ZoneInfo(timezone_name))
+        start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
+        end_of_day = (now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)).replace(tzinfo=None)
+
+        async with get_async_session() as session:
+            sent_messages = int(
+                (
+                    await session.execute(
+                        select(func.count(TaskLog.id)).where(
+                            TaskLog.result == "success",
+                            TaskLog.send_at >= start_of_day,
+                            TaskLog.send_at < end_of_day,
+                        )
+                    )
+                ).scalar_one()
+                or 0
+            )
+            bound_cards = int(
+                (
+                    await session.execute(
+                        select(func.count(ActivationCard.id)).where(
+                            ActivationCard.is_used.is_(True),
+                            ActivationCard.used_at.is_not(None),
+                            ActivationCard.used_at >= start_of_day,
+                            ActivationCard.used_at < end_of_day,
+                        )
+                    )
+                ).scalar_one()
+                or 0
+            )
+            new_users = int(
+                (
+                    await session.execute(
+                        select(func.count(User.id)).where(
+                            User.created_at >= start_of_day,
+                            User.created_at < end_of_day,
+                        )
+                    )
+                ).scalar_one()
+                or 0
+            )
+
+        return {
+            "date": now.date().isoformat(),
+            "timezone": timezone_name,
+            "today_sent_messages": sent_messages,
+            "today_bound_cards": bound_cards,
+            "today_new_users": new_users,
+        }
 
     async def list_developer_apps(
         self,

@@ -128,6 +128,14 @@ async def get_bot_notice_settings(
     return {"success": True, "data": await service.get_bot_notice_settings()}
 
 
+@router.get("/api/admin/system/stats/today")
+async def get_today_system_stats(
+    current_admin: AdminAccount = Depends(require_admin_permissions("system.stats.read")),
+):
+    service = get_admin_license_service()
+    return {"success": True, "data": await service.get_today_system_stats()}
+
+
 @router.put("/api/admin/system/bot-notice")
 async def update_bot_notice_settings(
     payload: UpdateBotNoticeSettingsRequest,

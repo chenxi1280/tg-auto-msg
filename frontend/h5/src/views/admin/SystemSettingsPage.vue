@@ -35,6 +35,12 @@
           </div>
         </template>
         <el-form label-position="top">
+          <el-alert
+            title="保存后会自动刷新已关联用户的公告，并尝试置顶。"
+            type="info"
+            :closable="false"
+            class="notice-tip"
+          />
           <el-form-item label="启用公告">
             <el-switch v-model="noticeForm.enabled" :disabled="!canUpdate" />
           </el-form-item>
@@ -111,8 +117,15 @@ const savePurchase = async () => {
 const saveNotice = async () => {
   savingNotice.value = true
   try {
-    await adminUpdateBotNoticeSettings({ ...noticeForm })
-    ElMessage.success('公告栏配置已保存')
+    const response = await adminUpdateBotNoticeSettings({ ...noticeForm })
+    const summary = response.data.refresh_summary
+    if (summary) {
+      ElMessage.success(
+        `公告栏配置已保存，已刷新 ${summary.updated ?? 0} 个用户，置顶失败 ${summary.pin_failed_users ?? 0} 个`,
+      )
+    } else {
+      ElMessage.success('公告栏配置已保存')
+    }
   } finally {
     savingNotice.value = false
   }
@@ -140,6 +153,10 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.notice-tip {
+  margin-bottom: 16px;
 }
 
 @media (max-width: 768px) {

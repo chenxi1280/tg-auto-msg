@@ -592,6 +592,14 @@ class AdminPanelService:
         self._ensure_balance_available(operator, amount_cents)
         operator.balance_cents = int(operator.balance_cents or 0) - int(amount_cents or 0)
 
+    @staticmethod
+    def _split_recharge_allocation(*, amount_cents: int, credit_used_cents: int) -> Tuple[int, int]:
+        amount = max(0, int(amount_cents or 0))
+        credit_used = max(0, int(credit_used_cents or 0))
+        repay_credit_amount = min(amount, credit_used)
+        top_up_balance_amount = amount - repay_credit_amount
+        return repay_credit_amount, top_up_balance_amount
+
     def _apply_credit_generation(
         self,
         session: Any,
@@ -718,6 +726,51 @@ class AdminPanelService:
                     remark="总代授信批次结算完成，冲减平台侧欠款",
                 )
             )
+
+    async def _auto_settle_credit_batches_for_recharge(
+        self,
+        session: Any,
+        *,
+        subject: AdminAccount,
+        operator: AdminAccount,
+        amount_cents: int,
+    ) -> Tuple[int, List[str]]:
+        remaining = max(0, int(amount_cents or 0))
+        if remaining <= 0:
+            return 0, []
+
+        pending_batches = (
+            await session.execute(
+                select(CardBatch)
+                .where(
+                    CardBatch.owner_account_id == int(subject.id),
+                    CardBatch.current_liability_account_id == int(subject.id),
+                    CardBatch.payment_status == "credit",
+                    CardBatch.settlement_status == "pending",
+                )
+                .order_by(CardBatch.created_at.asc(), CardBatch.batch_id.asc())
+            )
+        ).scalars().all()
+
+        settled_amount = 0
+        settled_batch_ids: List[str] = []
+        for batch in pending_batches:
+            batch_amount = max(0, int(batch.total_amount_cents or 0))
+            if batch_amount <= 0 or remaining < batch_amount:
+                continue
+            request_id = f"direct-recharge-settle-{uuid.uuid4().hex[:20]}"
+            await self._apply_settlement_for_batch(
+                session,
+                subject=subject,
+                batch=batch,
+                operator=operator,
+                request_id=request_id,
+            )
+            remaining -= batch_amount
+            settled_amount += batch_amount
+            settled_batch_ids.append(str(batch.batch_id))
+
+        return settled_amount, settled_batch_ids
 
     async def get_profile(self, current_admin: AdminAccount) -> Dict[str, Any]:
         async with get_async_session() as session:
@@ -1737,7 +1790,25 @@ class AdminPanelService:
             if operator.role_code != ROLE_SUPER_ADMIN and int(subject.parent_account_id or 0) != int(operator.id):
                 raise HTTPException(status_code=403, detail="只能为直系下级直接充值入账")
 
-            subject.balance_cents = int(subject.balance_cents or 0) + amount
+            settled_credit_amount, settled_batch_ids = await self._auto_settle_credit_batches_for_recharge(
+                session,
+                subject=subject,
+                operator=operator,
+                amount_cents=amount,
+            )
+            top_up_balance_amount = amount - settled_credit_amount
+            if top_up_balance_amount > 0:
+                subject.balance_cents = int(subject.balance_cents or 0) + top_up_balance_amount
+
+            split_remark_parts: List[str] = []
+            if settled_credit_amount > 0:
+                split_remark_parts.append(
+                    f"先结清授信批次 {settled_credit_amount / 100:.2f}"
+                    + (f"（{len(settled_batch_ids)} 批）" if settled_batch_ids else "")
+                )
+            if top_up_balance_amount > 0:
+                split_remark_parts.append(f"再补余额 {top_up_balance_amount / 100:.2f}")
+            split_remark = "；".join(split_remark_parts)
             session.add(
                 AgentFundLedger(
                     ledger_scope="platform" if operator.role_code == ROLE_SUPER_ADMIN else "channel",
@@ -1749,7 +1820,11 @@ class AdminPanelService:
                     balance_after_cents=int(subject.balance_cents or 0),
                     credit_used_after_cents=int(subject.credit_used_cents or 0),
                     operator_account_id=int(operator.id),
-                    remark=(remark or "").strip() or "后台直接充值入账",
+                    remark="；".join(
+                        part
+                        for part in [((remark or "").strip() or None), split_remark]
+                        if part
+                    ) or "后台直接充值入账",
                 )
             )
             await self._append_audit(
@@ -1758,7 +1833,13 @@ class AdminPanelService:
                 action="agent.direct_recharge",
                 target_type="admin_account",
                 target_id=str(subject.id),
-                detail={"amount_cents": amount, "remark": (remark or "").strip() or None},
+                detail={
+                    "amount_cents": amount,
+                    "credit_repaid_cents": settled_credit_amount,
+                    "settled_batch_ids": settled_batch_ids,
+                    "balance_topped_up_cents": top_up_balance_amount,
+                    "remark": (remark or "").strip() or None,
+                },
                 ip_address=ip_address,
             )
             await session.flush()

@@ -13,6 +13,8 @@ from loguru import logger
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from backend.config.core.settings import settings
+
 
 SQL_DIR = Path(__file__).resolve().parents[3] / "sql"
 MIGRATIONS_DIR = SQL_DIR / "migrations"
@@ -341,6 +343,10 @@ async def apply_pending_migrations(engine: AsyncEngine) -> Dict[str, int]:
         try:
             async with engine.begin() as conn:
                 await _ensure_schema_migrations_table(conn)
+                await conn.execute(
+                    text("SELECT set_config('app.province_code', :province_code, true)"),
+                    {"province_code": str(settings.province_code or "").strip()},
+                )
                 for stmt in migration.statements:
                     await conn.execute(text(stmt))
                     executed_count += 1
@@ -532,6 +538,10 @@ async def rollback_migrations(
         try:
             async with engine.begin() as conn:
                 await _ensure_schema_migrations_table(conn)
+                await conn.execute(
+                    text("SELECT set_config('app.province_code', :province_code, true)"),
+                    {"province_code": str(settings.province_code or "").strip()},
+                )
                 for stmt in statements:
                     await conn.execute(text(stmt))
                     executed += 1

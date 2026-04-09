@@ -251,7 +251,22 @@ export interface BotNoticeSettings {
   message_text: string
   target_url: string
   updated_at?: string | null
-  refresh_summary?: Record<string, any>
+  refresh_summary?: {
+    total_users?: number
+    updated?: number
+    failed?: number
+    pin_attempted_users?: number
+    pin_failed_users?: number
+    results?: Record<string, any>[]
+  }
+}
+
+export interface SystemTodayStats {
+  date: string
+  timezone: string
+  today_sent_messages: number
+  today_bound_cards: number
+  today_new_users: number
 }
 
 export interface DeveloperApp {
@@ -602,6 +617,9 @@ export const adminUpdateBotNoticeSettings = (payload: {
   target_url: string
 }): Promise<{ success: boolean; data: BotNoticeSettings }> =>
   adminApi.put('/admin/system/bot-notice', payload)
+
+export const adminGetTodaySystemStats = (): Promise<{ success: boolean; data: SystemTodayStats }> =>
+  adminApi.get('/admin/system/stats/today')
 
 export const adminListDeveloperApps = (params?: {
   search?: string

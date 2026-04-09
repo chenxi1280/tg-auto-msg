@@ -130,6 +130,7 @@ const menuItems = [
   { path: '/admin/audit', title: '审计日志', permissions: ['audit.read', 'audit.system.read'], group: 'main' },
   { path: '/admin/account-center', title: '账号中心', permissions: ['users.read', 'agents.read'], group: 'system' },
   { path: '/admin/license-plans', title: '卡密规格', permissions: ['legacy_cards.read'], group: 'system' },
+  { path: '/admin/system-stats', title: '数据统计', permissions: ['system.stats.read'], group: 'system' },
   { path: '/admin/system-settings', title: '系统配置', permissions: ['system.settings.read'], group: 'system' },
   { path: '/admin/developer-apps', title: '开发者应用', permissions: ['developer_apps.read'], group: 'system' },
   { path: '/admin/system-proxies', title: '系统代理', permissions: ['system_proxies.read'], group: 'system' },

@@ -169,6 +169,19 @@ class BotNoticeManager:
                 buttons=buttons,
             )
 
+    async def _pin_notice_message(self, tg_user_id: int, message_id: int) -> bool:
+        try:
+            await bot_client.pin_message(int(tg_user_id), int(message_id), notify=False)
+            return True
+        except Exception as exc:
+            logger.warning(
+                "公告消息置顶失败: tg_user_id={}, message_id={}, error={}",
+                tg_user_id,
+                message_id,
+                type(exc).__name__,
+            )
+            return False
+
     async def _edit_notice_message(
         self,
         tg_user_id: int,
@@ -239,6 +252,7 @@ class BotNoticeManager:
                 message_text=entry["message_text"],
                 target_url=entry["target_url"],
             )
+            pin_succeeded = await self._pin_notice_message(int(tg_user_id), int(message.id))
             await self._save_notice_state(
                 tg_user_id,
                 chat_id=int(tg_user_id),
@@ -255,6 +269,8 @@ class BotNoticeManager:
                 "tg_user_id": int(tg_user_id),
                 "message_id": int(message.id),
                 "notice_version": str(entry["notice_version"]),
+                "pin_attempted": True,
+                "pin_succeeded": pin_succeeded,
             }
 
         if old_message_id and str(state.get("notice_version") or "") == str(entry["notice_version"]):
@@ -276,6 +292,7 @@ class BotNoticeManager:
                 target_url=entry["target_url"],
             )
             if edited:
+                pin_succeeded = await self._pin_notice_message(int(tg_user_id), int(old_message_id))
                 await self._save_notice_state(
                     tg_user_id,
                     chat_id=int(tg_user_id),
@@ -287,6 +304,8 @@ class BotNoticeManager:
                     "tg_user_id": int(tg_user_id),
                     "message_id": old_message_id,
                     "notice_version": str(entry["notice_version"]),
+                    "pin_attempted": True,
+                    "pin_succeeded": pin_succeeded,
                 }
 
         message = await self._send_notice_message(
@@ -294,6 +313,7 @@ class BotNoticeManager:
             message_text=entry["message_text"],
             target_url=entry["target_url"],
         )
+        pin_succeeded = await self._pin_notice_message(int(tg_user_id), int(message.id))
         await self._save_notice_state(
             tg_user_id,
             chat_id=int(tg_user_id),
@@ -310,6 +330,8 @@ class BotNoticeManager:
             "tg_user_id": int(tg_user_id),
             "message_id": int(message.id),
             "notice_version": str(entry["notice_version"]),
+            "pin_attempted": True,
+            "pin_succeeded": pin_succeeded,
         }
 
     async def refresh_all_linked_users(self) -> dict[str, Any]:
@@ -331,6 +353,8 @@ class BotNoticeManager:
             "total_users": len(tg_user_ids),
             "updated": 0,
             "failed": 0,
+            "pin_attempted_users": 0,
+            "pin_failed_users": 0,
             "results": [],
         }
         for tg_user_id in tg_user_ids:
@@ -339,6 +363,10 @@ class BotNoticeManager:
                 summary["results"].append(result)
                 if result.get("status") != "noop":
                     summary["updated"] += 1
+                if result.get("pin_attempted"):
+                    summary["pin_attempted_users"] += 1
+                    if not result.get("pin_succeeded"):
+                        summary["pin_failed_users"] += 1
             except Exception as exc:
                 logger.exception("批量刷新公告失败: tg_user_id={}, error={}", tg_user_id, type(exc).__name__)
                 summary["failed"] += 1

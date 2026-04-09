@@ -139,6 +139,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '卡密规格', requiresAdminSession: true, permissions: ['legacy_cards.read'] }
       },
       {
+        path: 'system-stats',
+        name: 'AdminSystemStats',
+        component: () => import('@/views/admin/SystemStatsPage.vue'),
+        meta: { title: '数据统计', requiresAdminSession: true, permissions: ['system.stats.read'] }
+      },
+      {
         path: 'audit',
         name: 'AdminAudit',
         component: () => import('@/views/admin/AuditPage.vue'),
