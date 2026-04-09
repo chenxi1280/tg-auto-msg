@@ -38,7 +38,7 @@
               <el-option
                 v-for="account in accounts"
                 :key="account.account_id"
-                :label="account.username || account.phone || account.account_id"
+                :label="account.username || account.phone || '未命名账号'"
                 :value="account.account_id"
               />
             </el-select>
@@ -156,7 +156,7 @@
       <div v-if="!showEditor" class="list card">
         <h2>任务列表</h2>
         <div class="table-wrap">
-          <el-table :data="tasks" stripe v-loading="loadingTasks">
+          <el-table v-if="!isCompact" :data="tasks" stripe v-loading="loadingTasks">
             <el-table-column prop="title" label="任务名" min-width="260" show-overflow-tooltip />
             <el-table-column label="目标" min-width="280">
               <template #default="{ row }">
@@ -191,6 +191,36 @@
               </template>
             </el-table-column>
           </el-table>
+          <div v-else class="mobile-card-list" v-loading="loadingTasks">
+            <div v-for="row in tasks" :key="row.task_id" class="mobile-data-card">
+              <div class="mobile-data-card__header">
+                <div>
+                  <div class="mobile-data-card__title">{{ row.title }}</div>
+                  <div class="mobile-data-card__subtitle">{{ renderTaskTarget(row) }}</div>
+                </div>
+                <el-switch v-model="row.enabled" @change="handleTaskEnabledChange(row, $event)" />
+              </div>
+              <div class="mobile-data-card__grid">
+                <div class="mobile-data-card__row">
+                  <span class="mobile-data-card__label">优先级</span>
+                  <span class="mobile-data-card__value">{{ row.priority ?? 0 }}</span>
+                </div>
+                <div class="mobile-data-card__row">
+                  <span class="mobile-data-card__label">间隔/抖动</span>
+                  <span class="mobile-data-card__value">{{ row.repeat_interval_min }}m / {{ row.jitter_seconds }}s</span>
+                </div>
+                <div class="mobile-data-card__row">
+                  <span class="mobile-data-card__label">下次执行</span>
+                  <span class="mobile-data-card__value">{{ formatUnix(row.next_run_at) }}</span>
+                </div>
+              </div>
+              <div class="mobile-action-bar">
+                <el-button type="primary" plain @click="openTaskLogs(row.task_id)">发送记录</el-button>
+                <el-button type="primary" plain @click="startEdit(row)">编辑</el-button>
+                <el-button type="danger" plain @click="removeTask(row.task_id)">删除</el-button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -205,6 +235,7 @@ import { useAccountStore } from '@/stores/account'
 import { useUserStore } from '@/stores/user'
 import type { TaskItem, TaskDetail } from '@/api/task'
 import { createTask, deleteTask, getTask, getTasks, updateTask, uploadTaskMedia } from '@/api/task'
+import { useResponsive } from '@/composables/useResponsive'
 
 interface ResourceOption {
   peer_id: number
@@ -218,6 +249,7 @@ const accountStore = useAccountStore()
 const userStore = useUserStore()
 const route = useRoute()
 const router = useRouter()
+const { isCompact } = useResponsive()
 
 const tasks = ref<TaskItem[]>([])
 const resources = ref<ResourceOption[]>([])
@@ -267,7 +299,7 @@ const displayResourceName = (res: ResourceOption): string => {
   const title = (res.title || '').trim()
   if (title) return title
   if (res.username) return `@${res.username}`
-  return `ID:${res.peer_id}`
+  return '未命名资源'
 }
 
 const resourceLabel = (res: ResourceOption) => {
@@ -754,7 +786,11 @@ const renderTaskTarget = (task: TaskItem) => {
       .slice(0, 2)
       .map((peer) => {
         const meta = getPeerTypeMeta(peer.peer_type || '')
-        return `${meta.icon}${peer.peer_id}`
+        const matchedResource = resources.value.find(
+          (resource) => resource.peer_type === peer.peer_type && resource.peer_id === peer.peer_id,
+        )
+        const peerName = matchedResource ? displayResourceName(matchedResource) : meta.label
+        return `${meta.icon}${peerName}`
       })
       .join('、')
     const suffix = peers.length > 2 ? ` 等 ${peers.length} 个` : ` 共 ${peers.length} 个`
@@ -762,9 +798,12 @@ const renderTaskTarget = (task: TaskItem) => {
   }
   const singlePeer = peers.length === 1 ? peers[0] : null
   const peerType = singlePeer?.peer_type || task.target_peer_type || ''
-  const peerId = singlePeer?.peer_id ?? task.target_peer_id ?? task.chat_id ?? '-'
   const meta = getPeerTypeMeta(peerType)
-  return `${meta.icon} ${meta.label} (${peerId})`
+  const matchedResource = singlePeer
+    ? resources.value.find((resource) => resource.peer_type === singlePeer.peer_type && resource.peer_id === singlePeer.peer_id)
+    : null
+  const targetName = matchedResource ? displayResourceName(matchedResource) : meta.label
+  return `${meta.icon} ${targetName}`
 }
 
 onMounted(async () => {

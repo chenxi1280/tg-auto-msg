@@ -91,10 +91,6 @@
             <!-- 账号详情 -->
             <div class="account-details">
               <div class="detail-row">
-                <span class="label">账号 ID:</span>
-                <span class="value">{{ account.account_id.slice(0, 8) }}...</span>
-              </div>
-              <div class="detail-row">
                 <span class="label">消息发送:</span>
                 <span class="value">{{ account.messages_sent }} 条</span>
               </div>
@@ -214,13 +210,13 @@
       </div>
     </div>
 
-    <el-dialog v-model="renewDialog.visible" title="续费当前授权" width="420px">
-      <div v-if="renewDialog.account">
+    <ResponsiveFormLayer v-model="renewDialog.visible" title="续费当前授权" width="420px">
+        <div v-if="renewDialog.account">
         <p class="slot-dialog-hint">
           为当前账号对应的唯一授权追加新的卡密时长。
         </p>
         <div class="renew-target">
-          <strong>{{ renewDialog.account.username || renewDialog.account.phone || renewDialog.account.account_id }}</strong>
+          <strong>{{ renewDialog.account.username || renewDialog.account.phone || '未命名账号' }}</strong>
           <span>到期：{{ formatDateTime(renewDialog.account.authorization_end_at || '') }}</span>
         </div>
         <el-input
@@ -235,7 +231,7 @@
           确认续费
         </el-button>
       </template>
-    </el-dialog>
+    </ResponsiveFormLayer>
   </div>
 </template>
 
@@ -250,6 +246,7 @@ import * as authApi from '@/api/auth'
 import { renewAccountAuthorization, syncAllAccountResources, type Account } from '@/api/account'
 import { createBotBindLink } from '@/api/login'
 import { getLicenseStatus } from '@/api/me'
+import ResponsiveFormLayer from '@/components/responsive/ResponsiveFormLayer.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -346,7 +343,7 @@ const refreshAccounts = async () => {
 }
 
 const reloginAccount = (account: Account) => {
-  ElMessage.warning(`账号 ${account.username || account.phone || account.account_id} 当前离线，请重新绑定`)
+  ElMessage.warning(`账号 ${account.username || account.phone || '未命名账号'} 当前离线，请重新绑定`)
   router.push({
     path: '/bind-tg',
     query: {

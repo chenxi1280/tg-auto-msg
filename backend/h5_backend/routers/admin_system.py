@@ -128,6 +128,14 @@ async def get_bot_notice_settings(
     return {"success": True, "data": await service.get_bot_notice_settings()}
 
 
+@router.get("/api/admin/system/stats/today")
+async def get_today_system_stats(
+    current_admin: AdminAccount = Depends(require_admin_permissions("system.stats.read")),
+):
+    service = get_admin_license_service()
+    return {"success": True, "data": await service.get_today_system_stats()}
+
+
 @router.put("/api/admin/system/bot-notice")
 async def update_bot_notice_settings(
     payload: UpdateBotNoticeSettingsRequest,
@@ -427,6 +435,10 @@ async def generate_license_cards(
     request: Request,
     current_admin: AdminAccount = Depends(require_admin_permissions("legacy_cards.write")),
 ):
+    if current_admin.role_code != "super_admin":
+        raise HTTPException(status_code=403, detail="旧系统卡密只允许超管生成")
+    owner_account_id = int(current_admin.id)
+    root_master_account_id = int(current_admin.id if current_admin.role_code == "super_admin" else (current_admin.root_master_account_id or current_admin.id))
     service = get_admin_license_service()
     actor = _actor(current_admin)
     ip_address = _client_ip(request)
@@ -435,6 +447,11 @@ async def generate_license_cards(
             plan_code=payload.plan_code,
             valid_days=payload.valid_days,
             prefix=payload.prefix,
+            creator_account_id=owner_account_id,
+            owner_account_id=owner_account_id,
+            root_master_account_id=root_master_account_id,
+            direct_parent_account_id=None,
+            card_source_type="legacy",
             actor=actor,
             ip_address=ip_address,
         )
@@ -447,6 +464,11 @@ async def generate_license_cards(
         quantity=payload.quantity,
         expires_at=expires_at,
         prefix=payload.prefix,
+        creator_account_id=owner_account_id,
+        owner_account_id=owner_account_id,
+        root_master_account_id=root_master_account_id,
+        direct_parent_account_id=None,
+        card_source_type="legacy",
         actor=actor,
         ip_address=ip_address,
     )

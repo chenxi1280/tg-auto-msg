@@ -57,6 +57,7 @@ from backend.h5_backend.services.licensing.service import (
 )
 from backend.h5_backend.services.login.service import get_login_service
 from backend.h5_backend.services.me.service import get_me_service
+from backend.bot.ui.messages import BOT_HELP_MANUAL
 from backend.utils.security.crypto import decrypt_string_session, encrypt_string_session, get_crypto_manager
 
 _PENDING_LOGIN_TASKS: dict[int, asyncio.Task] = {}
@@ -792,24 +793,7 @@ class BotOnboardingService:
         await _send_or_edit(event, text, buttons=buttons)
 
     async def show_help(self, event, tg_user_id: int) -> None:
-        text = (
-            "📖 **全球通使用帮助**\n\n"
-            "0. 查看公告栏\n"
-            "点击「📢 公告栏」可查看管理员配置的最新公告、活动说明和使用提示。\n\n"
-            "1. 系统账号绑定\n"
-            "如果你已经在 Web 注册，可在 Web 首页点击“系统账号绑定到 TG Bot”，将当前系统账号绑定到这个 Bot。\n\n"
-            "2. 绑定 TG 账号\n"
-            "点击「📱 绑定账号」后，按提示输入手机号和验证码；如果账号开启了 Telegram 二步验证，继续输入二步密码即可。\n\n"
-            "3. 创建任务\n"
-            "绑定账号成功后，可点击「📝 创建任务」或发送 `/newtask` 进入任务创建流程。\n\n"
-            "4. 常用命令\n"
-            "`/start` 开始使用\n"
-            "`/help` 查看帮助\n"
-            "`/login` 绑定账号\n"
-            "`/newtask` 创建任务\n"
-            "`/notice` 查看公告栏\n\n"
-            "下一步：请选择下方操作继续。"
-        )
+        text = BOT_HELP_MANUAL
         buttons = []
         notice = await get_me_service().get_public_notice_entry()
         if notice.get("enabled") and notice.get("message_text") and is_valid_button_url((notice.get("target_url") or "").strip()):

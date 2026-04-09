@@ -6,7 +6,8 @@
 
 - `WORKSPACE_CONVENTIONS.md`：仓库整理与落位约定
 - `setup/QUICKSTART.md`：本地开发快速启动
-- `setup/BOT_USAGE.md`：Bot 使用说明与公告栏配置
+- `setup/BOT_USAGE.md`：TG Bot 用户操作手册
+- `setup/BOT_ADMIN_NOTICE.md`：Bot 公告栏管理员说明
 - `setup/PROJECT_STRUCTURE.md`：仓库结构与主要入口
 - `setup/MIGRATIONS.md`：数据库迁移说明
 - `deployment/DEPLOYMENT.md`：生产部署与运维流程

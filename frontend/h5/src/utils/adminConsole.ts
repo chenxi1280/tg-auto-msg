@@ -10,17 +10,16 @@ export const SETTLEMENT_LABELS: Record<string, string> = {
   hybrid: '混合',
 }
 
-export const APPROVAL_LABELS: Record<string, string> = {
-  recharge: '充值入账',
-  settlement: '授信结算',
-  credit_adjust: '额度调整',
-  batch_purchase: '批次申请（历史）',
-}
-
 export const LEDGER_LABELS: Record<string, string> = {
   recharge: '充值入账',
   consume_balance: '余额扣费',
   credit_generate: '授信生成',
+  credit_settlement: '授信结清',
+}
+
+export const OPERATION_LOG_LABELS: Record<string, string> = {
+  recharge: '充值入账',
+  card_generate: '卡密生成',
   credit_settlement: '授信结清',
 }
 
@@ -39,6 +38,6 @@ export const roleLabel = (role?: string | null): string => ROLE_LABELS[role || '
 
 export const settlementLabel = (value?: string | null): string => SETTLEMENT_LABELS[value || ''] || value || '-'
 
-export const approvalLabel = (value?: string | null): string => APPROVAL_LABELS[value || ''] || value || '-'
-
 export const ledgerBizLabel = (value?: string | null): string => LEDGER_LABELS[value || ''] || value || '-'
+
+export const operationLogLabel = (value?: string | null): string => OPERATION_LOG_LABELS[value || ''] || value || '-'

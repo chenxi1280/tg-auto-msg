@@ -6,11 +6,11 @@
         <p class="eyebrow">Province Admin Console</p>
         <h1>省级总代与多级代理后台</h1>
         <p class="desc">
-          使用后台账号登录，进入代理管理、额度配置、卡密生成、审批与审计中心。
+          使用后台账号登录，进入账号中心、卡密中心、额度配置与审计中心。
         </p>
         <ul class="feature-list">
           <li>支持 `super_admin`、`master_agent`、`sub_agent`</li>
-          <li>支持 TG 绑定、H5/TG 双通道审批</li>
+          <li>支持 TG 绑定与统一后台运营管理</li>
           <li>支持卡密批次、Excel 导出与 10 条内快速复制</li>
         </ul>
       </section>

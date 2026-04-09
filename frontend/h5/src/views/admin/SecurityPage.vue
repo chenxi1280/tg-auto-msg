@@ -229,4 +229,26 @@ onMounted(async () => {
   flex-wrap: wrap;
   gap: 8px;
 }
+
+@media (max-width: 768px) {
+  .page-grid {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .card-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .bind-actions {
+    flex-direction: column;
+  }
+
+  .bind-actions :deep(.el-button),
+  .danger-action {
+    width: 100%;
+  }
+}
 </style>

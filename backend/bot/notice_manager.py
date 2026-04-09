@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 from loguru import logger
 from sqlalchemy import select
+from telethon import Button
 from telethon.errors import MessageNotModifiedError
 
 from backend.bot.client_runtime.manager import bot_client
@@ -38,6 +39,13 @@ class BotNoticeManager:
         if message_text and target_url:
             return f"{message_text}\n\n{target_url}"
         return message_text or target_url
+
+    @staticmethod
+    def _build_notice_buttons() -> list[list[Any]]:
+        return [
+            [Button.inline("📖 帮助", data="bot_help"), Button.inline("📱 绑定账号", data="bot_login_account")],
+            [Button.inline("🏠 返回主菜单", data="bot_home")],
+        ]
 
     async def get_notice_entry(self) -> dict[str, Any]:
         raw = await get_me_service().get_public_notice_entry()
@@ -142,12 +150,14 @@ class BotNoticeManager:
 
     async def _send_notice_message(self, tg_user_id: int, *, message_text: str, target_url: str):
         text = self._render_notice_text(message_text=message_text, target_url=target_url)
+        buttons = self._build_notice_buttons()
         try:
             return await bot_client.send_message(
                 int(tg_user_id),
                 text,
                 parse_mode="html",
                 link_preview=True,
+                buttons=buttons,
             )
         except Exception as exc:
             logger.warning("公告消息按 HTML 发送失败，回退纯文本: tg_user_id={}, error={}", tg_user_id, type(exc).__name__)
@@ -156,7 +166,21 @@ class BotNoticeManager:
                 text,
                 parse_mode=None,
                 link_preview=True,
+                buttons=buttons,
             )
+
+    async def _pin_notice_message(self, tg_user_id: int, message_id: int) -> bool:
+        try:
+            await bot_client.pin_message(int(tg_user_id), int(message_id), notify=False)
+            return True
+        except Exception as exc:
+            logger.warning(
+                "公告消息置顶失败: tg_user_id={}, message_id={}, error={}",
+                tg_user_id,
+                message_id,
+                type(exc).__name__,
+            )
+            return False
 
     async def _edit_notice_message(
         self,
@@ -167,6 +191,7 @@ class BotNoticeManager:
         target_url: str,
     ) -> bool:
         text = self._render_notice_text(message_text=message_text, target_url=target_url)
+        buttons = self._build_notice_buttons()
         try:
             await bot_client.edit_message(
                 int(tg_user_id),
@@ -174,6 +199,7 @@ class BotNoticeManager:
                 text=text,
                 parse_mode="html",
                 link_preview=True,
+                buttons=buttons,
             )
             return True
         except MessageNotModifiedError:
@@ -192,6 +218,7 @@ class BotNoticeManager:
                 text=text,
                 parse_mode=None,
                 link_preview=True,
+                buttons=buttons,
             )
             return True
         except MessageNotModifiedError:
@@ -225,6 +252,7 @@ class BotNoticeManager:
                 message_text=entry["message_text"],
                 target_url=entry["target_url"],
             )
+            pin_succeeded = await self._pin_notice_message(int(tg_user_id), int(message.id))
             await self._save_notice_state(
                 tg_user_id,
                 chat_id=int(tg_user_id),
@@ -241,6 +269,8 @@ class BotNoticeManager:
                 "tg_user_id": int(tg_user_id),
                 "message_id": int(message.id),
                 "notice_version": str(entry["notice_version"]),
+                "pin_attempted": True,
+                "pin_succeeded": pin_succeeded,
             }
 
         if old_message_id and str(state.get("notice_version") or "") == str(entry["notice_version"]):
@@ -262,6 +292,7 @@ class BotNoticeManager:
                 target_url=entry["target_url"],
             )
             if edited:
+                pin_succeeded = await self._pin_notice_message(int(tg_user_id), int(old_message_id))
                 await self._save_notice_state(
                     tg_user_id,
                     chat_id=int(tg_user_id),
@@ -273,6 +304,8 @@ class BotNoticeManager:
                     "tg_user_id": int(tg_user_id),
                     "message_id": old_message_id,
                     "notice_version": str(entry["notice_version"]),
+                    "pin_attempted": True,
+                    "pin_succeeded": pin_succeeded,
                 }
 
         message = await self._send_notice_message(
@@ -280,6 +313,7 @@ class BotNoticeManager:
             message_text=entry["message_text"],
             target_url=entry["target_url"],
         )
+        pin_succeeded = await self._pin_notice_message(int(tg_user_id), int(message.id))
         await self._save_notice_state(
             tg_user_id,
             chat_id=int(tg_user_id),
@@ -296,6 +330,8 @@ class BotNoticeManager:
             "tg_user_id": int(tg_user_id),
             "message_id": int(message.id),
             "notice_version": str(entry["notice_version"]),
+            "pin_attempted": True,
+            "pin_succeeded": pin_succeeded,
         }
 
     async def refresh_all_linked_users(self) -> dict[str, Any]:
@@ -317,6 +353,8 @@ class BotNoticeManager:
             "total_users": len(tg_user_ids),
             "updated": 0,
             "failed": 0,
+            "pin_attempted_users": 0,
+            "pin_failed_users": 0,
             "results": [],
         }
         for tg_user_id in tg_user_ids:
@@ -325,6 +363,10 @@ class BotNoticeManager:
                 summary["results"].append(result)
                 if result.get("status") != "noop":
                     summary["updated"] += 1
+                if result.get("pin_attempted"):
+                    summary["pin_attempted_users"] += 1
+                    if not result.get("pin_succeeded"):
+                        summary["pin_failed_users"] += 1
             except Exception as exc:
                 logger.exception("批量刷新公告失败: tg_user_id={}, error={}", tg_user_id, type(exc).__name__)
                 summary["failed"] += 1

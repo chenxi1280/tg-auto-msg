@@ -24,7 +24,7 @@
       </section>
 
       <section class="card table-card">
-        <el-table :data="logs" stripe v-loading="loading" empty-text="暂无发送记录">
+        <el-table v-if="!isCompact" :data="logs" stripe v-loading="loading" empty-text="暂无发送记录">
           <el-table-column prop="send_at" label="发送时间" min-width="180">
             <template #default="{ row }">
               {{ formatTime(row.send_at) }}
@@ -41,6 +41,29 @@
           <el-table-column prop="error_code" label="错误码" width="140" show-overflow-tooltip />
           <el-table-column prop="error_message" label="错误信息" min-width="260" show-overflow-tooltip />
         </el-table>
+        <div v-else class="mobile-card-list" v-loading="loading">
+          <div v-for="row in logs" :key="`${row.send_at}-${row.message_id}`" class="mobile-data-card">
+            <div class="mobile-data-card__header">
+              <div>
+                <div class="mobile-data-card__title">{{ formatTime(row.send_at) }}</div>
+                <div class="mobile-data-card__subtitle">消息 ID {{ row.message_id || '-' }}</div>
+              </div>
+              <el-tag :type="row.result === 'success' ? 'success' : 'danger'">
+                {{ row.result === 'success' ? '成功' : '失败' }}
+              </el-tag>
+            </div>
+            <div class="mobile-data-card__grid">
+              <div class="mobile-data-card__row">
+                <span class="mobile-data-card__label">错误码</span>
+                <span class="mobile-data-card__value">{{ row.error_code || '-' }}</span>
+              </div>
+              <div class="mobile-data-card__row">
+                <span class="mobile-data-card__label">错误信息</span>
+                <span class="mobile-data-card__value">{{ row.error_message || '-' }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
     </div>
   </div>
@@ -52,8 +75,10 @@ import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import type { TaskLogItem } from '@/api/task'
 import { getTask, getTaskLogs } from '@/api/task'
+import { useResponsive } from '@/composables/useResponsive'
 
 const route = useRoute()
+const { isCompact } = useResponsive()
 const taskId = String(route.params.taskId || '')
 
 const taskTitle = ref('')

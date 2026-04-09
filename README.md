@@ -48,7 +48,8 @@
 
 - 文档索引：`docs/README.md`
 - 快速上手：`docs/setup/QUICKSTART.md`
-- Bot 使用说明：`docs/setup/BOT_USAGE.md`
+- Bot 用户手册：`docs/setup/BOT_USAGE.md`
+- Bot 管理员说明：`docs/setup/BOT_ADMIN_NOTICE.md`
 - 项目结构：`docs/setup/PROJECT_STRUCTURE.md`
 - 数据库迁移：`docs/setup/MIGRATIONS.md`
 - 生产部署：`docs/deployment/DEPLOYMENT.md`

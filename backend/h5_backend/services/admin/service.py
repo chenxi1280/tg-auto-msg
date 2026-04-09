@@ -8,6 +8,7 @@ from io import BytesIO
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 from loguru import logger
@@ -26,6 +27,7 @@ from backend.database.schema.models import (
     AppSetting,
     PricingPlan,
     Proxy,
+    TaskLog,
     TelegramDeveloperApp,
     User,
     UserAuthorization,
@@ -37,6 +39,7 @@ from backend.h5_backend.services.licensing.service import (
     get_authorization_overview,
     list_user_authorizations,
 )
+from backend.config.core.settings import settings
 
 
 CARD_ALPHABET = string.ascii_uppercase + string.digits
@@ -166,7 +169,7 @@ class AdminLicenseService:
         }
 
     @staticmethod
-    def _serialize_proxy(proxy: Proxy) -> Dict[str, Any]:
+    def _serialize_proxy(proxy: Proxy, assigned_account_name: Optional[str] = None) -> Dict[str, Any]:
         return {
             "proxy_id": proxy.proxy_id,
             "proxy_type": proxy.proxy_type,
@@ -178,6 +181,7 @@ class AdminLicenseService:
             "response_time_ms": proxy.response_time_ms,
             "usage_count": proxy.usage_count,
             "assigned_account_id": proxy.assigned_account_id,
+            "assigned_account_name": assigned_account_name,
             "last_check_at": proxy.last_check_at.isoformat() if proxy.last_check_at else None,
             "created_at": proxy.created_at.isoformat() if proxy.created_at else None,
         }
@@ -383,7 +387,24 @@ class AdminLicenseService:
     ) -> Dict[str, Any]:
         proxy_pool = get_proxy_pool()
         proxies = await proxy_pool.get_proxies(is_active=False, is_healthy=None)
-        items = [self._serialize_proxy(proxy) for proxy in proxies]
+        assigned_ids = [proxy.assigned_account_id for proxy in proxies if proxy.assigned_account_id]
+        assigned_name_map: Dict[str, str] = {}
+        if assigned_ids:
+            async with get_async_session() as session:
+                stmt = (
+                    select(Account.account_id, Account.username, Account.phone, User.username.label("owner_username"))
+                    .outerjoin(User, User.id == Account.user_id)
+                    .where(Account.account_id.in_(assigned_ids))
+                )
+                rows = (await session.execute(stmt)).all()
+                assigned_name_map = {
+                    row.account_id: row.username or row.phone or row.owner_username or row.account_id
+                    for row in rows
+                }
+        items = [
+            self._serialize_proxy(proxy, assigned_name_map.get(proxy.assigned_account_id or ""))
+            for proxy in proxies
+        ]
         keyword = (search or "").strip().lower()
         if keyword:
             items = [
@@ -391,6 +412,7 @@ class AdminLicenseService:
                 if keyword in f"{item['proxy_type']}://{item['host']}:{item['port']}".lower()
                 or keyword in str(item.get("username") or "").lower()
                 or keyword in str(item.get("assigned_account_id") or "").lower()
+                or keyword in str(item.get("assigned_account_name") or "").lower()
             ]
         if is_healthy is not None:
             items = [item for item in items if bool(item.get("is_healthy")) is bool(is_healthy)]
@@ -560,6 +582,58 @@ class AdminLicenseService:
         result = await self.get_bot_notice_settings()
         result["refresh_summary"] = refresh_summary
         return result
+
+    async def get_today_system_stats(self) -> Dict[str, Any]:
+        timezone_name = settings.timezone or "Asia/Shanghai"
+        now = datetime.now(ZoneInfo(timezone_name))
+        start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
+        end_of_day = (now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)).replace(tzinfo=None)
+
+        async with get_async_session() as session:
+            sent_messages = int(
+                (
+                    await session.execute(
+                        select(func.count(TaskLog.id)).where(
+                            TaskLog.result == "success",
+                            TaskLog.send_at >= start_of_day,
+                            TaskLog.send_at < end_of_day,
+                        )
+                    )
+                ).scalar_one()
+                or 0
+            )
+            bound_cards = int(
+                (
+                    await session.execute(
+                        select(func.count(ActivationCard.id)).where(
+                            ActivationCard.is_used.is_(True),
+                            ActivationCard.used_at.is_not(None),
+                            ActivationCard.used_at >= start_of_day,
+                            ActivationCard.used_at < end_of_day,
+                        )
+                    )
+                ).scalar_one()
+                or 0
+            )
+            new_users = int(
+                (
+                    await session.execute(
+                        select(func.count(User.id)).where(
+                            User.created_at >= start_of_day,
+                            User.created_at < end_of_day,
+                        )
+                    )
+                ).scalar_one()
+                or 0
+            )
+
+        return {
+            "date": now.date().isoformat(),
+            "timezone": timezone_name,
+            "today_sent_messages": sent_messages,
+            "today_bound_cards": bound_cards,
+            "today_new_users": new_users,
+        }
 
     async def list_developer_apps(
         self,
@@ -1189,6 +1263,12 @@ class AdminLicenseService:
         expires_at: Optional[datetime] = None,
         prefix: str = "",
         *,
+        creator_account_id: Optional[int] = None,
+        owner_account_id: Optional[int] = None,
+        root_master_account_id: Optional[int] = None,
+        direct_parent_account_id: Optional[int] = None,
+        settlement_unit_price_cents: Optional[int] = None,
+        card_source_type: str = "legacy",
         actor: str = "admin",
         ip_address: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
@@ -1247,6 +1327,12 @@ class AdminLicenseService:
                     is_active=True,
                     is_used=False,
                     expires_at=expires_at,
+                    creator_account_id=creator_account_id,
+                    owner_account_id=owner_account_id,
+                    direct_parent_account_id=direct_parent_account_id,
+                    root_master_account_id=root_master_account_id,
+                    settlement_unit_price_cents=settlement_unit_price_cents if settlement_unit_price_cents is not None else int(plan.price_cents or 0),
+                    card_source_type=(card_source_type or "").strip() or "legacy",
                 )
                 for code in sorted(generated_codes)
             ]
@@ -1608,6 +1694,12 @@ class AdminLicenseService:
         valid_days: Optional[int] = None,
         prefix: str = "",
         *,
+        creator_account_id: Optional[int] = None,
+        owner_account_id: Optional[int] = None,
+        root_master_account_id: Optional[int] = None,
+        direct_parent_account_id: Optional[int] = None,
+        settlement_unit_price_cents: Optional[int] = None,
+        card_source_type: str = "legacy",
         actor: str = "admin",
         ip_address: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -1622,6 +1714,12 @@ class AdminLicenseService:
             quantity=1,
             expires_at=expires_at,
             prefix=prefix,
+            creator_account_id=creator_account_id,
+            owner_account_id=owner_account_id,
+            root_master_account_id=root_master_account_id,
+            direct_parent_account_id=direct_parent_account_id,
+            settlement_unit_price_cents=settlement_unit_price_cents,
+            card_source_type=card_source_type,
             actor=actor,
             ip_address=ip_address,
         )

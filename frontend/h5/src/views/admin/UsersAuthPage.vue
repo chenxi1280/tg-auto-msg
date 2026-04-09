@@ -7,16 +7,18 @@
         <div class="card-header">
           <span>用户与授权</span>
           <div class="header-actions">
-            <el-input v-model.trim="filters.search" clearable placeholder="搜索用户名或邮箱" style="width: 240px" @change="queryUsers" />
-            <el-button @click="refreshUsers">刷新</el-button>
+            <el-button v-if="isCompact" class="mobile-filter-trigger" @click="filtersVisible = true">筛选条件</el-button>
+            <template v-else>
+              <el-input v-model.trim="filters.search" clearable placeholder="搜索用户名或邮箱" style="width: 240px" @change="queryUsers" />
+              <el-button @click="refreshUsers">刷新</el-button>
+            </template>
           </div>
         </div>
       </template>
       <div class="toolbar-bar">
         <span class="card-tip">共 {{ total }} 个用户</span>
       </div>
-      <el-table :data="users" stripe highlight-current-row @current-change="handleCurrentUserChange">
-        <el-table-column prop="id" label="用户 ID" width="100" />
+      <el-table v-if="!isCompact" :data="users" stripe highlight-current-row @current-change="handleCurrentUserChange">
         <el-table-column prop="username" label="用户名" min-width="160" />
         <el-table-column prop="email" label="邮箱" min-width="220" />
         <el-table-column label="账号数" width="100">
@@ -49,6 +51,47 @@
           </template>
         </el-table-column>
       </el-table>
+      <div v-else class="mobile-card-list">
+        <div
+          v-for="row in users"
+          :key="row.id"
+          class="mobile-data-card"
+          @click="handleCurrentUserChange(row)"
+        >
+          <div class="mobile-data-card__header">
+            <div>
+              <div class="mobile-data-card__title">{{ row.username }}</div>
+              <div class="mobile-data-card__subtitle">{{ row.email || '未填写邮箱' }}</div>
+            </div>
+            <el-tag :type="selectedUserId === row.id ? 'primary' : 'info'">{{ selectedUserId === row.id ? '已选中' : `账号 ${row.account_count}` }}</el-tag>
+          </div>
+          <div class="mobile-data-card__grid">
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">授权状态</span>
+              <span class="mobile-data-card__value">{{ row.current_authorization?.status || '未授权' }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">授权到期</span>
+              <span class="mobile-data-card__value">{{ formatDateTime(row.current_authorization?.end_at) }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">开发者应用</span>
+              <span class="mobile-data-card__value">{{ developerAppDisplay(row.developer_app_id).label }}</span>
+            </div>
+          </div>
+          <div class="mobile-action-bar">
+            <el-button v-if="canResetPassword" type="primary" plain @click.stop="openPasswordDialog(row.id)">重置密码</el-button>
+            <el-button
+              v-if="canManageUsers && canReadDeveloperApps"
+              type="success"
+              plain
+              @click.stop="openDeveloperAppDialog(row.id, row.developer_app_id)"
+            >
+              设置应用
+            </el-button>
+          </div>
+        </div>
+      </div>
       <div class="pagination-wrap">
         <el-pagination
           v-model:current-page="pagination.currentPage"
@@ -67,12 +110,11 @@
       <template #header>
         <div class="card-header">
           <span>用户 TG 账号</span>
-          <span class="card-tip">{{ selectedUserId ? `当前查看用户 ${selectedUserId}` : '请先从上方选择一个用户' }}</span>
+          <span class="card-tip">{{ selectedUserSummary }}</span>
         </div>
       </template>
       <el-empty v-if="!selectedUserId" description="请选择要查看的用户" />
-      <el-table v-else :data="userAccounts" stripe>
-        <el-table-column prop="account_id" label="账号 ID" min-width="180" />
+      <el-table v-else-if="!isCompact" :data="userAccounts" stripe>
         <el-table-column prop="username" label="TG 用户名" width="140" />
         <el-table-column prop="phone" label="手机号" width="140" />
         <el-table-column prop="health_status" label="健康状态" width="120" />
@@ -99,9 +141,33 @@
           </template>
         </el-table-column>
       </el-table>
+        <div v-else class="mobile-card-list">
+        <div v-for="row in userAccounts" :key="row.account_id" class="mobile-data-card">
+          <div class="mobile-data-card__header">
+            <div>
+              <div class="mobile-data-card__title">{{ row.username || row.phone || '未命名 TG 账号' }}</div>
+              <div class="mobile-data-card__subtitle">{{ row.phone || '未绑定手机号' }}</div>
+            </div>
+            <el-tag>{{ row.health_status || 'unknown' }}</el-tag>
+          </div>
+          <div class="mobile-data-card__grid">
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">开发者应用</span>
+              <span class="mobile-data-card__value">{{ developerAppDisplay(row.developer_app_id).label }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">授权到期</span>
+              <span class="mobile-data-card__value">{{ formatDateTime(row.authorization_end_at) }}</span>
+            </div>
+          </div>
+          <div class="mobile-action-bar">
+            <el-button v-if="canManageUsers" type="danger" plain @click="deleteAccount(row.account_id)">删除</el-button>
+          </div>
+        </div>
+      </div>
     </el-card>
 
-    <el-dialog v-model="passwordDialog.visible" title="重置用户密码" width="420px">
+    <ResponsiveFormLayer v-model="passwordDialog.visible" title="重置用户密码" width="420px">
       <el-form label-position="top">
         <el-form-item label="新密码">
           <el-input v-model="passwordDialog.new_password" type="password" show-password />
@@ -111,9 +177,9 @@
         <el-button @click="passwordDialog.visible = false">取消</el-button>
         <el-button type="primary" :loading="savingPassword" @click="savePassword">保存</el-button>
       </template>
-    </el-dialog>
+    </ResponsiveFormLayer>
 
-    <el-dialog v-model="developerAppDialog.visible" title="设置用户开发者应用" width="420px">
+    <ResponsiveFormLayer v-model="developerAppDialog.visible" title="设置用户开发者应用" width="420px">
       <el-form label-position="top">
         <el-form-item label="开发者应用">
           <el-select v-model="developerAppDialog.developer_app_id" clearable style="width: 100%">
@@ -126,7 +192,18 @@
         <el-button @click="developerAppDialog.visible = false">取消</el-button>
         <el-button type="primary" :loading="savingDeveloperApp" @click="saveDeveloperApp">保存</el-button>
       </template>
-    </el-dialog>
+    </ResponsiveFormLayer>
+
+    <el-drawer v-model="filtersVisible" title="筛选用户" size="100%" append-to-body>
+      <div class="mobile-card-list">
+        <el-input v-model.trim="filters.search" clearable placeholder="搜索用户名或邮箱" />
+        <div class="mobile-action-bar">
+          <el-button @click="filtersVisible = false">关闭</el-button>
+          <el-button @click="refreshUsers">刷新</el-button>
+          <el-button type="primary" @click="applyMobileFilters">应用筛选</el-button>
+        </div>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -144,8 +221,11 @@ import {
 } from '@/api/admin'
 import { useAdminConsoleStore } from '@/stores/adminConsole'
 import { formatDateTime } from '@/utils/adminConsole'
+import { useResponsive } from '@/composables/useResponsive'
+import ResponsiveFormLayer from '@/components/responsive/ResponsiveFormLayer.vue'
 
 const store = useAdminConsoleStore()
+const { isCompact } = useResponsive()
 const canManageUsers = computed(() => store.hasPermission('users.write'))
 const canResetPassword = computed(() => store.hasPermission('users.reset_password'))
 const canReadDeveloperApps = computed(() => store.hasPermission('developer_apps.read'))
@@ -159,6 +239,7 @@ const developerApps = ref<DeveloperApp[]>([])
 const selectedUserId = ref<number | null>(null)
 const total = ref(0)
 const lastActionMessage = ref('')
+const filtersVisible = ref(false)
 
 const savingPassword = ref(false)
 const savingDeveloperApp = ref(false)
@@ -192,6 +273,13 @@ const defaultDeveloperApp = computed(() => {
       responseSettings?.default_developer_app_active ??
       (matchedApp ? Boolean(matchedApp.is_active) : false),
   }
+})
+
+const selectedUser = computed(() => users.value.find((item) => item.id === selectedUserId.value) || null)
+
+const selectedUserSummary = computed(() => {
+  if (!selectedUser.value) return '请先从上方选择一个用户'
+  return `当前查看：${selectedUser.value.username || selectedUser.value.email || '未命名用户'}`
 })
 
 const developerAppDisplay = (appId?: number | null) => {
@@ -251,6 +339,11 @@ const handleSizeChange = async () => {
 }
 
 const queryUsers = async () => {
+  await loadUsers(true)
+}
+
+const applyMobileFilters = async () => {
+  filtersVisible.value = false
   await loadUsers(true)
 }
 

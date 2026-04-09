@@ -13,7 +13,7 @@
         </div>
       </template>
 
-      <el-table :data="roles" stripe>
+      <el-table v-if="!isCompact" :data="roles" stripe>
         <el-table-column prop="display_name" label="角色名称" min-width="180" />
         <el-table-column prop="role_key" label="角色标识" min-width="180" />
         <el-table-column label="类型" width="120">
@@ -36,9 +36,42 @@
           </template>
         </el-table-column>
       </el-table>
+      <div v-else class="mobile-card-list">
+        <div v-for="row in roles" :key="row.id" class="mobile-data-card">
+          <div class="mobile-data-card__header">
+            <div>
+              <div class="mobile-data-card__title">{{ row.display_name }}</div>
+              <div class="mobile-data-card__subtitle">{{ row.role_key }}</div>
+            </div>
+            <el-tag :type="row.is_system ? 'warning' : 'success'">{{ row.is_system ? '内置角色' : '自定义角色' }}</el-tag>
+          </div>
+          <div class="mobile-data-card__grid">
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">状态</span>
+              <span class="mobile-data-card__value">{{ row.status === 'active' ? '启用' : '停用' }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">绑定账号数</span>
+              <span class="mobile-data-card__value">{{ row.account_count }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">权限数</span>
+              <span class="mobile-data-card__value">{{ row.permission_count }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">说明</span>
+              <span class="mobile-data-card__value">{{ row.description || '-' }}</span>
+            </div>
+          </div>
+          <div class="mobile-action-bar">
+            <el-button v-if="canWriteRoles" type="primary" plain @click="openEditDialog(row)">编辑</el-button>
+            <el-button v-if="canManageRolePermissions" type="success" plain @click="openPermissionDialog(row)">配置权限</el-button>
+          </div>
+        </div>
+      </div>
     </el-card>
 
-    <el-dialog v-model="editor.visible" :title="editor.id ? '编辑角色' : '新增角色'" width="520px">
+    <ResponsiveFormLayer v-model="editor.visible" :title="editor.id ? '编辑角色' : '新增角色'" width="520px">
       <el-form label-position="top">
         <el-form-item label="角色标识" v-if="!editor.id">
           <el-input v-model.trim="editor.role_key" />
@@ -60,9 +93,9 @@
         <el-button @click="editor.visible = false">取消</el-button>
         <el-button type="primary" :loading="savingRole" @click="submitRole">保存</el-button>
       </template>
-    </el-dialog>
+    </ResponsiveFormLayer>
 
-    <el-dialog v-model="permissionDialog.visible" title="配置角色权限" width="760px">
+    <ResponsiveFormLayer v-model="permissionDialog.visible" title="配置角色权限" width="760px">
       <div class="permission-grid">
         <el-card v-for="group in permissionGroups" :key="group.moduleKey" shadow="never">
           <template #header>
@@ -84,7 +117,7 @@
         <el-button @click="permissionDialog.visible = false">取消</el-button>
         <el-button type="primary" :loading="savingPermissions" @click="submitPermissions">保存权限</el-button>
       </template>
-    </el-dialog>
+    </ResponsiveFormLayer>
   </div>
 </template>
 
@@ -100,8 +133,11 @@ import {
   adminUpdateRbacRolePermissions,
 } from '@/api/admin'
 import { useAdminConsoleStore } from '@/stores/adminConsole'
+import { useResponsive } from '@/composables/useResponsive'
+import ResponsiveFormLayer from '@/components/responsive/ResponsiveFormLayer.vue'
 
 const store = useAdminConsoleStore()
+const { isCompact } = useResponsive()
 const canWriteRoles = computed(() => store.hasPermission('rbac.roles.write'))
 const canReadPermissionDictionary = computed(() => store.hasPermission('rbac.permissions.read'))
 const canManageRolePermissions = computed(() => canWriteRoles.value && canReadPermissionDictionary.value)

@@ -11,17 +11,20 @@
         <div class="card-header">
           <span>全局卡密价格</span>
           <div class="header-actions">
-            <el-input v-model.trim="filters.search" clearable placeholder="搜索规格名称/编码" style="width: 220px" />
-            <el-select v-model="filters.is_active" clearable placeholder="状态" style="width: 140px">
-              <el-option label="启用" value="true" />
-              <el-option label="停用" value="false" />
-            </el-select>
-            <el-button @click="loadData(true)">查询</el-button>
-            <el-button @click="loadData()">刷新</el-button>
+            <el-button v-if="isCompact" class="mobile-filter-trigger" @click="filtersVisible = true">筛选条件</el-button>
+            <template v-else>
+              <el-input v-model.trim="filters.search" clearable placeholder="搜索规格名称/编码" style="width: 220px" />
+              <el-select v-model="filters.is_active" clearable placeholder="状态" style="width: 140px">
+                <el-option label="启用" value="true" />
+                <el-option label="停用" value="false" />
+              </el-select>
+              <el-button @click="loadData(true)">查询</el-button>
+              <el-button @click="loadData()">刷新</el-button>
+            </template>
           </div>
         </div>
       </template>
-      <el-table :data="planRows" stripe>
+      <el-table v-if="!isCompact" :data="planRows" stripe>
         <el-table-column prop="display_name" label="规格名称" min-width="180" />
         <el-table-column prop="plan_code" label="规格编码" width="140" />
         <el-table-column prop="duration_days" label="时长（天）" width="120" />
@@ -40,6 +43,30 @@
           </template>
         </el-table-column>
       </el-table>
+      <div v-else class="mobile-card-list">
+        <div v-for="row in planRows" :key="row.plan_code" class="mobile-data-card">
+          <div class="mobile-data-card__header">
+            <div>
+              <div class="mobile-data-card__title">{{ row.display_name }}</div>
+              <div class="mobile-data-card__subtitle">{{ row.plan_code }}</div>
+            </div>
+            <el-tag :type="row.is_active ? 'success' : 'info'">{{ row.is_active ? '启用' : '停用' }}</el-tag>
+          </div>
+          <div class="mobile-data-card__grid">
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">时长</span>
+              <span class="mobile-data-card__value">{{ row.duration_days }} 天</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">统一价格</span>
+              <span class="mobile-data-card__value">¥{{ centsToYuan(row.price_cents) }}</span>
+            </div>
+          </div>
+          <div class="mobile-action-bar">
+            <el-button v-if="store.hasPermission('pricing.write')" type="primary" plain @click="openEditor(row)">修改价格</el-button>
+          </div>
+        </div>
+      </div>
       <div class="pagination-wrap">
         <el-pagination
           v-model:current-page="pagination.currentPage"
@@ -54,7 +81,7 @@
       </div>
     </el-card>
 
-    <el-dialog v-model="editor.visible" title="修改统一价格" width="420px">
+    <ResponsiveFormLayer v-model="editor.visible" title="修改统一价格" width="420px">
       <el-form label-position="top">
         <el-form-item label="规格">
           <el-input :model-value="editor.plan?.display_name || ''" disabled />
@@ -67,7 +94,22 @@
         <el-button @click="editor.visible = false">取消</el-button>
         <el-button type="primary" :loading="submitting" @click="submitEditor">保存</el-button>
       </template>
-    </el-dialog>
+    </ResponsiveFormLayer>
+
+    <el-drawer v-model="filtersVisible" title="筛选价格规格" size="100%" append-to-body>
+      <div class="mobile-card-list">
+        <el-input v-model.trim="filters.search" clearable placeholder="搜索规格名称/编码" />
+        <el-select v-model="filters.is_active" clearable placeholder="状态">
+          <el-option label="启用" value="true" />
+          <el-option label="停用" value="false" />
+        </el-select>
+        <div class="mobile-action-bar">
+          <el-button @click="filtersVisible = false">关闭</el-button>
+          <el-button @click="loadData()">刷新</el-button>
+          <el-button type="primary" @click="applyMobileFilters">应用筛选</el-button>
+        </div>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -78,11 +120,15 @@ import type { AgentPlan } from '@/api/admin'
 import { adminListPricingPlans, adminUpdatePricingPlan } from '@/api/admin'
 import { useAdminConsoleStore } from '@/stores/adminConsole'
 import { centsToYuan, yuanToCents } from '@/utils/adminConsole'
+import { useResponsive } from '@/composables/useResponsive'
+import ResponsiveFormLayer from '@/components/responsive/ResponsiveFormLayer.vue'
 
 const store = useAdminConsoleStore()
+const { isCompact } = useResponsive()
 const submitting = ref(false)
 const planRows = ref<AgentPlan[]>([])
 const total = ref(0)
+const filtersVisible = ref(false)
 const pagination = reactive({
   currentPage: 1,
   pageSize: 20,
@@ -126,6 +172,11 @@ const handleSizeChange = async () => {
   await loadData()
 }
 
+const applyMobileFilters = async () => {
+  filtersVisible.value = false
+  await loadData(true)
+}
+
 const openEditor = (plan: AgentPlan) => {
   editor.visible = true
   editor.plan = plan
@@ -167,6 +218,7 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .readonly-text {

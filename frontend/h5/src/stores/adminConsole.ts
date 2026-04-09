@@ -7,17 +7,14 @@ import type {
   AgentAccount,
   AgentCard,
   AgentPlan,
-  ApprovalRequest,
   CardBatch,
   FundLedger,
 } from '@/api/admin'
 import {
   adminListAccounts,
-  adminListApprovalRequests,
   adminListAuditLogs,
   adminListCardBatches,
   adminListCards,
-  adminListPendingApprovals,
   adminListPricingPlans,
   adminListSelfFundLedgers,
   adminListVisibleFundLedgers,
@@ -30,8 +27,6 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
   const plans = ref<AgentPlan[]>([])
   const batches = ref<CardBatch[]>([])
   const cards = ref<AgentCard[]>([])
-  const pendingApprovals = ref<ApprovalRequest[]>([])
-  const approvalRequests = ref<ApprovalRequest[]>([])
   const auditLogs = ref<AdminAuditLog[]>([])
   const selfLedgers = ref<FundLedger[]>([])
   const visibleLedgers = ref<FundLedger[]>([])
@@ -43,8 +38,6 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
     plans: false,
     batches: false,
     cards: false,
-    approvals: false,
-    approvalRequests: false,
     auditLogs: false,
     selfLedgers: false,
     visibleLedgers: false,
@@ -71,8 +64,6 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
     plans.value = []
     batches.value = []
     cards.value = []
-    pendingApprovals.value = []
-    approvalRequests.value = []
     auditLogs.value = []
     selfLedgers.value = []
     visibleLedgers.value = []
@@ -134,32 +125,6 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
     }
   }
 
-  const loadPendingApprovals = async () => {
-    loading.approvals = true
-    try {
-      const response = await adminListPendingApprovals()
-      pendingApprovals.value = response.data
-      return response.data
-    } finally {
-      loading.approvals = false
-    }
-  }
-
-  const loadApprovalRequests = async (params?: {
-    status?: string
-    request_type?: string
-    limit?: number
-  }) => {
-    loading.approvalRequests = true
-    try {
-      const response = await adminListApprovalRequests(params)
-      approvalRequests.value = response.data.items
-      return response.data.items
-    } finally {
-      loading.approvalRequests = false
-    }
-  }
-
   const loadAuditLogs = async () => {
     loading.auditLogs = true
     try {
@@ -211,8 +176,6 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
     plans,
     batches,
     cards,
-    pendingApprovals,
-    approvalRequests,
     auditLogs,
     selfLedgers,
     visibleLedgers,
@@ -237,8 +200,6 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
     loadPlans,
     loadBatches,
     loadCards,
-    loadPendingApprovals,
-    loadApprovalRequests,
     loadAuditLogs,
     loadSelfLedgers,
     loadVisibleLedgers,

@@ -70,7 +70,7 @@
           批量检查
         </el-button>
       </div>
-      <el-table :data="proxies" stripe @selection-change="handleSelectionChange">
+      <el-table v-if="!isCompact" :data="proxies" stripe @selection-change="handleSelectionChange">
         <el-table-column type="selection" width="48" />
         <el-table-column label="代理" min-width="220">
           <template #default="{ row }">{{ row.proxy_type }}://{{ row.host }}:{{ row.port }}</template>
@@ -84,7 +84,7 @@
           <template #default="{ row }">{{ row.response_time_ms == null ? '-' : `${row.response_time_ms} ms` }}</template>
         </el-table-column>
         <el-table-column label="分配账号" min-width="180">
-          <template #default="{ row }">{{ row.assigned_account_id || '-' }}</template>
+          <template #default="{ row }">{{ row.assigned_account_name || (row.assigned_account_id ? '已分配' : '未分配') }}</template>
         </el-table-column>
         <el-table-column label="最近检查" min-width="160">
           <template #default="{ row }">{{ formatDateTime(row.last_check_at) }}</template>
@@ -106,13 +106,58 @@
                 :value="option.account_id"
               />
             </el-select>
-            <el-button v-if="canAssignTargets" link type="primary" @click="assignProxy(row.proxy_id)">分配</el-button>
+            <el-button v-if="canAssignTargets" link type="primary" :disabled="!assignTargets[row.proxy_id]" @click="assignProxy(row.proxy_id)">分配</el-button>
             <el-button v-if="canCheck" link type="success" :loading="checkingId === row.proxy_id" @click="checkProxy(row.proxy_id)">检查</el-button>
             <el-button v-if="canAssign && row.assigned_account_id" link type="warning" @click="unassignProxy(row.proxy_id)">解绑</el-button>
             <el-button v-if="canWrite" link type="danger" @click="deleteProxy(row.proxy_id)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
+      <div v-else class="mobile-card-list">
+        <div v-for="row in proxies" :key="row.proxy_id" class="mobile-data-card">
+          <div class="mobile-data-card__header">
+            <div>
+              <div class="mobile-data-card__title">{{ row.proxy_type }}://{{ row.host }}:{{ row.port }}</div>
+              <div class="mobile-data-card__subtitle">{{ formatDateTime(row.last_check_at) }}</div>
+            </div>
+            <el-checkbox :model-value="selectedProxyIds.includes(row.proxy_id)" @change="toggleProxySelection(row.proxy_id)" />
+          </div>
+          <div class="mobile-data-card__grid">
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">健康</span>
+              <span class="mobile-data-card__value">{{ row.is_healthy ? '健康' : '异常' }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">响应时间</span>
+              <span class="mobile-data-card__value">{{ row.response_time_ms == null ? '-' : `${row.response_time_ms} ms` }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">分配账号</span>
+              <span class="mobile-data-card__value">{{ row.assigned_account_name || (row.assigned_account_id ? '已分配' : '未分配') }}</span>
+            </div>
+          </div>
+          <el-select
+            v-if="canAssignTargets"
+            v-model="assignTargets[row.proxy_id]"
+            filterable
+            clearable
+            placeholder="选择账号"
+          >
+            <el-option
+              v-for="option in accountOptions"
+              :key="option.account_id"
+              :label="option.label"
+              :value="option.account_id"
+            />
+          </el-select>
+          <div class="mobile-action-bar">
+            <el-button v-if="canAssignTargets" :disabled="!assignTargets[row.proxy_id]" @click="assignProxy(row.proxy_id)">分配</el-button>
+            <el-button v-if="canCheck" type="success" plain :loading="checkingId === row.proxy_id" @click="checkProxy(row.proxy_id)">检查</el-button>
+            <el-button v-if="canAssign && row.assigned_account_id" type="warning" plain @click="unassignProxy(row.proxy_id)">解绑</el-button>
+            <el-button v-if="canWrite" type="danger" plain @click="deleteProxy(row.proxy_id)">删除</el-button>
+          </div>
+        </div>
+      </div>
       <div class="pagination-wrap">
         <el-pagination
           v-model:current-page="pagination.currentPage"
@@ -144,8 +189,10 @@ import {
 } from '@/api/admin'
 import { useAdminConsoleStore } from '@/stores/adminConsole'
 import { formatDateTime } from '@/utils/adminConsole'
+import { useResponsive } from '@/composables/useResponsive'
 
 const store = useAdminConsoleStore()
+const { isCompact } = useResponsive()
 const canWrite = computed(() => store.hasPermission('system_proxies.write'))
 const canCheck = computed(() => store.hasPermission('system_proxies.check'))
 const canAssign = computed(() => store.hasPermission('system_proxies.assign'))
@@ -227,6 +274,14 @@ const handleSelectionChange = (rows: LegacyProxy[]) => {
   selectedProxyIds.value = rows.map((row) => row.proxy_id)
 }
 
+const toggleProxySelection = (proxyId: number) => {
+  if (selectedProxyIds.value.includes(proxyId)) {
+    selectedProxyIds.value = selectedProxyIds.value.filter((item) => item !== proxyId)
+    return
+  }
+  selectedProxyIds.value = [...selectedProxyIds.value, proxyId]
+}
+
 const createProxy = async () => {
   creating.value = true
   try {
@@ -254,7 +309,7 @@ const checkProxy = async (proxyId: number) => {
   try {
     await adminCheckSystemProxy(proxyId)
     await loadData()
-    lastActionMessage.value = `代理 #${proxyId} 检查完成`
+    lastActionMessage.value = '代理检查完成'
     ElMessage.success(lastActionMessage.value)
   } finally {
     checkingId.value = null

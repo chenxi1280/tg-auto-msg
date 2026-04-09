@@ -5,8 +5,11 @@
         <div class="card-header">
           <span>权限点字典</span>
           <div class="header-actions">
-            <el-input v-model.trim="keyword" clearable placeholder="搜索权限名称/编码/模块" style="width: 260px" />
-            <el-button @click="loadData">刷新</el-button>
+            <el-button v-if="isCompact" class="mobile-filter-trigger" @click="filtersVisible = true">筛选条件</el-button>
+            <template v-else>
+              <el-input v-model.trim="keyword" clearable placeholder="搜索权限名称/编码/模块" style="width: 260px" />
+              <el-button @click="loadData">刷新</el-button>
+            </template>
           </div>
         </div>
       </template>
@@ -26,6 +29,17 @@
         </el-card>
       </div>
     </el-card>
+
+    <el-drawer v-model="filtersVisible" title="筛选权限点" size="100%" append-to-body>
+      <div class="mobile-card-list">
+        <el-input v-model.trim="keyword" clearable placeholder="搜索权限名称/编码/模块" />
+        <div class="mobile-action-bar">
+          <el-button @click="filtersVisible = false">关闭</el-button>
+          <el-button @click="loadData">刷新</el-button>
+          <el-button type="primary" @click="filtersVisible = false">完成</el-button>
+        </div>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -33,9 +47,12 @@
 import { computed, onMounted, ref } from 'vue'
 import type { AdminPermission } from '@/api/admin'
 import { adminListRbacPermissions } from '@/api/admin'
+import { useResponsive } from '@/composables/useResponsive'
 
 const permissions = ref<AdminPermission[]>([])
 const keyword = ref('')
+const filtersVisible = ref(false)
+const { isCompact } = useResponsive()
 
 const permissionGroups = computed(() => {
   const map = new Map<string, AdminPermission[]>()
@@ -89,6 +106,7 @@ onMounted(async () => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .permission-grid {

@@ -26,6 +26,7 @@ ROLE_SUB_AGENT = "sub_agent"
 
 PERMISSION_DEFINITIONS: List[Dict[str, str]] = [
     {"code": "dashboard.read", "module": "dashboard", "name": "查看仪表盘", "description": "允许进入后台仪表盘"},
+    {"code": "system.stats.read", "module": "system_stats", "name": "查看系统统计", "description": "允许查看超管系统统计页"},
     {"code": "security.read", "module": "security", "name": "查看账户安全", "description": "允许查看自己的后台账号安全信息"},
     {"code": "security.update", "module": "security", "name": "修改账户安全", "description": "允许修改密码和 TG 绑定"},
     {"code": "agents.read", "module": "agents", "name": "查看代理", "description": "允许查看代理树和后台账号列表"},
@@ -37,10 +38,8 @@ PERMISSION_DEFINITIONS: List[Dict[str, str]] = [
     {"code": "pricing.write", "module": "pricing", "name": "管理统一价格", "description": "允许更新统一价格"},
     {"code": "ledgers.read", "module": "ledgers", "name": "查看自有流水", "description": "允许查看自己的资金流水"},
     {"code": "ledgers.scope.read", "module": "ledgers", "name": "查看范围流水", "description": "允许查看自己权限范围内的资金流水审计"},
-    {"code": "approvals.read", "module": "approvals", "name": "查看审批", "description": "允许查看审批中心"},
-    {"code": "approvals.approve", "module": "approvals", "name": "审批通过", "description": "允许审批通过请求"},
-    {"code": "approvals.reject", "module": "approvals", "name": "审批驳回", "description": "允许审批驳回请求"},
-    {"code": "approvals.batch", "module": "approvals", "name": "批量审批", "description": "允许批量通过或驳回审批"},
+    {"code": "operation_logs.read", "module": "operation_logs", "name": "查看自有操作日志", "description": "允许查看自己的业务操作日志"},
+    {"code": "operation_logs.scope.read", "module": "operation_logs", "name": "查看范围操作日志", "description": "允许查看自己权限范围内的业务操作日志"},
     {"code": "batches.read", "module": "batches", "name": "查看卡密批次", "description": "允许查看批次和卡密明细"},
     {"code": "batches.generate", "module": "batches", "name": "生成卡密批次", "description": "允许直接生成卡密批次"},
     {"code": "batches.export", "module": "batches", "name": "导出卡密", "description": "允许导出卡密 Excel"},
@@ -82,10 +81,8 @@ ROLE_DEFAULT_PERMISSION_CODES: Dict[str, List[str]] = {
         "pricing.read",
         "ledgers.read",
         "ledgers.scope.read",
-        "approvals.read",
-        "approvals.approve",
-        "approvals.reject",
-        "approvals.batch",
+        "operation_logs.read",
+        "operation_logs.scope.read",
         "batches.read",
         "batches.generate",
         "batches.export",
@@ -101,10 +98,8 @@ ROLE_DEFAULT_PERMISSION_CODES: Dict[str, List[str]] = {
         "agents.child.create",
         "pricing.read",
         "ledgers.read",
-        "approvals.read",
-        "approvals.approve",
-        "approvals.reject",
-        "approvals.batch",
+        "operation_logs.read",
+        "operation_logs.scope.read",
         "batches.read",
         "batches.generate",
         "batches.export",
@@ -115,7 +110,7 @@ ROLE_DEFAULT_PERMISSION_CODES: Dict[str, List[str]] = {
 
 SYSTEM_ROLE_META: Dict[str, Dict[str, str]] = {
     ROLE_SUPER_ADMIN: {"display_name": "超管", "description": "系统超管，拥有后台全部能力"},
-    ROLE_MASTER_AGENT: {"display_name": "省总代", "description": "省级总代，负责分销链路与审批"},
+    ROLE_MASTER_AGENT: {"display_name": "省总代", "description": "省级总代，负责分销链路运营"},
     ROLE_SUB_AGENT: {"display_name": "下级代理", "description": "管理自己链路内的代理和批次"},
 }
 

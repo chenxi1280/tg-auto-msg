@@ -4,7 +4,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from backend.database.schema.models import User
 from backend.h5_backend.services.auth.service import get_auth_service
@@ -24,14 +24,13 @@ class UserCreate(BaseModel):
 class UserResponse(BaseModel):
     """User response."""
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     username: str
     email: Optional[str]
     is_active: bool
     created_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
