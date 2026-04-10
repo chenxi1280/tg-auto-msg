@@ -105,7 +105,7 @@ const routes: RouteRecordRaw[] = [
         path: 'account-center',
         name: 'AdminAccountCenter',
         component: () => import('@/views/admin/AccountCenterPage.vue'),
-        meta: { title: '账号中心', requiresAdminSession: true, permissions: ['security.read', 'users.read', 'agents.read', 'admin_accounts.read'] }
+        meta: { title: '账号中心', requiresAdminSession: true, permissions: ['security.read', 'agents.read'] }
       },
       {
         path: 'pricing',
@@ -177,8 +177,8 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'users-auth',
         name: 'AdminUsersAuth',
-        redirect: '/admin/account-center?tab=users',
-        meta: { title: '用户与授权', requiresAdminSession: true, permissions: ['users.read'] }
+        component: () => import('@/views/admin/UsersAuthPage.vue'),
+        meta: { title: '业务用户与授权', requiresAdminSession: true, permissions: ['users.read'] }
       },
       {
         path: 'agents',
@@ -195,8 +195,8 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'admin-accounts',
         name: 'AdminAccountsManage',
-        redirect: '/admin/account-center?tab=staff',
-        meta: { title: '后台账号', requiresAdminSession: true, permissions: ['admin_accounts.read'] }
+        component: () => import('@/views/admin/AdminAccountsPage.vue'),
+        meta: { title: '员工后台账号', requiresAdminSession: true, permissions: ['admin_accounts.read'] }
       },
       {
         path: 'rbac-roles',

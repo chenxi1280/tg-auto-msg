@@ -32,7 +32,7 @@ PERMISSION_DEFINITIONS: List[Dict[str, str]] = [
     {"code": "dashboard.read", "module": "dashboard", "name": "查看仪表盘", "description": "允许进入后台仪表盘"},
     {"code": "system.stats.read", "module": "system_stats", "name": "查看系统统计", "description": "允许查看超管系统统计页"},
     {"code": "security.read", "module": "security", "name": "查看账户安全", "description": "允许查看自己的后台账号安全信息"},
-    {"code": "security.update", "module": "security", "name": "修改账户安全", "description": "允许修改密码和 TG 绑定"},
+    {"code": "security.update", "module": "security", "name": "修改账户安全", "description": "允许修改密码"},
     {"code": "agents.read", "module": "agents", "name": "查看代理", "description": "允许查看代理账号树和链路信息"},
     {"code": "agents.write", "module": "agents", "name": "管理代理", "description": "允许创建下级、调额和设置结算模式"},
     {"code": "agents.master.create", "module": "agents", "name": "创建总代", "description": "允许创建省级总代"},

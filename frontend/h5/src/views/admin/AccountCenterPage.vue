@@ -4,14 +4,8 @@
       <el-tab-pane v-if="canReadMe" label="我的账号" name="me">
         <SecurityPage />
       </el-tab-pane>
-      <el-tab-pane v-if="canReadUsers" label="业务用户与授权" name="users">
-        <UsersAuthPage />
-      </el-tab-pane>
       <el-tab-pane v-if="canReadAgents" label="代理账号" name="agents">
         <AgentsPage />
-      </el-tab-pane>
-      <el-tab-pane v-if="canReadStaff" label="后台账号" name="staff">
-        <AdminAccountsPage />
       </el-tab-pane>
     </el-tabs>
   </div>
@@ -20,37 +14,29 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import AdminAccountsPage from '@/views/admin/AdminAccountsPage.vue'
 import AgentsPage from '@/views/admin/AgentsPage.vue'
 import SecurityPage from '@/views/admin/SecurityPage.vue'
-import UsersAuthPage from '@/views/admin/UsersAuthPage.vue'
 import { useAdminConsoleStore } from '@/stores/adminConsole'
 
 const route = useRoute()
 const router = useRouter()
 const store = useAdminConsoleStore()
 const canReadMe = computed(() => store.hasPermission('security.read'))
-const canReadUsers = computed(() => store.hasPermission('users.read'))
 const canReadAgents = computed(() => store.hasPermission('agents.read'))
-const canReadStaff = computed(() => store.hasPermission('admin_accounts.read'))
 
 const resolveTab = () => {
   const requested = String(route.query.tab || '')
   if (requested === 'me' && canReadMe.value) return 'me'
-  if (requested === 'staff' && canReadStaff.value) return 'staff'
   if (requested === 'agents' && canReadAgents.value) return 'agents'
-  if (requested === 'users' && canReadUsers.value) return 'users'
   if (canReadMe.value) return 'me'
-  if (canReadUsers.value) return 'users'
   if (canReadAgents.value) return 'agents'
-  if (canReadStaff.value) return 'staff'
   return 'me'
 }
 
 const activeTab = ref(resolveTab())
 
 watch(
-  () => [route.query.tab, canReadMe.value, canReadUsers.value, canReadAgents.value, canReadStaff.value],
+  () => [route.query.tab, canReadMe.value, canReadAgents.value],
   () => {
     const nextTab = resolveTab()
     if (activeTab.value !== nextTab) {

@@ -10,7 +10,7 @@
         </p>
         <ul class="feature-list">
           <li>支持后台员工账号与代理链路账号统一登录</li>
-          <li>支持 TG 绑定与统一后台运营管理</li>
+          <li>支持统一后台运营管理</li>
           <li>支持卡密批次、Excel 导出与 10 条内快速复制</li>
         </ul>
       </section>
