@@ -81,6 +81,15 @@ cd tg-auto-msg
 pip install -r requirements.txt
 ```
 
+本地运行 bug-first 检查时，改用开发依赖：
+
+```bash
+pip install -r requirements-dev.txt
+ruff check backend tests --select F --ignore F401,F403,F405
+pylint backend tests --disable=all --enable=E0601,E0606
+python -m unittest discover tests
+```
+
 ### 3. 配置环境变量
 复制 `.env.example` 为 `.env` 并填写配置：
 

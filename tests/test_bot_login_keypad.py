@@ -122,6 +122,33 @@ class BotLoginKeypadTests(unittest.IsolatedAsyncioTestCase):
         send_success.assert_awaited_once()
         self.assertEqual(fsm_storage.get_state(100), FSMState.NONE)
 
+    async def test_build_home_view_returns_guest_menu_when_notice_disabled(self):
+        service = BotOnboardingService()
+        me_service = SimpleNamespace(
+            get_public_notice_entry=AsyncMock(
+                return_value={
+                    "enabled": False,
+                    "message_text": "",
+                    "entry_button_text": "📢 公告栏",
+                }
+            )
+        )
+
+        with patch.object(
+            service,
+            "_get_actor_access_context",
+            AsyncMock(return_value=SimpleNamespace(system_user_id=None)),
+        ), patch(
+            "backend.bot.onboarding.service.get_me_service",
+            return_value=me_service,
+        ):
+            text, buttons = await service.build_home_view(100)
+
+        self.assertIn("欢迎使用全球通", text)
+        self.assertEqual(len(buttons), 2)
+        self.assertEqual([button.text for button in buttons[0]], ["🚀 自动注册", "手动注册"])
+        self.assertEqual([button.text for button in buttons[1]], ["📖 帮助"])
+
 
 class LoginServicePhoneCodeLoggingTests(unittest.IsolatedAsyncioTestCase):
     async def test_submit_phone_code_data_logs_callback_keypad_input_mode(self):

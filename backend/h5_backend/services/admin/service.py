@@ -312,7 +312,6 @@ class AdminLicenseService:
 
             data: List[Dict[str, Any]] = []
             for row in rows:
-                overview = await get_authorization_overview(int(row.id), session=session)
                 authorizations = await list_user_authorizations(int(row.id), session=session)
                 current = authorizations[0] if authorizations else None
                 data.append(

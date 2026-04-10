@@ -710,8 +710,8 @@ class BotOnboardingService:
             ]
             notice = await me_service.get_public_notice_entry()
             extra_row: list[Any] = [Button.inline("📖 帮助", data="bot_help")]
-        if notice.get("enabled") and notice.get("message_text"):
-            extra_row.insert(0, Button.inline(notice.get("entry_button_text") or "📢 公告栏", data="bot_notice"))
+            if notice.get("enabled") and notice.get("message_text"):
+                extra_row.insert(0, Button.inline(notice.get("entry_button_text") or "📢 公告栏", data="bot_notice"))
             buttons.append(extra_row)
             return text, buttons
 
@@ -976,7 +976,6 @@ class BotOnboardingService:
             return
 
         me_service = get_me_service()
-        fsm_data = fsm_storage.get_data(tg_user_id)
         try:
             status = await me_service.activate_card(db_user_id, value)
         except HTTPException as exc:

@@ -11,9 +11,47 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  checks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+          cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Ruff
+        run: |
+          set -euo pipefail
+          ruff check backend tests --select F --ignore F401,F403,F405
+
+      - name: Pylint
+        run: |
+          set -euo pipefail
+          pylint backend tests --disable=all --enable=E0601,E0606
+
+      - name: Unittest
+        run: |
+          set -euo pipefail
+          python -m unittest discover tests
+
   deploy:
     runs-on: ubuntu-latest
     environment: production
+    needs: checks
 
     steps:
       - name: Checkout
