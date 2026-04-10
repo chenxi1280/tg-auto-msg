@@ -122,13 +122,14 @@ const mobileMenuVisible = ref(false)
 
 const menuItems = [
   { path: '/admin/dashboard', title: '仪表盘', permissions: ['dashboard.read'], group: 'main' },
-  { path: '/admin/security', title: '账户与安全', permissions: ['security.read'], group: 'main' },
+  { path: '/admin/account-center', title: '账号中心', permissions: ['security.read', 'agents.read'], group: 'main' },
   { path: '/admin/pricing', title: '统一价格', permissions: ['pricing.read'], group: 'main' },
   { path: '/admin/ledgers', title: '资金流水', permissions: ['ledgers.read'], group: 'main' },
   { path: '/admin/operation-logs', title: '操作日志', permissions: ['operation_logs.read', 'operation_logs.scope.read'], group: 'main' },
   { path: '/admin/card-center', title: '卡密中心', permissions: ['batches.read', 'legacy_cards.read'], group: 'main' },
   { path: '/admin/audit', title: '审计日志', permissions: ['audit.system.read'], group: 'main' },
-  { path: '/admin/account-center', title: '账号中心', permissions: ['users.read', 'agents.read', 'admin_accounts.read'], group: 'system' },
+  { path: '/admin/users-auth', title: '业务用户与授权', permissions: ['users.read'], group: 'system' },
+  { path: '/admin/admin-accounts', title: '员工后台账号', permissions: ['admin_accounts.read'], group: 'system' },
   { path: '/admin/license-plans', title: '卡密规格', permissions: ['legacy_cards.read'], group: 'system' },
   { path: '/admin/system-stats', title: '数据统计', permissions: ['system.stats.read'], group: 'system' },
   { path: '/admin/system-settings', title: '系统配置', permissions: ['system.settings.read'], group: 'system' },

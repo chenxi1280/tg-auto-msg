@@ -45,13 +45,6 @@ export const setAdminAccessToken = (token: string) => localStorage.setItem(ADMIN
 export const clearAdminAccessToken = clearAdminStorage
 export const hasAdminSession = (): boolean => Boolean(getAdminAccessToken())
 
-export interface AdminBindingInfo {
-  bind_status: string
-  tg_user_id: number | null
-  tg_username: string | null
-  bound_at: string | null
-}
-
 export interface AdminAssignedRole {
   role_id: number
   role_key: string
@@ -84,7 +77,6 @@ export interface AdminProfileAccount {
   last_login_at: string | null
   created_at: string | null
   updated_at: string | null
-  tg_binding: AdminBindingInfo
   assigned_roles?: AdminAssignedRole[]
   permissions?: string[]
 }
@@ -421,12 +413,6 @@ export const adminChangePassword = (payload: {
   current_password: string
   new_password: string
 }): Promise<{ success: boolean; data: AdminProfile }> => adminApi.post('/admin-auth/change-password', payload)
-
-export const adminIssueTgBindCode = (): Promise<{ success: boolean; data: { bind_code: string; expires_at: string; bot_username: string; bot_bind_url: string } }> =>
-  adminApi.post('/admin-auth/tg-bind-code')
-
-export const adminUnbindTg = (): Promise<{ success: boolean; message: string }> =>
-  adminApi.post('/admin-auth/tg-unbind')
 
 export const adminListPlans = (params?: {
   search?: string

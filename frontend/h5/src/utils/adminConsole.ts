@@ -6,7 +6,7 @@ export const ROLE_LABELS: Record<string, string> = {
 }
 
 export const ACCOUNT_TYPE_LABELS: Record<string, string> = {
-  staff: '后台账号',
+  staff: '员工后台账号',
   agent: '代理账号',
 }
 

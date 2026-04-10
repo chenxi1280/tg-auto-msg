@@ -1,9 +1,6 @@
 """Backoffice admin / agent authentication API."""
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Optional
-
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
@@ -23,12 +20,6 @@ class AdminLoginRequest(BaseModel):
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(..., min_length=1, max_length=128)
     new_password: str = Field(..., min_length=6, max_length=128)
-
-
-class TgBindCallbackRequest(BaseModel):
-    bind_code: str = Field(..., min_length=6, max_length=32)
-    tg_user_id: int = Field(..., ge=1)
-    tg_username: Optional[str] = Field(default=None, max_length=100)
 
 
 def _serialize_auth_payload(token: str, data: dict) -> dict:
@@ -71,34 +62,3 @@ async def admin_change_password(
     panel_service = get_admin_panel_service()
     updated = await service.change_password(current_admin, payload.current_password, payload.new_password)
     return {"success": True, "message": "密码已更新", "data": await panel_service.get_profile(updated)}
-
-
-@router.post("/tg-bind-code")
-async def admin_issue_tg_bind_code(current_admin: AdminAccount = Depends(get_current_admin_account)):
-    service = get_admin_auth_service()
-    data = await service.issue_tg_bind_code(current_admin)
-    return {"success": True, "data": data}
-
-
-@router.post("/tg-unbind")
-async def admin_tg_unbind(current_admin: AdminAccount = Depends(get_current_admin_account)):
-    service = get_admin_auth_service()
-    await service.unbind_tg(current_admin)
-    return {"success": True, "message": "TG 绑定已解除"}
-
-
-@router.post("/tg-bind-callback")
-async def admin_tg_bind_callback(payload: TgBindCallbackRequest):
-    service = get_admin_auth_service()
-    panel_service = get_admin_panel_service()
-    account = await service.complete_tg_binding(
-        payload.bind_code,
-        tg_user_id=payload.tg_user_id,
-        tg_username=payload.tg_username,
-    )
-    return {
-        "success": True,
-        "message": "后台 TG 绑定成功",
-        "data": await panel_service.get_profile(account),
-        "handled_at": datetime.now().isoformat(),
-    }

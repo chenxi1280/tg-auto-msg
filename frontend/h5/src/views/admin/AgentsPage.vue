@@ -2,12 +2,18 @@
   <div class="page-stack">
     <el-alert v-if="lastActionMessage" :title="lastActionMessage" type="success" :closable="true" @close="lastActionMessage = ''" />
 
+    <el-alert
+      title="这里管理的是代理链路账号，包括省总代和下级代理。只有代理账号才参与额度、授信白名单、结算模式和授信责任链。"
+      type="info"
+      :closable="false"
+    />
+
     <div class="form-grid">
       <el-card v-if="store.canCreateMasterAgents" shadow="hover">
         <template #header>
           <div class="card-header">
             <span>创建省总代</span>
-            <span class="card-tip">每省仅允许一个总代账号</span>
+            <span class="card-tip">代理链路账号，每省仅允许一个总代</span>
           </div>
         </template>
         <el-form label-position="top">
@@ -65,7 +71,7 @@
     <el-card shadow="hover">
       <template #header>
         <div class="card-header">
-          <span>代理账号</span>
+          <span>代理账号（总代 / 下级代理）</span>
           <div class="header-actions">
             <el-button v-if="isCompact" class="mobile-filter-trigger" @click="filtersVisible = true">筛选条件</el-button>
             <template v-else>

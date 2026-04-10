@@ -1,8 +1,6 @@
 """Backoffice admin/agent authentication service."""
 from __future__ import annotations
 
-import secrets
-import string
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
@@ -13,11 +11,8 @@ from sqlalchemy import or_, select
 
 from backend.config.core.settings import settings
 from backend.database.runtime.session import get_async_session
-from backend.database.schema.models import AdminAccount, AdminAccountRole, AdminAccountTgBinding, AdminRole
+from backend.database.schema.models import AdminAccount, AdminAccountRole, AdminRole
 from backend.h5_backend.services.auth.service import ALGORITHM, ACCESS_TOKEN_EXPIRE_DAYS, get_auth_service
-from backend.h5_backend.services.me.service import MeService
-
-ADMIN_BIND_CODE_ALPHABET = string.ascii_uppercase + string.digits
 
 
 class AdminAuthService:
@@ -190,105 +185,6 @@ class AdminAuthService:
             await session.flush()
             await session.refresh(current)
             return current
-
-    @staticmethod
-    def _generate_bind_code() -> str:
-        return "".join(secrets.choice(ADMIN_BIND_CODE_ALPHABET) for _ in range(12))
-
-    async def issue_tg_bind_code(self, account: AdminAccount) -> dict:
-        bot_entry = await MeService._serialize_bot_entry()
-        username = str(bot_entry.get("username") or "").strip().lstrip("@")
-        if not username:
-            raise HTTPException(status_code=400, detail="当前未配置 TG Bot 入口")
-
-        expires_at = datetime.now() + timedelta(minutes=5)
-        bind_code = self._generate_bind_code()
-
-        async with get_async_session() as session:
-            binding = (
-                await session.execute(
-                    select(AdminAccountTgBinding).where(AdminAccountTgBinding.admin_account_id == int(account.id)).limit(1)
-                )
-            ).scalar_one_or_none()
-            if binding is None:
-                binding = AdminAccountTgBinding(
-                    admin_account_id=int(account.id),
-                    bind_status="pending",
-                )
-                session.add(binding)
-            binding.bind_status = "pending"
-            binding.bind_code = bind_code
-            binding.bind_code_expires_at = expires_at
-            binding.unbound_at = None
-            binding.bound_by_account_id = int(account.id)
-            await session.flush()
-
-        return {
-            "bind_code": bind_code,
-            "expires_at": expires_at.isoformat(),
-            "bot_username": username,
-            "bot_bind_url": f"https://t.me/{username}?start=adminbind_{bind_code}",
-        }
-
-    async def unbind_tg(self, account: AdminAccount) -> None:
-        async with get_async_session() as session:
-            binding = (
-                await session.execute(
-                    select(AdminAccountTgBinding).where(AdminAccountTgBinding.admin_account_id == int(account.id)).limit(1)
-                )
-            ).scalar_one_or_none()
-            if binding is None:
-                return
-            binding.bind_status = "unbound"
-            binding.bind_code = None
-            binding.bind_code_expires_at = None
-            binding.unbound_at = datetime.now()
-            binding.tg_user_id = None
-            binding.tg_username = None
-
-    async def complete_tg_binding(self, bind_code: str, *, tg_user_id: int, tg_username: Optional[str]) -> AdminAccount:
-        normalized_code = (bind_code or "").strip().upper()
-        if not normalized_code:
-            raise HTTPException(status_code=400, detail="绑定码不能为空")
-
-        async with get_async_session() as session:
-            binding = (
-                await session.execute(
-                    select(AdminAccountTgBinding)
-                    .where(AdminAccountTgBinding.bind_code == normalized_code)
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-            if binding is None or binding.bind_code_expires_at is None or binding.bind_code_expires_at <= datetime.now():
-                raise HTTPException(status_code=400, detail="后台 TG 绑定码无效或已过期")
-
-            conflict = (
-                await session.execute(
-                    select(AdminAccountTgBinding)
-                    .where(
-                        AdminAccountTgBinding.tg_user_id == int(tg_user_id),
-                        AdminAccountTgBinding.admin_account_id != binding.admin_account_id,
-                        AdminAccountTgBinding.bind_status == "bound",
-                    )
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-            if conflict is not None:
-                raise HTTPException(status_code=409, detail="该 TG 账号已绑定到其他后台账号")
-
-            account = await session.get(AdminAccount, int(binding.admin_account_id))
-            if account is None:
-                raise HTTPException(status_code=404, detail="后台账号不存在")
-
-            binding.tg_user_id = int(tg_user_id)
-            binding.tg_username = (tg_username or "").strip() or None
-            binding.bind_status = "bound"
-            binding.bound_at = datetime.now()
-            binding.bind_code = None
-            binding.bind_code_expires_at = None
-            await session.flush()
-            await session.refresh(account)
-            return account
 
 
 _admin_auth_service: Optional[AdminAuthService] = None

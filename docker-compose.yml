@@ -23,6 +23,7 @@ services:
       ADMIN_BOOTSTRAP_DISPLAY_NAME: ${ADMIN_BOOTSTRAP_DISPLAY_NAME:-超级管理员}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       TIMEZONE: ${TIMEZONE:-Asia/Shanghai}
+      TZ: ${TIMEZONE:-Asia/Shanghai}
       PROVINCE_CODE: ${PROVINCE_CODE:-default}
       H5_BASE_URL: ${H5_BASE_URL:-http://47.250.167.174}
       WORKER_INTERVAL: ${WORKER_INTERVAL:-60}
@@ -54,6 +55,8 @@ services:
     depends_on:
       app:
         condition: service_healthy
+    environment:
+      TZ: ${TIMEZONE:-Asia/Shanghai}
     volumes:
       - ${NGINX_LOG_DIR:-/data/tgmsg/nginx-logs}:/var/log/nginx
     ports:

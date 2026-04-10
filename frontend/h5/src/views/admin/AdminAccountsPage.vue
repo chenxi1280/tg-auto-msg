@@ -2,10 +2,16 @@
   <div class="page-stack">
     <el-alert v-if="lastActionMessage" :title="lastActionMessage" type="success" :closable="true" @close="lastActionMessage = ''" />
 
+    <el-alert
+      title="这里管理的是员工后台账号，只用于系统后台运营、RBAC 和配置管理，不参与代理额度、授信白名单、结算模式或卡密责任链。"
+      type="info"
+      :closable="false"
+    />
+
     <el-card shadow="hover">
       <template #header>
         <div class="card-header">
-          <span>后台账号</span>
+          <span>员工后台账号</span>
           <div class="header-actions">
             <el-input v-model.trim="filters.search" clearable placeholder="搜索账号/显示名" style="width: 220px" />
             <el-select v-model="filters.status" clearable placeholder="状态" style="width: 140px">
@@ -17,7 +23,7 @@
             </el-select>
             <el-button @click="loadData(true)">查询</el-button>
             <el-button @click="loadData()">刷新</el-button>
-            <el-button v-if="store.hasPermission('admin_accounts.write')" type="primary" @click="openCreateDialog">新增账号</el-button>
+            <el-button v-if="store.hasPermission('admin_accounts.write')" type="primary" @click="openCreateDialog">新增员工账号</el-button>
           </div>
         </div>
       </template>
@@ -38,13 +44,6 @@
                 {{ role.display_name }}
               </el-tag>
             </el-space>
-          </template>
-        </el-table-column>
-        <el-table-column label="TG 绑定" width="120">
-          <template #default="{ row }">
-            <el-tag :type="row.tg_binding?.bind_status === 'bound' ? 'success' : 'info'">
-              {{ row.tg_binding?.bind_status === 'bound' ? '已绑定' : '未绑定' }}
-            </el-tag>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="100">
@@ -78,10 +77,6 @@
               <span class="mobile-data-card__value">{{ (row.assigned_roles || []).map((item) => item.display_name).join(' / ') || '-' }}</span>
             </div>
             <div class="mobile-data-card__row">
-              <span class="mobile-data-card__label">TG 绑定</span>
-              <span class="mobile-data-card__value">{{ row.tg_binding?.bind_status === 'bound' ? '已绑定' : '未绑定' }}</span>
-            </div>
-            <div class="mobile-data-card__row">
               <span class="mobile-data-card__label">最近登录</span>
               <span class="mobile-data-card__value">{{ formatDateTime(row.last_login_at) }}</span>
             </div>
@@ -108,7 +103,7 @@
       </div>
     </el-card>
 
-    <ResponsiveFormLayer v-model="createDialog.visible" title="新增后台账号" width="640px">
+    <ResponsiveFormLayer v-model="createDialog.visible" title="新增员工后台账号" width="640px">
       <el-form label-position="top">
         <el-row :gutter="16">
           <el-col :span="12">
@@ -130,7 +125,7 @@
           </el-col>
           <el-col :span="12">
             <el-form-item label="账号类型">
-              <el-input model-value="后台账号" disabled />
+              <el-input model-value="员工后台账号（不参与代理额度和白名单）" disabled />
             </el-form-item>
           </el-col>
         </el-row>
@@ -162,7 +157,7 @@
       </template>
     </ResponsiveFormLayer>
 
-    <ResponsiveFormLayer v-model="editDialog.visible" title="编辑后台账号" width="520px">
+    <ResponsiveFormLayer v-model="editDialog.visible" title="编辑员工后台账号" width="520px">
       <el-form label-position="top">
         <el-form-item label="显示名称">
           <el-input v-model.trim="editDialog.form.display_name" />
@@ -186,7 +181,7 @@
       </template>
     </ResponsiveFormLayer>
 
-    <ResponsiveFormLayer v-model="rolesDialog.visible" title="绑定后台角色" width="520px">
+    <ResponsiveFormLayer v-model="rolesDialog.visible" title="绑定员工后台角色" width="520px">
       <el-form label-position="top">
         <el-form-item label="角色列表">
           <el-select v-model="rolesDialog.role_keys" multiple filterable>
@@ -200,7 +195,7 @@
       </template>
     </ResponsiveFormLayer>
 
-    <ResponsiveFormLayer v-model="resetDialog.visible" title="重置后台账号密码" width="420px">
+    <ResponsiveFormLayer v-model="resetDialog.visible" title="重置员工后台账号密码" width="420px">
       <el-form label-position="top">
         <el-form-item label="新密码">
           <el-input v-model="resetDialog.new_password" type="password" show-password />

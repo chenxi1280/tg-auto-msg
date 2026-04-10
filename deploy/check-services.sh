@@ -10,6 +10,7 @@ ALERT_ENV_FILE="${ALERT_ENV_FILE:-/etc/tgmsg/service-health.env}"
 LOG_DIR="${LOG_DIR:-${APP_LOG_DIR:-/data/tgmsg/shared/logs}}"
 LOG_FILE="${LOG_FILE:-${LOG_DIR}/service-health.log}"
 STATE_FILE="${STATE_FILE:-${LOG_DIR}/service-health.state}"
+HEALTHCHECK_TIMEZONE="${HEALTHCHECK_TIMEZONE:-${TIMEZONE:-Asia/Shanghai}}"
 MEM_AVAILABLE_THRESHOLD_MB="${MEM_AVAILABLE_THRESHOLD_MB:-128}"
 DISK_USAGE_THRESHOLD_PERCENT="${DISK_USAGE_THRESHOLD_PERCENT:-90}"
 RECOVERY_WAIT_SECONDS="${RECOVERY_WAIT_SECONDS:-8}"
@@ -31,6 +32,53 @@ if [[ -f "$ALERT_ENV_FILE" ]]; then
   source "$ALERT_ENV_FILE"
   set +a
 fi
+
+normalize_alert_text() {
+  sed -E \
+    -e 's/\r$//' \
+    -e 's/^[[:space:]]*//' \
+    -e 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9:.:+-]+[[:space:]]+\|[[:space:]]*[A-Z]+[[:space:]]+\|[[:space:]]*//' \
+    -e 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9:.:+-]+[[:space:]]*//' \
+    -e 's/[[:space:]]+/ /g' \
+    -e 's/[[:space:]]+$//'
+}
+
+dedupe_lines_by_normalized_content() {
+  local line key
+  declare -A seen=()
+
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    key="$(printf '%s' "$line" | normalize_alert_text)"
+    [[ -z "$key" ]] && continue
+    if [[ -z "${seen[$key]+x}" ]]; then
+      seen["$key"]=1
+      printf '%s\n' "$line"
+    fi
+  done
+}
+
+resolve_window_start_label() {
+  local window="$1"
+
+  case "$window" in
+    '' )
+      date '+%Y-%m-%d %H:%M:%S %Z'
+      ;;
+    *m )
+      date -d "${window%m} minutes ago" '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S %Z'
+      ;;
+    *h )
+      date -d "${window%h} hours ago" '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S %Z'
+      ;;
+    *d )
+      date -d "${window%d} days ago" '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S %Z'
+      ;;
+    * )
+      date -d "$window ago" '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S %Z'
+      ;;
+  esac
+}
 
 log() {
   printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG_FILE"
@@ -107,21 +155,30 @@ tail_container_errors() {
 }
 
 check_tgmsg_recent_errors() {
-  local matches latest_log
+  local matches latest_log log_source
 
-  matches="$(tail_container_errors "$APP_CONTAINER")"
-
-  if [[ -z "$matches" && -d "$APP_RUNTIME_LOG_DIR" ]]; then
+  log_source="容器日志"
+  if [[ -d "$APP_RUNTIME_LOG_DIR" ]]; then
     latest_log="$(find "$APP_RUNTIME_LOG_DIR" -maxdepth 1 -type f -name 'app_*.log' | sort | tail -n 1)"
     if [[ -n "$latest_log" ]]; then
       matches="$(tail -n "$TGMSG_LOG_TAIL_LINES" "$latest_log" 2>/dev/null \
         | grep -E '(\| ERROR\s+\||\| CRITICAL\s+\||Traceback|ERROR:|CRITICAL:|FATAL:|PANIC:)' \
         | tail -n "$TGMSG_ERROR_MATCH_LIMIT" || true)"
+      if [[ -n "$matches" ]]; then
+        log_source="运行日志文件"
+      fi
     fi
   fi
 
+  if [[ -z "$matches" ]]; then
+    matches="$(tail_container_errors "$APP_CONTAINER")"
+    log_source="容器日志"
+  fi
+
+  matches="$(printf '%s\n' "$matches" | dedupe_lines_by_normalized_content)"
+
   if [[ -n "$matches" ]]; then
-    issues+=("tgmsg 最近 ${TGMSG_LOG_SCAN_WINDOW} 存在错误日志:")
+    issues+=("tgmsg 最近 ${TGMSG_LOG_SCAN_WINDOW} 存在错误日志 (${log_source}，北京时间 ${LOG_WINDOW_START_LABEL} ~ ${LOG_WINDOW_END_LABEL}):")
     while IFS= read -r line; do
       [[ -n "$line" ]] && issues+=("  $line")
     done <<<"$matches"
@@ -226,6 +283,11 @@ attempt_service_recovery() {
 }
 
 ensure_runtime_env
+HEALTHCHECK_TIMEZONE="${HEALTHCHECK_TIMEZONE:-${TIMEZONE:-Asia/Shanghai}}"
+export TZ="$HEALTHCHECK_TIMEZONE"
+
+LOG_WINDOW_END_LABEL="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+LOG_WINDOW_START_LABEL="$(resolve_window_start_label "$TGMSG_LOG_SCAN_WINDOW")"
 
 issues=()
 recovered_services=()
@@ -280,7 +342,7 @@ if (( ${#issues[@]} > 0 )); then
   summary="$(printf '%s\n' "${issues[@]}")"
 fi
 
-current_fingerprint="$(printf '%s' "$summary" | hash_text)"
+current_fingerprint="$(printf '%s' "$summary" | normalize_alert_text | hash_text)"
 previous_status=""
 previous_fingerprint=""
 last_daily_report_date=""
