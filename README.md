@@ -91,9 +91,9 @@ python -m unittest discover -s tests -t .
 ```
 
 GitHub Actions 约定：
-- `pull_request`、`main`、`release` 先运行 `Python Checks`
-- `release` 分支检查通过后，`Deploy Production` 会自动链式触发
-- 手动触发 `Deploy Production` 时，workflow 内也会先跑同一套检查再部署
+- `pull_request` 与 `main` 运行 `Python Checks`
+- `release` 分支只运行 `Deploy Production`，并在 workflow 内先检查再部署
+- 手动触发 `Deploy Production` 时，同样会先跑检查再部署
 
 ### 3. 配置环境变量
 复制 `.env.example` 为 `.env` 并填写配置：

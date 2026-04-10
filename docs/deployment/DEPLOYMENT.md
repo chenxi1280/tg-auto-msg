@@ -7,9 +7,9 @@
 > `docs/GITHUB_ACTIONS_SSH_DEPLOY.md`。另外，线上 `PostgreSQL/Redis` 已建议拆分到独立的
 > `infra-compose` 项目，不再跟随 `tgmsg` 一起发版。
 >
-> 当前 CI、容器和推荐开发环境统一使用 Python `3.11`。`release` 分支会先跑
-> `Python Checks`，通过后再自动链式触发 `Deploy Production`；手动触发部署时，
-> workflow 内也会先执行同一套检查。
+> 当前 CI、容器和推荐开发环境统一使用 Python `3.11`。`pull_request` 与 `main`
+> 先跑 `Python Checks`；`release` 分支只运行 `Deploy Production`，并在 workflow 内
+> 先执行同一套检查后再部署。
 
 ## 📋 前置要求
 

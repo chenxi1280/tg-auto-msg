@@ -5,7 +5,6 @@ name: Python Checks
   push:
     branches:
       - main
-      - release
 
 jobs:
   checks:
