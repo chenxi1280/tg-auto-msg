@@ -11,10 +11,33 @@ from backend.bot.ui.keyboards import build_inline_buttons
 from backend.bot.safety.rate_limiter import get_rate_limiter
 from backend.database.schema.models import MediaType, ScheduledMessageTask
 
+TARGET_DELIVERY_SUSPENDED = "suspended"
+
+
+def count_configured_task_targets(task: ScheduledMessageTask) -> int:
+    """Return total valid targets regardless of suspended runtime state."""
+    raw_targets = getattr(task, "target_peers", None)
+    count = 0
+    if isinstance(raw_targets, list):
+        for item in raw_targets:
+            if not isinstance(item, dict):
+                continue
+            try:
+                int(item.get("peer_id"))
+            except Exception:
+                continue
+            peer_type = str(item.get("peer_type") or "").strip().lower()
+            if peer_type in {"user", "chat", "supergroup", "channel"}:
+                count += 1
+    elif task.target_peer_id or task.chat_id:
+        count = 1
+    return count
+
 
 def collect_task_targets(task: ScheduledMessageTask) -> list[dict]:
     """Collect target peers from task, compatible with new/legacy fields."""
     targets: list[dict] = []
+    has_explicit_target_peers = False
 
     raw_targets = getattr(task, "target_peers", None)
     if isinstance(raw_targets, list):
@@ -28,6 +51,10 @@ def collect_task_targets(task: ScheduledMessageTask) -> list[dict]:
             peer_type = str(item.get("peer_type") or "").strip().lower()
             if peer_type not in {"user", "chat", "supergroup", "channel"}:
                 continue
+            has_explicit_target_peers = True
+            delivery_status = str(item.get("delivery_status") or "").strip().lower()
+            if delivery_status == TARGET_DELIVERY_SUSPENDED:
+                continue
             access_hash = item.get("access_hash")
             if access_hash not in (None, ""):
                 try:
@@ -39,10 +66,11 @@ def collect_task_targets(task: ScheduledMessageTask) -> list[dict]:
                     "peer_id": peer_id,
                     "peer_type": peer_type,
                     "access_hash": access_hash,
+                    "title": (str(item.get("title") or "").strip() or None),
                 }
             )
 
-    if not targets:
+    if not targets and not has_explicit_target_peers:
         target_peer_id = task.target_peer_id or task.chat_id
         if target_peer_id:
             fallback_peer_type = str(task.target_peer_type or "user").strip().lower()

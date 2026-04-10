@@ -12,6 +12,10 @@ from backend.h5_backend.services.task.helpers import (
     normalize_media_type,
     normalize_target_peers,
 )
+from backend.scheduler.core.task_issue_state import (
+    has_target_collection_changed,
+    merge_target_runtime_metadata,
+)
 
 ALLOWED_PEER_TYPES = {"user", "chat", "supergroup", "channel"}
 
@@ -57,7 +61,11 @@ def normalize_targets(payload: Dict[str, Any], fallback_task: Optional[Scheduled
         raw_access_hash = payload.get("target_access_hash")
         targets = [build_single_target(raw_peer_id, raw_peer_type, raw_access_hash)]
     elif fallback_task is not None:
-        targets = normalize_target_peers(fallback_task.target_peers)
+        targets = merge_target_runtime_metadata(
+            incoming_targets=normalize_target_peers(fallback_task.target_peers),
+            existing_targets=fallback_task.target_peers,
+            reset_delivery_status=False,
+        )
         if not targets:
             raw_peer_id = fallback_task.target_peer_id or fallback_task.chat_id
             if raw_peer_id:
@@ -71,6 +79,19 @@ def normalize_targets(payload: Dict[str, Any], fallback_task: Optional[Scheduled
 
     if not targets:
         raise HTTPException(status_code=400, detail="缺少发送目标（target_peers/target_peer_id/chat_id）")
+
+    if incoming_target_peers or incoming_single_target:
+        should_reset_delivery_status = True
+        if fallback_task is not None and not has_target_collection_changed(
+            incoming_targets=targets,
+            existing_targets=fallback_task.target_peers,
+        ):
+            should_reset_delivery_status = False
+        targets = merge_target_runtime_metadata(
+            incoming_targets=targets,
+            existing_targets=fallback_task.target_peers if fallback_task is not None else None,
+            reset_delivery_status=should_reset_delivery_status,
+        )
 
     primary = targets[0]
     payload["target_peers"] = targets
