@@ -6,6 +6,28 @@ from backend.bot.notice_manager import BotNoticeManager
 
 
 class BotNoticeManagerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_notice_without_target_url_is_still_ready(self):
+        manager = BotNoticeManager()
+
+        with patch(
+            "backend.bot.notice_manager.get_me_service",
+            return_value=SimpleNamespace(
+                get_public_notice_entry=AsyncMock(
+                    return_value={
+                        "enabled": True,
+                        "entry_button_text": "公告栏",
+                        "message_text": "test",
+                        "target_url": "",
+                        "updated_at": None,
+                    }
+                )
+            ),
+        ):
+            result = await manager.get_notice_entry()
+
+        self.assertTrue(result["is_ready"])
+        self.assertEqual(result["target_url"], "")
+
     async def test_ensure_notice_attempts_pin_after_send(self):
         manager = BotNoticeManager()
 

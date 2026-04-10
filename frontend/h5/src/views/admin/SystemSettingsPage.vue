@@ -50,8 +50,8 @@
           <el-form-item label="公告正文">
             <el-input v-model="noticeForm.message_text" :disabled="!canUpdate" type="textarea" :rows="6" maxlength="3000" show-word-limit />
           </el-form-item>
-          <el-form-item label="跳转链接">
-            <el-input v-model.trim="noticeForm.target_url" :disabled="!canUpdate" placeholder="https://..." />
+          <el-form-item label="跳转链接（可选）">
+            <el-input v-model.trim="noticeForm.target_url" :disabled="!canUpdate" placeholder="https://...（可留空）" />
           </el-form-item>
           <el-button v-if="canUpdate" type="primary" :loading="savingNotice" @click="saveNotice">
             保存公告配置
