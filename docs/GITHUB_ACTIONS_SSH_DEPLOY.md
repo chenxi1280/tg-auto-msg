@@ -5,10 +5,11 @@
 工作方式是：
 
 1. 代码 push 到 GitHub
-2. GitHub Actions 在 GitHub 提供的 runner 上运行
-3. runner 使用 SSH 连到生产机
-4. runner 执行 `deploy/release.sh`
-5. 生产机接收 release 包并完成 `docker compose` 更新
+2. `Python Checks` 先在 GitHub 提供的 runner 上运行
+3. `release` 分支检查通过后，`Deploy Production` 自动链式触发
+4. deploy runner 使用 SSH 连到生产机
+5. runner 执行 `deploy/release.sh`
+6. 生产机接收 release 包并完成 `docker compose` 更新
 
 ## 适用范围
 
@@ -121,14 +122,20 @@ vi /data/tgmsg/shared/.env
 
 仓库里的 workflow 文件：
 
+- [.github/workflows/python-checks.yml](/Users/xida/PycharmProjects/tg-auto-msg/.github/workflows/python-checks.yml)
 - [.github/workflows/deploy-production.yml](/Users/xida/PycharmProjects/tg-auto-msg/.github/workflows/deploy-production.yml)
 
-它会：
+其中：
 
-1. checkout 当前代码
-2. 读取 GitHub Secrets
-3. 写入 runner 的 SSH 配置
-4. 调用 `bash deploy/release.sh --host production-server`
+1. `Python Checks`
+   - 在 `pull_request`、`push main`、`push release` 时运行
+   - 使用 Python `3.11`
+   - 执行 `ruff`、`pylint`、`unittest`
+2. `Deploy Production`
+   - 支持手动 `workflow_dispatch`
+   - 当 `Python Checks` 在 `release` 分支 `push` 上成功完成时自动触发
+   - 自动触发时会 checkout 到刚刚通过检查的那次 `head_sha`
+   - 然后读取 GitHub Secrets、写入 SSH 配置，并调用 `bash deploy/release.sh --host production-server`
 
 而 `deploy/release.sh` 会：
 
@@ -159,9 +166,8 @@ GitHub 页面进入：
 
 ### 2. 自动发布
 
-当 `main` 或 `master` 有 push 时自动触发。
-
-如果你担心误发布，可以先把 workflow 的 `push:` 去掉，只保留 `workflow_dispatch:`。
+当 `release` 有 push 时，会先运行 `Python Checks`；检查成功后，`Deploy Production` 自动链式触发。
+`main` 上只运行检查，不会自动部署。
 
 ## 六、发布后怎么确认
 

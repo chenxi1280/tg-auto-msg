@@ -30,7 +30,7 @@
 ## 🏗️ 技术架构
 
 ### 后端
-- **Python 3.10+** - 核心语言
+- **Python 3.11** - 核心语言（CI、容器与推荐本地环境统一版本）
 - **Telethon** - Telegram Bot + Userbot 客户端
 - **PostgreSQL** - 数据存储
 - **SQLAlchemy** - ORM 框架（异步）
@@ -89,6 +89,11 @@ ruff check backend tests --select F --ignore F401,F403,F405
 pylint backend tests --disable=all --enable=E0601,E0606
 python -m unittest discover -s tests -t .
 ```
+
+GitHub Actions 约定：
+- `pull_request`、`main`、`release` 先运行 `Python Checks`
+- `release` 分支检查通过后，`Deploy Production` 会自动链式触发
+- 手动触发 `Deploy Production` 时，workflow 内也会先跑同一套检查再部署
 
 ### 3. 配置环境变量
 复制 `.env.example` 为 `.env` 并填写配置：
