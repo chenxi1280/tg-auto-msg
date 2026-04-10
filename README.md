@@ -87,7 +87,7 @@ pip install -r requirements.txt
 pip install -r requirements-dev.txt
 ruff check backend tests --select F --ignore F401,F403,F405
 pylint backend tests --disable=all --enable=E0601,E0606
-python -m unittest discover tests
+python -m unittest discover -s tests -t .
 ```
 
 ### 3. 配置环境变量

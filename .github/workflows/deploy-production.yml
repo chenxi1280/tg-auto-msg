@@ -46,7 +46,7 @@ jobs:
       - name: Unittest
         run: |
           set -euo pipefail
-          python -m unittest discover tests
+          python -m unittest discover -s tests -t .
 
   deploy:
     runs-on: ubuntu-latest
