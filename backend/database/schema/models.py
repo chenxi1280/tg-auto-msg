@@ -860,6 +860,60 @@ class TaskLog(Base):
         return f"<TaskLog(id={self.id}, task_id={self.task_id}, result={self.result})>"
 
 
+class TaskTargetSendIssue(Base):
+    """单个任务目标的发送异常状态。"""
+    __tablename__ = "task_target_send_issues"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("scheduled_message_tasks.task_id", ondelete="CASCADE"),
+        nullable=False,
+        comment="任务 ID",
+    )
+    user_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="归属系统用户 ID",
+    )
+    account_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey("accounts.account_id", ondelete="SET NULL"),
+        nullable=True,
+        comment="执行账号 ID",
+    )
+    peer_id: Mapped[int] = mapped_column(BigInteger, nullable=False, comment="目标 Peer ID")
+    peer_type: Mapped[str] = mapped_column(String(20), nullable=False, comment="目标 Peer 类型")
+    peer_title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="目标标题")
+    current_error_type: Mapped[str] = mapped_column(String(100), nullable=False, comment="当前错误类型")
+    current_error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="当前错误摘要")
+    issue_category: Mapped[str] = mapped_column(String(50), nullable=False, comment="问题分类")
+    status: Mapped[str] = mapped_column(String(20), default="active", nullable=False, comment="状态：active/resolved")
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False, comment="首次出现时间")
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False, comment="最近出现时间")
+    last_notified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="最近提醒时间")
+    muted_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="静默到期时间")
+    auto_suspended: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, comment="是否自动暂停目标")
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="恢复时间")
+    recovered_notified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="恢复提醒时间")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("task_id", "peer_type", "peer_id", name="uq_task_target_send_issues_target"),
+        Index("idx_task_target_send_issues_status", "status", "last_seen_at"),
+        Index("idx_task_target_send_issues_notify", "status", "last_notified_at", "muted_until"),
+        Index("idx_task_target_send_issues_user", "user_id", "status"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<TaskTargetSendIssue(id={self.id}, task_id={self.task_id}, "
+            f"peer={self.peer_type}:{self.peer_id}, status={self.status})>"
+        )
+
+
 class Proxy(Base):
     """代理池表"""
     __tablename__ = "proxies"

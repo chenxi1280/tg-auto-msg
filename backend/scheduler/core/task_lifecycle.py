@@ -40,11 +40,17 @@ async def handle_task_success(
     task: ScheduledMessageTask,
     message_id: int,
     target_message_ids: dict[tuple[str, int], int] | None,
+    error_message: str | None,
     now: int,
     account_manager,
 ) -> None:
     """Persist task success side-effects and schedule next run."""
-    log = TaskLog(task_id=task.task_id, result="success", message_id=message_id)
+    log = TaskLog(
+        task_id=task.task_id,
+        result="success",
+        message_id=message_id,
+        error_message=error_message,
+    )
     session.add(log)
 
     if target_message_ids:

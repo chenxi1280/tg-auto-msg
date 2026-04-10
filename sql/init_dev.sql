@@ -779,6 +779,52 @@ COMMENT ON TABLE task_logs IS '任务执行日志表';
 COMMENT ON COLUMN task_logs.result IS '执行结果: success/failed';
 
 -- ============================================
+-- 表: 任务目标发送异常状态 (task_target_send_issues)
+-- ============================================
+CREATE TABLE IF NOT EXISTS task_target_send_issues (
+    id SERIAL PRIMARY KEY,
+    task_id VARCHAR(36) NOT NULL REFERENCES scheduled_message_tasks(task_id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    account_id VARCHAR(36) REFERENCES accounts(account_id) ON DELETE SET NULL,
+    peer_id BIGINT NOT NULL,
+    peer_type VARCHAR(20) NOT NULL,
+    peer_title VARCHAR(255),
+    current_error_type VARCHAR(100) NOT NULL,
+    current_error_message TEXT,
+    issue_category VARCHAR(50) NOT NULL,
+    status VARCHAR(20) DEFAULT 'active' NOT NULL,
+    first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    last_notified_at TIMESTAMP,
+    muted_until TIMESTAMP,
+    auto_suspended BOOLEAN DEFAULT FALSE NOT NULL,
+    resolved_at TIMESTAMP,
+    recovered_notified_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT uq_task_target_send_issues_target UNIQUE (task_id, peer_type, peer_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_target_send_issues_status
+    ON task_target_send_issues(status, last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_task_target_send_issues_notify
+    ON task_target_send_issues(status, last_notified_at, muted_until);
+CREATE INDEX IF NOT EXISTS idx_task_target_send_issues_user
+    ON task_target_send_issues(user_id, status);
+
+COMMENT ON TABLE task_target_send_issues IS '任务单目标发送异常状态表';
+COMMENT ON COLUMN task_target_send_issues.task_id IS '任务 ID';
+COMMENT ON COLUMN task_target_send_issues.user_id IS '归属系统用户 ID';
+COMMENT ON COLUMN task_target_send_issues.account_id IS '执行账号 ID';
+COMMENT ON COLUMN task_target_send_issues.peer_id IS '目标 Peer ID';
+COMMENT ON COLUMN task_target_send_issues.peer_type IS '目标 Peer 类型';
+COMMENT ON COLUMN task_target_send_issues.peer_title IS '目标标题';
+COMMENT ON COLUMN task_target_send_issues.current_error_type IS '当前错误类型';
+COMMENT ON COLUMN task_target_send_issues.current_error_message IS '当前错误摘要';
+COMMENT ON COLUMN task_target_send_issues.issue_category IS '问题分类';
+COMMENT ON COLUMN task_target_send_issues.status IS '状态：active/resolved';
+
+-- ============================================
 -- 自动更新 updated_at 触发器
 -- ============================================
 CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -850,6 +896,12 @@ CREATE TRIGGER update_scheduled_message_tasks_updated_at
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_task_target_send_issues_updated_at ON task_target_send_issues;
+CREATE TRIGGER update_task_target_send_issues_updated_at
+    BEFORE UPDATE ON task_target_send_issues
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
 -- ============================================
 -- 完成
 -- ============================================
@@ -872,5 +924,6 @@ WHERE table_schema = 'public'
     'resources',
     'account_bind_logs',
     'scheduled_message_tasks',
-    'task_logs'
+    'task_logs',
+    'task_target_send_issues'
 );

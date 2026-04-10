@@ -19,6 +19,12 @@ def _serialize_public_target_peers(task: ScheduledMessageTask) -> List[Dict[str,
                 "peer_id": item.get("peer_id"),
                 "peer_type": item.get("peer_type"),
                 "access_hash": item.get("access_hash"),
+                "title": item.get("title"),
+                "delivery_status": item.get("delivery_status") or "active",
+                "suspended_reason": item.get("suspended_reason"),
+                "suspended_at": item.get("suspended_at"),
+                "last_error_type": item.get("last_error_type"),
+                "last_error_message": item.get("last_error_message"),
             }
         )
     return serialized

@@ -56,6 +56,7 @@ def normalize_target_peers(raw_value: Any) -> List[Dict[str, Any]]:
         raw_peer_id = item.get("peer_id", item.get("target_peer_id"))
         raw_peer_type = item.get("peer_type", item.get("target_peer_type"))
         raw_access_hash = item.get("access_hash", item.get("target_access_hash"))
+        raw_title = item.get("title")
 
         try:
             peer_id = int(raw_peer_id)
@@ -76,13 +77,15 @@ def normalize_target_peers(raw_value: Any) -> List[Dict[str, Any]]:
             except Exception as exc:
                 raise HTTPException(status_code=400, detail=f"target_peers[{idx}].access_hash 非法") from exc
 
-        normalized.append(
-            {
-                "peer_id": peer_id,
-                "peer_type": peer_type,
-                "access_hash": access_hash,
-            }
-        )
+        normalized_item = {
+            "peer_id": peer_id,
+            "peer_type": peer_type,
+            "access_hash": access_hash,
+        }
+        title = str(raw_title or "").strip()
+        if title:
+            normalized_item["title"] = title
+        normalized.append(normalized_item)
 
     deduped: List[Dict[str, Any]] = []
     seen = set()

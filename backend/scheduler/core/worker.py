@@ -24,9 +24,17 @@ from backend.scheduler.core.queue_ops import (
 )
 from backend.scheduler.core.task_execution import (
     collect_task_targets as _collect_task_targets,
+    count_configured_task_targets as _count_configured_task_targets,
     get_target_last_message_id as _get_target_last_message_id,
     resolve_send_target as _resolve_send_target,
     send_with_protections as _send_with_protections,
+)
+from backend.scheduler.core.task_issue_classifier import classify_task_send_error
+from backend.scheduler.core.task_issue_state import (
+    record_task_target_send_issue as _record_task_target_send_issue,
+    resolve_task_target_send_issue as _resolve_task_target_send_issue,
+    update_task_target_failure_metadata as _update_task_target_failure_metadata,
+    update_task_target_success_metadata as _update_task_target_success_metadata,
 )
 from backend.scheduler.core.task_lifecycle import (
     check_time_limit as _check_time_limit,
@@ -293,13 +301,22 @@ class TaskScheduler:
                 # 收集目标列表（兼容旧结构的单目标）
                 target_specs = _collect_task_targets(task)
                 if not target_specs:
-                    logger.warning(f"任务 {task_id} 没有目标 Peer ID")
-                    await _handle_task_failure(
-                        session=session,
-                        task=task,
-                        error_message="缺少目标 Peer ID",
-                        max_failure_count=settings.max_failure_count,
-                    )
+                    configured_target_count = _count_configured_task_targets(task)
+                    if configured_target_count > 0:
+                        task.next_run_at = now + task.repeat_interval_min * 60
+                        await session.commit()
+                        logger.info(
+                            "任务 {} 当前没有可发送目标，已跳过本轮执行（全部目标可能已被系统暂停）",
+                            task_id,
+                        )
+                    else:
+                        logger.warning(f"任务 {task_id} 没有目标 Peer ID")
+                        await _handle_task_failure(
+                            session=session,
+                            task=task,
+                            error_message="缺少目标 Peer ID",
+                            max_failure_count=settings.max_failure_count,
+                        )
                     return
 
                 # 获取执行账号
@@ -351,12 +368,18 @@ class TaskScheduler:
                 try:
                     last_message_id: Optional[int] = None
                     send_errors: list[str] = []
+                    partial_failure_summaries: list[str] = []
                     target_message_ids: dict[tuple[str, int], int] = {}
 
                     for spec in target_specs:
                         target_peer_id = int(spec["peer_id"])
                         target_peer_type = spec.get("peer_type")
                         target_access_hash = spec.get("access_hash")
+                        target_title = spec.get("title")
+                        normalized_target_peer_type = str(
+                            target_peer_type or task.target_peer_type or "user"
+                        ).strip().lower()
+                        target_label = target_title or f"{normalized_target_peer_type}:{target_peer_id}"
                         previous_message_id = _get_target_last_message_id(
                             task,
                             target_peer_id=target_peer_id,
@@ -386,8 +409,29 @@ class TaskScheduler:
                         except (FloodWaitError, PeerFloodError):
                             raise
                         except Exception as send_err:
+                            classification = classify_task_send_error(send_err)
                             send_errors.append(
                                 f"peer={target_peer_id}: {type(send_err).__name__}: {send_err}"
+                            )
+                            partial_failure_summaries.append(
+                                f"{target_label}: {classification.user_message}"
+                            )
+                            await _record_task_target_send_issue(
+                                session=session,
+                                task=task,
+                                peer_id=target_peer_id,
+                                peer_type=normalized_target_peer_type,
+                                peer_title=str(target_title).strip() if target_title else None,
+                                classification=classification,
+                            )
+                            _update_task_target_failure_metadata(
+                                task,
+                                peer_id=target_peer_id,
+                                peer_type=normalized_target_peer_type,
+                                peer_title=str(target_title).strip() if target_title else None,
+                                error_type=classification.error_type,
+                                error_message=classification.user_message,
+                                suspension_reason=classification.suspension_reason,
                             )
                             logger.warning(
                                 f"任务 {task_id} 发送目标失败: peer={target_peer_id}, "
@@ -396,18 +440,58 @@ class TaskScheduler:
                             continue
 
                         if message_id:
+                            await _resolve_task_target_send_issue(
+                                session=session,
+                                task=task,
+                                peer_id=target_peer_id,
+                                peer_type=normalized_target_peer_type,
+                            )
+                            _update_task_target_success_metadata(
+                                task,
+                                peer_id=target_peer_id,
+                                peer_type=normalized_target_peer_type,
+                            )
                             last_message_id = message_id
-                            key = (str(target_peer_type or task.target_peer_type or "").strip().lower(), target_peer_id)
+                            key = (normalized_target_peer_type, target_peer_id)
                             target_message_ids[key] = message_id
                         else:
                             send_errors.append(f"peer={target_peer_id}: send_message returned empty")
+                            empty_result_error = RuntimeError("send_message returned empty")
+                            classification = classify_task_send_error(empty_result_error)
+                            partial_failure_summaries.append(
+                                f"{target_label}: {classification.user_message}"
+                            )
+                            await _record_task_target_send_issue(
+                                session=session,
+                                task=task,
+                                peer_id=target_peer_id,
+                                peer_type=normalized_target_peer_type,
+                                peer_title=str(target_title).strip() if target_title else None,
+                                classification=classification,
+                            )
+                            _update_task_target_failure_metadata(
+                                task,
+                                peer_id=target_peer_id,
+                                peer_type=normalized_target_peer_type,
+                                peer_title=str(target_title).strip() if target_title else None,
+                                error_type=classification.error_type,
+                                error_message=classification.user_message,
+                                suspension_reason=classification.suspension_reason,
+                            )
 
                     if last_message_id:
+                        partial_failure_summary = None
+                        if send_errors:
+                            partial_failure_summary = (
+                                f"部分目标发送失败，共 {len(send_errors)} 个；"
+                                f"示例：{partial_failure_summaries[0]}"
+                            )
                         await _handle_task_success(
                             session=session,
                             task=task,
                             message_id=last_message_id,
                             target_message_ids=target_message_ids,
+                            error_message=partial_failure_summary,
                             now=now,
                             account_manager=self._account_manager,
                         )
@@ -419,9 +503,14 @@ class TaskScheduler:
                         logger.info(
                             f"任务 {task_id} 执行成功，目标数={len(target_specs)}，"
                             f"最后消息 ID: {last_message_id}"
-                        )
+                            )
                     else:
                         reason = send_errors[0] if send_errors else "发送失败"
+                        if partial_failure_summaries:
+                            reason = (
+                                f"目标发送全部失败，共 {len(send_errors)} 个；"
+                                f"示例：{partial_failure_summaries[0]}"
+                            )
                         await _handle_task_failure(
                             session=session,
                             task=task,

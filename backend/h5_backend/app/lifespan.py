@@ -15,6 +15,7 @@ from backend.bot.client_runtime.manager import (
 from backend.bot.developer_apps import get_developer_app_service
 from backend.bot.developer_apps.health_runtime import developer_app_health_runtime
 from backend.bot.license_notifier import license_slot_notifier
+from backend.bot.task_issue_notifier import task_issue_notifier
 from backend.config.core.settings import settings
 from backend.database.runtime.session import init_database
 from backend.h5_backend.services.account import account_auto_sync_runtime
@@ -88,6 +89,9 @@ async def app_lifespan(app: FastAPI):
     notifier_task = asyncio.create_task(license_slot_notifier.start())
     logger.info("✅ 订阅提醒任务已启动")
 
+    task_issue_notifier_task = asyncio.create_task(task_issue_notifier.start())
+    logger.info("✅ 任务发送异常提醒任务已启动")
+
     auto_sync_task = asyncio.create_task(account_auto_sync_runtime.start())
     logger.info("✅ 账号资源自动同步任务已启动")
 
@@ -116,6 +120,13 @@ async def app_lifespan(app: FastAPI):
     notifier_task.cancel()
     try:
         await notifier_task
+    except asyncio.CancelledError:
+        pass
+
+    await task_issue_notifier.stop()
+    task_issue_notifier_task.cancel()
+    try:
+        await task_issue_notifier_task
     except asyncio.CancelledError:
         pass
 
