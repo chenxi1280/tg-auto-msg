@@ -41,6 +41,14 @@ jobs:
           pylint backend tests --disable=all --enable=E0601,E0606
 
       - name: Unittest
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          TG_API_ID: "123456"
+          TG_API_HASH: "test-api-hash"
+          BOT_TOKEN: "123456:test-bot-token"
+          DATABASE_URL: "postgresql+asyncpg://tester:tester@localhost:5432/tg_auto_msg_test"
+          REDIS_URL: "redis://localhost:6379/0"
+          JWT_SECRET_KEY: "test-secret-key"
         run: |
           set -euo pipefail
           python -m unittest discover -s tests -t .
