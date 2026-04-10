@@ -104,6 +104,46 @@ class AdminSystemServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(fake_session.committed)
         self.assertEqual(result["refresh_summary"], refresh_summary)
 
+    async def test_update_bot_notice_settings_allows_empty_target_url(self):
+        service = AdminLicenseService()
+        fake_session = _NoticeSession()
+
+        @asynccontextmanager
+        async def fake_get_async_session():
+            yield fake_session
+
+        with patch("backend.h5_backend.services.admin.service.get_async_session", new=fake_get_async_session), patch.object(
+            service,
+            "_append_audit",
+            AsyncMock(),
+        ), patch(
+            "backend.bot.notice_manager.get_bot_notice_manager",
+            return_value=SimpleNamespace(refresh_all_linked_users=AsyncMock(return_value={"updated": 0})),
+        ), patch.object(
+            service,
+            "get_bot_notice_settings",
+            AsyncMock(
+                return_value={
+                    "enabled": True,
+                    "entry_button_text": "公告栏",
+                    "message_text": "hello",
+                    "target_url": "",
+                    "updated_at": datetime.now().isoformat(),
+                }
+            ),
+        ):
+            result = await service.update_bot_notice_settings(
+                enabled=True,
+                entry_button_text="公告栏",
+                message_text="hello",
+                target_url="",
+                actor="admin#1",
+                ip_address="127.0.0.1",
+            )
+
+        self.assertTrue(fake_session.committed)
+        self.assertEqual(result["target_url"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

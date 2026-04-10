@@ -325,7 +325,7 @@ class BotOnboardingService:
             buttons.append(second_row)
         if include_notice:
             notice = await get_me_service().get_public_notice_entry()
-            if notice.get("enabled") and notice.get("message_text") and is_valid_button_url((notice.get("target_url") or "").strip()):
+            if notice.get("enabled") and notice.get("message_text"):
                 buttons.append([Button.inline(notice.get("entry_button_text") or "📢 公告栏", data="bot_notice")])
         return buttons
 
@@ -710,8 +710,8 @@ class BotOnboardingService:
             ]
             notice = await me_service.get_public_notice_entry()
             extra_row: list[Any] = [Button.inline("📖 帮助", data="bot_help")]
-            if notice.get("enabled") and notice.get("message_text") and is_valid_button_url((notice.get("target_url") or "").strip()):
-                extra_row.insert(0, Button.inline(notice.get("entry_button_text") or "📢 公告栏", data="bot_notice"))
+        if notice.get("enabled") and notice.get("message_text"):
+            extra_row.insert(0, Button.inline(notice.get("entry_button_text") or "📢 公告栏", data="bot_notice"))
             buttons.append(extra_row)
             return text, buttons
 
@@ -796,7 +796,7 @@ class BotOnboardingService:
         text = BOT_HELP_MANUAL
         buttons = []
         notice = await get_me_service().get_public_notice_entry()
-        if notice.get("enabled") and notice.get("message_text") and is_valid_button_url((notice.get("target_url") or "").strip()):
+        if notice.get("enabled") and notice.get("message_text"):
             buttons.append([Button.inline(notice.get("entry_button_text") or "📢 公告栏", data="bot_notice")])
         buttons.append([Button.inline("📱 绑定账号", data="bot_login_account"), Button.inline("📝 创建任务", data="add_task")])
         buttons.append([Button.inline("🏠 返回主菜单", data="bot_home")])

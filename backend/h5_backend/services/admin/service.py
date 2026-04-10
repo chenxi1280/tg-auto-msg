@@ -542,8 +542,6 @@ class AdminLicenseService:
 
         if enabled and not normalized_message_text:
             raise HTTPException(status_code=400, detail="启用公告时，公告正文不能为空")
-        if enabled and not normalized_target_url:
-            raise HTTPException(status_code=400, detail="启用公告时，跳转链接不能为空")
         if normalized_target_url and not is_valid_button_url(normalized_target_url):
             raise HTTPException(status_code=400, detail="公告链接格式无效，请填写可公网访问的 http/https 链接")
 

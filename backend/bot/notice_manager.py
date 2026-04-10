@@ -11,7 +11,6 @@ from telethon import Button
 from telethon.errors import MessageNotModifiedError
 
 from backend.bot.client_runtime.manager import bot_client
-from backend.bot.handlers.core.helpers import is_valid_button_url
 from backend.bot.handlers.core.user_link import USER_LINK_KEY_PREFIX
 from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import AppSetting
@@ -64,7 +63,7 @@ class BotNoticeManager:
                 message_text=message_text,
                 target_url=target_url,
             ),
-            "is_ready": enabled and bool(message_text) and is_valid_button_url(target_url),
+            "is_ready": enabled and bool(message_text),
         }
 
     async def _load_notice_state(self, tg_user_id: int) -> Optional[dict[str, Any]]:
