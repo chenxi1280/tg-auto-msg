@@ -24,7 +24,7 @@
         <div class="stat-meta">待用于逐批结清</div>
       </el-card>
       <el-card shadow="hover">
-        <div class="stat-label">可见后台账号</div>
+        <div class="stat-label">可见账号范围</div>
         <div class="stat-value">{{ store.profile.visible_account_count }}</div>
         <div class="stat-meta">当前角色权限范围内</div>
       </el-card>

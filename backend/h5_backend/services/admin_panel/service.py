@@ -60,14 +60,18 @@ class AdminPanelService:
         value = str(getattr(account, "account_type", "") or "").strip().lower()
         if value in {ACCOUNT_TYPE_STAFF, ACCOUNT_TYPE_AGENT}:
             return value
-        return ACCOUNT_TYPE_AGENT if str(account.role_code or "").strip().lower() in {ROLE_MASTER_AGENT, ROLE_SUB_AGENT} else ACCOUNT_TYPE_STAFF
+        return (
+            ACCOUNT_TYPE_AGENT
+            if str(getattr(account, "role_code", "") or "").strip().lower() in {ROLE_MASTER_AGENT, ROLE_SUB_AGENT}
+            else ACCOUNT_TYPE_STAFF
+        )
 
     @staticmethod
     def _business_identity(account: AdminAccount) -> Optional[str]:
         value = str(getattr(account, "business_identity", "") or "").strip().lower()
         if value in {BUSINESS_IDENTITY_MASTER_AGENT, BUSINESS_IDENTITY_SUB_AGENT}:
             return value
-        normalized_role = str(account.role_code or "").strip().lower()
+        normalized_role = str(getattr(account, "role_code", "") or "").strip().lower()
         if normalized_role == ROLE_MASTER_AGENT:
             return BUSINESS_IDENTITY_MASTER_AGENT
         if normalized_role == ROLE_SUB_AGENT:

@@ -18,6 +18,7 @@ from backend.database.schema.models import (
 )
 from backend.database.runtime.session import get_async_session
 from backend.h5_backend.services.admin_auth.service import get_admin_auth_service
+from backend.h5_backend.services.admin_rbac.service import get_admin_rbac_service
 
 admin_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/admin-auth/login")
 
@@ -82,16 +83,7 @@ async def get_current_admin_account(token: str = Depends(admin_oauth2_scheme)) -
 
 
 def _get_effective_permissions(current_admin: AdminAccount) -> set[str]:
-    permission_codes: set[str] = set()
-    for binding in current_admin.__dict__.get("role_bindings") or []:
-        role = getattr(binding, "role", None)
-        if role is None or role.status != "active":
-            continue
-        for permission_binding in role.__dict__.get("permission_bindings") or []:
-            permission = getattr(permission_binding, "permission", None)
-            if permission is not None:
-                permission_codes.add(permission.permission_code)
-    return permission_codes
+    return set(get_admin_rbac_service().get_permission_codes_for_account(current_admin))
 
 
 def admin_has_permissions(current_admin: AdminAccount, *permission_codes: str) -> bool:

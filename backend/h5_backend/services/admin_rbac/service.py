@@ -33,7 +33,7 @@ PERMISSION_DEFINITIONS: List[Dict[str, str]] = [
     {"code": "system.stats.read", "module": "system_stats", "name": "查看系统统计", "description": "允许查看超管系统统计页"},
     {"code": "security.read", "module": "security", "name": "查看账户安全", "description": "允许查看自己的后台账号安全信息"},
     {"code": "security.update", "module": "security", "name": "修改账户安全", "description": "允许修改密码和 TG 绑定"},
-    {"code": "agents.read", "module": "agents", "name": "查看代理", "description": "允许查看代理树和后台账号列表"},
+    {"code": "agents.read", "module": "agents", "name": "查看代理", "description": "允许查看代理账号树和链路信息"},
     {"code": "agents.write", "module": "agents", "name": "管理代理", "description": "允许创建下级、调额和设置结算模式"},
     {"code": "agents.master.create", "module": "agents", "name": "创建总代", "description": "允许创建省级总代"},
     {"code": "agents.credit.master.write", "module": "agents", "name": "管理总代额度", "description": "允许设置总代总额度和授信白名单"},
@@ -135,7 +135,7 @@ class AdminRbacService:
     def _resolve_account_type(account: AdminAccount) -> str:
         if getattr(account, "account_type", None) in {ACCOUNT_TYPE_STAFF, ACCOUNT_TYPE_AGENT}:
             return str(account.account_type)
-        if str(account.role_code or "").strip().lower() in {ROLE_MASTER_AGENT, ROLE_SUB_AGENT}:
+        if str(getattr(account, "role_code", "") or "").strip().lower() in {ROLE_MASTER_AGENT, ROLE_SUB_AGENT}:
             return ACCOUNT_TYPE_AGENT
         return ACCOUNT_TYPE_STAFF
 
@@ -144,7 +144,7 @@ class AdminRbacService:
         identity = str(getattr(account, "business_identity", "") or "").strip().lower()
         if identity in {BUSINESS_IDENTITY_MASTER_AGENT, BUSINESS_IDENTITY_SUB_AGENT}:
             return identity
-        normalized_role = str(account.role_code or "").strip().lower()
+        normalized_role = str(getattr(account, "role_code", "") or "").strip().lower()
         if normalized_role == ROLE_MASTER_AGENT:
             return BUSINESS_IDENTITY_MASTER_AGENT
         if normalized_role == ROLE_SUB_AGENT:
@@ -153,7 +153,7 @@ class AdminRbacService:
 
     def _default_role_keys_for_account(self, account: AdminAccount) -> List[str]:
         role_keys: List[str] = []
-        if str(account.role_code or "").strip().lower() == ROLE_SUPER_ADMIN:
+        if str(getattr(account, "role_code", "") or "").strip().lower() == ROLE_SUPER_ADMIN:
             role_keys.append(ROLE_SUPER_ADMIN)
         business_identity = self._resolve_business_identity(account)
         if business_identity == BUSINESS_IDENTITY_MASTER_AGENT:
@@ -315,6 +315,9 @@ class AdminRbacService:
             for binding in (role_binding.role.__dict__.get("permission_bindings") or [])
             if getattr(binding, "permission", None) is not None
         }
+        if not permission_codes:
+            for role_key in self._default_role_keys_for_account(account):
+                permission_codes.update(ROLE_DEFAULT_PERMISSION_CODES.get(role_key, []))
         return sorted(permission_codes)
 
     async def ensure_builtin_rbac(self) -> None:

@@ -5,7 +5,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from backend.database.schema.models import AgentFundLedger
-from backend.h5_backend.services.admin_panel.service import AdminPanelService, ROLE_SUPER_ADMIN
+from backend.h5_backend.services.admin_panel.service import (
+    ACCOUNT_TYPE_AGENT,
+    ACCOUNT_TYPE_STAFF,
+    AdminPanelService,
+    ROLE_SUPER_ADMIN,
+)
 
 
 class _ScalarListResult:
@@ -85,10 +90,12 @@ class RechargeCreditSettlementTests(unittest.IsolatedAsyncioTestCase):
         operator = SimpleNamespace(
             id=1,
             role_code=ROLE_SUPER_ADMIN,
+            account_type=ACCOUNT_TYPE_STAFF,
             province_code="default",
         )
         subject = SimpleNamespace(
             id=3,
+            account_type=ACCOUNT_TYPE_AGENT,
             parent_account_id=None,
             balance_cents=1_000,
             credit_used_cents=5_000,
@@ -153,17 +160,19 @@ class RechargeCreditSettlementTests(unittest.IsolatedAsyncioTestCase):
         operator = SimpleNamespace(
             id=2,
             role_code="master_agent",
+            account_type=ACCOUNT_TYPE_AGENT,
             province_code="default",
             parent_account_id=None,
         )
         subject = SimpleNamespace(
             id=3,
+            account_type=ACCOUNT_TYPE_AGENT,
             parent_account_id=2,
             balance_cents=1_000,
             credit_used_cents=12_000,
             credit_prepay_cents=0,
         )
-        parent_account = SimpleNamespace(id=2, parent_account_id=None)
+        parent_account = SimpleNamespace(id=2, account_type=ACCOUNT_TYPE_AGENT, parent_account_id=None)
         credit_row = SimpleNamespace(delegated_credit_used_cents=12_000)
         pending_batches = [
             SimpleNamespace(
