@@ -13,7 +13,7 @@
               <el-option label="停用" value="disabled" />
             </el-select>
             <el-select v-if="canReadRoles" v-model="filters.role_key" clearable placeholder="角色" style="width: 180px">
-              <el-option v-for="role in roles" :key="role.id" :label="role.display_name" :value="role.role_key" />
+              <el-option v-for="role in staffRoles" :key="role.id" :label="role.display_name" :value="role.role_key" />
             </el-select>
             <el-button @click="loadData(true)">查询</el-button>
             <el-button @click="loadData()">刷新</el-button>
@@ -25,8 +25,11 @@
       <el-table v-if="!isCompact" :data="accounts" stripe>
         <el-table-column prop="username" label="账号" min-width="160" />
         <el-table-column prop="display_name" label="显示名" min-width="160" />
-        <el-table-column label="身份标签" width="120">
-          <template #default="{ row }">{{ roleLabel(row.role_code) }}</template>
+        <el-table-column label="账号类型" width="120">
+          <template #default="{ row }">{{ accountTypeLabel(row.account_type) }}</template>
+        </el-table-column>
+        <el-table-column label="身份摘要" min-width="180">
+          <template #default="{ row }">{{ accountIdentitySummary(row) }}</template>
         </el-table-column>
         <el-table-column label="绑定角色" min-width="220">
           <template #default="{ row }">
@@ -65,7 +68,7 @@
           <div class="mobile-data-card__header">
             <div>
               <div class="mobile-data-card__title">{{ row.display_name }}</div>
-              <div class="mobile-data-card__subtitle">{{ row.username }} · {{ roleLabel(row.role_code) }}</div>
+              <div class="mobile-data-card__subtitle">{{ row.username }} · {{ accountIdentitySummary(row) }}</div>
             </div>
             <el-tag :type="row.status === 'active' ? 'success' : 'info'">{{ row.status === 'active' ? '启用' : '停用' }}</el-tag>
           </div>
@@ -126,27 +129,16 @@
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="身份标签">
-              <el-select v-model="createDialog.form.role_code" @change="handleRoleCodeChange">
-                <el-option label="超管" value="super_admin" />
-                <el-option label="总代" value="master_agent" />
-                <el-option label="下级代理" value="sub_agent" />
-              </el-select>
+            <el-form-item label="账号类型">
+              <el-input model-value="后台账号" disabled />
             </el-form-item>
           </el-col>
         </el-row>
         <el-row :gutter="16">
-          <el-col :span="12">
+          <el-col :span="24">
             <el-form-item v-if="canReadRoles" label="绑定角色">
               <el-select v-model="createDialog.form.role_keys" multiple filterable>
-                <el-option v-for="role in roles" :key="role.id" :label="role.display_name" :value="role.role_key" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="上级账号（下级代理可选）">
-              <el-select v-model="createDialog.form.parent_account_id" clearable filterable>
-                <el-option v-for="account in store.accounts" :key="account.id" :label="`${account.display_name} (${account.username})`" :value="account.id" />
+                <el-option v-for="role in staffRoles" :key="role.id" :label="role.display_name" :value="role.role_key" />
               </el-select>
             </el-form-item>
           </el-col>
@@ -198,7 +190,7 @@
       <el-form label-position="top">
         <el-form-item label="角色列表">
           <el-select v-model="rolesDialog.role_keys" multiple filterable>
-            <el-option v-for="role in roles" :key="role.id" :label="role.display_name" :value="role.role_key" />
+            <el-option v-for="role in staffRoles" :key="role.id" :label="role.display_name" :value="role.role_key" />
           </el-select>
         </el-form-item>
       </el-form>
@@ -235,17 +227,17 @@ import {
   adminUpdateAdminAccountRoles,
 } from '@/api/admin'
 import { useAdminConsoleStore } from '@/stores/adminConsole'
-import { formatDateTime, roleLabel } from '@/utils/adminConsole'
+import { accountIdentitySummary, accountTypeLabel, formatDateTime } from '@/utils/adminConsole'
 import { useResponsive } from '@/composables/useResponsive'
 import ResponsiveFormLayer from '@/components/responsive/ResponsiveFormLayer.vue'
 
 const store = useAdminConsoleStore()
 const { isCompact } = useResponsive()
 const canReadRoles = computed(() => store.hasPermission('rbac.roles.read'))
-const canReadAgents = computed(() => store.hasPermission('agents.read'))
 const canManageRoleBindings = computed(() => store.hasPermission('admin_accounts.write') && canReadRoles.value)
 const accounts = ref<AgentAccount[]>([])
 const roles = ref<AdminRole[]>([])
+const staffRoles = computed(() => roles.value.filter((role) => !['master_agent', 'sub_agent'].includes(role.role_key)))
 const total = ref(0)
 const lastActionMessage = ref('')
 const creating = ref(false)
@@ -270,9 +262,7 @@ const createDialog = reactive({
     username: '',
     password: '',
     display_name: '',
-    role_code: 'sub_agent',
-    role_keys: ['sub_agent'] as string[],
-    parent_account_id: undefined as number | undefined,
+    role_keys: [] as string[],
     contact_name: '',
     contact_phone: '',
   },
@@ -316,6 +306,7 @@ const loadData = async (resetPage = false) => {
     search: filters.search || undefined,
     status: filters.status || undefined,
     role_key: filters.role_key || undefined,
+    account_type: 'staff',
     limit: pagination.pageSize,
     offset: (pagination.currentPage - 1) * pagination.pageSize,
   })
@@ -333,18 +324,10 @@ const openCreateDialog = () => {
     username: '',
     password: '',
     display_name: '',
-    role_code: 'sub_agent',
-    role_keys: ['sub_agent'],
-    parent_account_id: undefined,
+    role_keys: [],
     contact_name: '',
     contact_phone: '',
   })
-}
-
-const handleRoleCodeChange = (value: string) => {
-  if (!createDialog.form.role_keys.includes(value)) {
-    createDialog.form.role_keys = [value]
-  }
 }
 
 const openEditDialog = (account: AgentAccount) => {
@@ -375,20 +358,20 @@ const openResetDialog = (account: AgentAccount) => {
 }
 
 const submitCreate = async () => {
+  if (!createDialog.form.role_keys.length) {
+    ElMessage.warning('请至少绑定一个后台角色')
+    return
+  }
   creating.value = true
   try {
     await adminCreateAdminAccount({
       ...createDialog.form,
-      role_keys: createDialog.form.role_keys.length ? createDialog.form.role_keys : [createDialog.form.role_code],
+      role_keys: createDialog.form.role_keys,
       contact_name: createDialog.form.contact_name || undefined,
       contact_phone: createDialog.form.contact_phone || undefined,
     })
     createDialog.visible = false
-    const tasks: Promise<unknown>[] = [loadData(true)]
-    if (canReadAgents.value) {
-      tasks.push(store.loadAccounts())
-    }
-    await Promise.all(tasks)
+    await loadData(true)
     lastActionMessage.value = '后台账号已创建'
     ElMessage.success(lastActionMessage.value)
   } finally {
@@ -405,11 +388,7 @@ const submitEdit = async () => {
       contact_phone: editDialog.form.contact_phone || undefined,
     })
     editDialog.visible = false
-    const tasks: Promise<unknown>[] = [loadData()]
-    if (canReadAgents.value) {
-      tasks.push(store.loadAccounts())
-    }
-    await Promise.all(tasks)
+    await loadData()
     lastActionMessage.value = '后台账号已更新'
     ElMessage.success(lastActionMessage.value)
   } finally {
@@ -456,11 +435,7 @@ const handleSizeChange = async () => {
 }
 
 onMounted(async () => {
-  const tasks: Promise<unknown>[] = [loadRoles(), loadData()]
-  if (canReadAgents.value) {
-    tasks.push(store.loadAccounts())
-  }
-  await Promise.all(tasks)
+  await Promise.all([loadRoles(), loadData()])
 })
 </script>
 

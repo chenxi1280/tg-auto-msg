@@ -9,7 +9,7 @@
           使用后台账号登录，进入账号中心、卡密中心、额度配置与审计中心。
         </p>
         <ul class="feature-list">
-          <li>支持 `super_admin`、`master_agent`、`sub_agent`</li>
+          <li>支持后台员工账号与代理链路账号统一登录</li>
           <li>支持 TG 绑定与统一后台运营管理</li>
           <li>支持卡密批次、Excel 导出与 10 条内快速复制</li>
         </ul>
@@ -45,7 +45,7 @@
           </el-form>
 
           <p class="footnote">
-            初始化账号由部署脚本创建，首次登录会被要求尽快修改密码。
+            初始化账号由部署环境自动创建，首次登录会被要求尽快修改密码。
           </p>
         </div>
       </section>

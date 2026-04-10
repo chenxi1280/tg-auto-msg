@@ -2,6 +2,17 @@ export const ROLE_LABELS: Record<string, string> = {
   super_admin: '超管',
   master_agent: '省总代',
   sub_agent: '下级代理',
+  staff: '后台人员',
+}
+
+export const ACCOUNT_TYPE_LABELS: Record<string, string> = {
+  staff: '后台账号',
+  agent: '代理账号',
+}
+
+export const BUSINESS_IDENTITY_LABELS: Record<string, string> = {
+  master_agent: '省总代',
+  sub_agent: '下级代理',
 }
 
 export const SETTLEMENT_LABELS: Record<string, string> = {
@@ -35,6 +46,32 @@ export const formatDateTime = (value?: string | null): string => {
 }
 
 export const roleLabel = (role?: string | null): string => ROLE_LABELS[role || ''] || role || '-'
+
+export const accountTypeLabel = (value?: string | null): string =>
+  ACCOUNT_TYPE_LABELS[value || ''] || value || '-'
+
+export const businessIdentityLabel = (value?: string | null): string =>
+  BUSINESS_IDENTITY_LABELS[value || ''] || value || '-'
+
+export const accountIdentitySummary = (account?: {
+  account_type?: string | null
+  business_identity?: string | null
+  assigned_roles?: Array<{ display_name?: string | null }>
+} | null): string => {
+  if (!account) return '-'
+  const roleNames = (account.assigned_roles || [])
+    .map((role) => String(role.display_name || '').trim())
+    .filter(Boolean)
+  const businessIdentity = businessIdentityLabel(account.business_identity)
+  const accountType = accountTypeLabel(account.account_type)
+  if (account.account_type === 'agent' && account.business_identity) {
+    return `${accountType} · ${businessIdentity}`
+  }
+  if (roleNames.length) {
+    return `${accountType} · ${roleNames.join(' / ')}`
+  }
+  return accountType
+}
 
 export const settlementLabel = (value?: string | null): string => SETTLEMENT_LABELS[value || ''] || value || '-'
 

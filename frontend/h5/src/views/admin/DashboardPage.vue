@@ -4,7 +4,7 @@
       <el-card shadow="hover">
         <div class="stat-label">当前账号</div>
         <div class="stat-value">{{ store.profile.account.display_name }}</div>
-        <div class="stat-meta">{{ roleLabel(store.profile.account.role_code) }}</div>
+        <div class="stat-meta">{{ accountIdentitySummary(store.profile.account) }}</div>
       </el-card>
       <el-card shadow="hover">
         <div class="stat-label">可用余额</div>
@@ -19,7 +19,12 @@
         </div>
       </el-card>
       <el-card shadow="hover">
-        <div class="stat-label">可见后台账号</div>
+        <div class="stat-label">授信预抵</div>
+        <div class="stat-value">¥{{ centsToYuan(store.profile.account.credit_prepay_cents) }}</div>
+        <div class="stat-meta">待用于逐批结清</div>
+      </el-card>
+      <el-card shadow="hover">
+        <div class="stat-label">可见账号范围</div>
         <div class="stat-value">{{ store.profile.visible_account_count }}</div>
         <div class="stat-meta">当前角色权限范围内</div>
       </el-card>
@@ -156,7 +161,7 @@
 import { computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAdminConsoleStore } from '@/stores/adminConsole'
-import { centsToYuan, formatDateTime, roleLabel } from '@/utils/adminConsole'
+import { accountIdentitySummary, centsToYuan, formatDateTime } from '@/utils/adminConsole'
 import { useResponsive } from '@/composables/useResponsive'
 
 const router = useRouter()

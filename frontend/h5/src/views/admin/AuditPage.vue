@@ -3,12 +3,12 @@
     <el-card shadow="hover">
       <template #header>
         <div class="card-header">
-          <span>{{ store.canViewSystemAudit ? '统一审计日志' : '审计日志' }}</span>
+          <span>系统审计日志</span>
           <div class="header-actions">
             <el-button v-if="isCompact" class="mobile-filter-trigger" @click="filtersVisible = true">筛选条件</el-button>
             <template v-else>
-              <el-input v-if="store.canViewSystemAudit" v-model.trim="filters.action" clearable placeholder="筛选动作" style="width: 220px" />
-              <el-select v-if="store.canViewSystemAudit" v-model="filters.target_type" clearable placeholder="对象类型" style="width: 180px">
+              <el-input v-model.trim="filters.action" clearable placeholder="筛选动作" style="width: 220px" />
+              <el-select v-model="filters.target_type" clearable placeholder="对象类型" style="width: 180px">
                 <el-option label="用户" value="user" />
                 <el-option label="账号" value="account" />
                 <el-option label="卡密规格" value="plan" />
@@ -85,8 +85,8 @@
 
     <el-drawer v-model="filtersVisible" title="筛选审计日志" size="100%" append-to-body>
       <div class="mobile-card-list">
-        <el-input v-if="store.canViewSystemAudit" v-model.trim="filters.action" clearable placeholder="筛选动作" />
-        <el-select v-if="store.canViewSystemAudit" v-model="filters.target_type" clearable placeholder="对象类型">
+        <el-input v-model.trim="filters.action" clearable placeholder="筛选动作" />
+        <el-select v-model="filters.target_type" clearable placeholder="对象类型">
           <el-option label="用户" value="user" />
           <el-option label="账号" value="account" />
           <el-option label="卡密规格" value="plan" />
@@ -109,12 +109,10 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import type { AdminAuditLog } from '@/api/admin'
-import { adminListAuditLogs, adminListSystemAuditLogs } from '@/api/admin'
-import { useAdminConsoleStore } from '@/stores/adminConsole'
+import { adminListSystemAuditLogs } from '@/api/admin'
 import { formatDateTime } from '@/utils/adminConsole'
 import { useResponsive } from '@/composables/useResponsive'
 
-const store = useAdminConsoleStore()
 const { isCompact } = useResponsive()
 const auditRows = ref<AdminAuditLog[]>([])
 const total = ref(0)
@@ -139,23 +137,7 @@ const summarize = (detail: Record<string, any> | null | undefined) => {
 
 const loadAuditData = async (resetPage = false) => {
   if (resetPage) pagination.currentPage = 1
-  if (store.canViewSystemAudit) {
-    const response = await adminListSystemAuditLogs({
-      action: filters.action || undefined,
-      target_type: filters.target_type || undefined,
-      keyword: filters.keyword || undefined,
-      limit: pagination.pageSize,
-      offset: (pagination.currentPage - 1) * pagination.pageSize,
-    })
-    auditRows.value = response.data.items
-    total.value = response.data.total
-    if (!auditRows.value.length && total.value > 0 && pagination.currentPage > 1) {
-      pagination.currentPage -= 1
-      await loadAuditData()
-    }
-    return
-  }
-  const response = await adminListAuditLogs({
+  const response = await adminListSystemAuditLogs({
     action: filters.action || undefined,
     target_type: filters.target_type || undefined,
     keyword: filters.keyword || undefined,

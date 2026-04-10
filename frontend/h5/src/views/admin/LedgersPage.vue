@@ -12,14 +12,14 @@
         <div class="stat-meta">仅白名单代理可用</div>
       </el-card>
       <el-card shadow="hover">
+        <div class="stat-label">授信预抵</div>
+        <div class="stat-value">¥{{ centsToYuan(store.profile.account.credit_prepay_cents) }}</div>
+        <div class="stat-meta">未满整批时先记在这里</div>
+      </el-card>
+      <el-card shadow="hover">
         <div class="stat-label">当前页入账</div>
         <div class="stat-value">¥{{ centsToYuan(selfInAmount) }}</div>
         <div class="stat-meta">{{ selfInCount }} 条流水</div>
-      </el-card>
-      <el-card shadow="hover">
-        <div class="stat-label">当前页扣减</div>
-        <div class="stat-value">¥{{ centsToYuan(selfOutAmount) }}</div>
-        <div class="stat-meta">{{ selfOutCount }} 条流水</div>
       </el-card>
     </div>
 
@@ -35,7 +35,7 @@
       <template #header>
         <div class="card-header">
           <span>线下充值入账</span>
-          <span class="card-tip">直接上级或超管可在这里直接把线下充值记入余额</span>
+          <span class="card-tip">直接上级或超管可在这里先冲授信批次，剩余再补余额</span>
         </div>
       </template>
       <el-form class="recharge-form" inline>
@@ -371,7 +371,7 @@ const visibleFilters = reactive({
 const rechargeTargets = computed(() => {
   if (!store.profile) return []
   if (!store.accounts.length) return [store.profile.account]
-  if (store.hasRole('super_admin')) return store.accounts
+  if (store.profile.account.account_type === 'staff') return store.accounts
   return store.accounts.filter((account) => account.parent_account_id === store.profile?.account.id)
 })
 

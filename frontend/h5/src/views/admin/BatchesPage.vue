@@ -294,7 +294,10 @@
             <el-tag :type="row.is_used ? 'warning' : 'success'">{{ row.is_used ? '已使用' : '可用' }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="时间" min-width="160">
+        <el-table-column label="使用时间" min-width="160">
+          <template #default="{ row }">{{ formatDateTime(row.used_at) || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="创建时间" min-width="160">
           <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
         </el-table-column>
       </el-table>
@@ -317,7 +320,11 @@
               <span class="mobile-data-card__value">{{ row.is_used ? '已使用' : '可用' }}</span>
             </div>
             <div class="mobile-data-card__row">
-              <span class="mobile-data-card__label">时间</span>
+              <span class="mobile-data-card__label">使用时间</span>
+              <span class="mobile-data-card__value">{{ formatDateTime(row.used_at) || '-' }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">创建时间</span>
               <span class="mobile-data-card__value">{{ formatDateTime(row.created_at) }}</span>
             </div>
           </div>
@@ -450,7 +457,7 @@ const canCopyCards = computed(() => store.hasPermission('batches.copy'))
 const canReadPricing = computed(() => store.hasPermission('pricing.read'))
 const canReadLedgers = computed(() => store.hasPermission('ledgers.read'))
 const canDirectSettle = computed(() => store.hasPermission('agents.write'))
-const isPlatformOperator = computed(() => store.hasRole('super_admin'))
+const isPlatformOperator = computed(() => store.profile?.account.account_type === 'staff')
 const submittingBatch = ref(false)
 const settlingBatchId = ref('')
 const selectedCards = ref<AgentCard[]>([])

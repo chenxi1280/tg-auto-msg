@@ -1,0 +1,2 @@
+ALTER TABLE admin_accounts
+ADD COLUMN IF NOT EXISTS credit_prepay_cents BIGINT NOT NULL DEFAULT 0;

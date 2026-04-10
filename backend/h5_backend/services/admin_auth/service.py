@@ -9,11 +9,11 @@ from typing import Optional, Tuple
 from fastapi import HTTPException, status
 from jose import JWTError, jwt
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from backend.config.core.settings import settings
 from backend.database.runtime.session import get_async_session
-from backend.database.schema.models import AdminAccount, AdminAccountTgBinding
+from backend.database.schema.models import AdminAccount, AdminAccountRole, AdminAccountTgBinding, AdminRole
 from backend.h5_backend.services.auth.service import ALGORITHM, ACCESS_TOKEN_EXPIRE_DAYS, get_auth_service
 from backend.h5_backend.services.me.service import MeService
 
@@ -92,6 +92,8 @@ class AdminAuthService:
                 "scope": "admin",
                 "username": account.username,
                 "role": account.role_code,
+                "account_type": getattr(account, "account_type", None),
+                "business_identity": getattr(account, "business_identity", None),
                 "province_code": account.province_code,
             }
         )
@@ -106,8 +108,13 @@ class AdminAuthService:
             existing_super_admin = (
                 await session.execute(
                     select(AdminAccount)
+                    .outerjoin(AdminAccountRole, AdminAccountRole.admin_account_id == AdminAccount.id)
+                    .outerjoin(AdminRole, AdminRole.id == AdminAccountRole.role_id)
                     .where(
-                        AdminAccount.role_code == "super_admin",
+                        or_(
+                            AdminAccount.role_code == "super_admin",
+                            AdminRole.role_key == "super_admin",
+                        ),
                         AdminAccount.province_code == settings.province_code,
                         AdminAccount.status == "active",
                     )
@@ -142,6 +149,8 @@ class AdminAuthService:
                 username=username,
                 password_hash=self.get_password_hash(password),
                 role_code="super_admin",
+                account_type="staff",
+                business_identity=None,
                 province_code=settings.province_code,
                 parent_account_id=None,
                 root_master_account_id=None,

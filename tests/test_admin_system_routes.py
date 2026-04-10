@@ -59,6 +59,14 @@ class AdminSystemRouteTests(unittest.TestCase):
         self.assertEqual(response.json()["data"]["today_sent_messages"], 12)
         service.get_today_system_stats.assert_awaited_once()
 
+    def test_system_audit_logs_require_system_audit_permission(self):
+        client = self._build_client(_build_admin("operation_logs.scope.read"))
+
+        response = client.get("/api/admin/audit-logs")
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["detail"], "无权访问该后台资源")
+
 
 if __name__ == "__main__":
     unittest.main()

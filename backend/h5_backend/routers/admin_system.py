@@ -435,10 +435,10 @@ async def generate_license_cards(
     request: Request,
     current_admin: AdminAccount = Depends(require_admin_permissions("legacy_cards.write")),
 ):
-    if current_admin.role_code != "super_admin":
+    if str(getattr(current_admin, "account_type", "") or "").strip().lower() != "staff":
         raise HTTPException(status_code=403, detail="旧系统卡密只允许超管生成")
     owner_account_id = int(current_admin.id)
-    root_master_account_id = int(current_admin.id if current_admin.role_code == "super_admin" else (current_admin.root_master_account_id or current_admin.id))
+    root_master_account_id = int(current_admin.id)
     service = get_admin_license_service()
     actor = _actor(current_admin)
     ip_address = _client_ip(request)

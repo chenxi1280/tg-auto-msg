@@ -36,6 +36,10 @@ CARD_ALPHABET = string.ascii_uppercase + string.digits
 ROLE_SUPER_ADMIN = "super_admin"
 ROLE_MASTER_AGENT = "master_agent"
 ROLE_SUB_AGENT = "sub_agent"
+ACCOUNT_TYPE_STAFF = "staff"
+ACCOUNT_TYPE_AGENT = "agent"
+BUSINESS_IDENTITY_MASTER_AGENT = "master_agent"
+BUSINESS_IDENTITY_SUB_AGENT = "sub_agent"
 
 
 class AdminPanelService:
@@ -50,6 +54,49 @@ class AdminPanelService:
         normalized_prefix = (prefix or "").strip().upper()
         random_part = "".join(secrets.choice(CARD_ALPHABET) for _ in range(16))
         return f"{normalized_prefix}{random_part}"
+
+    @staticmethod
+    def _account_type(account: AdminAccount) -> str:
+        value = str(getattr(account, "account_type", "") or "").strip().lower()
+        if value in {ACCOUNT_TYPE_STAFF, ACCOUNT_TYPE_AGENT}:
+            return value
+        return (
+            ACCOUNT_TYPE_AGENT
+            if str(getattr(account, "role_code", "") or "").strip().lower() in {ROLE_MASTER_AGENT, ROLE_SUB_AGENT}
+            else ACCOUNT_TYPE_STAFF
+        )
+
+    @staticmethod
+    def _business_identity(account: AdminAccount) -> Optional[str]:
+        value = str(getattr(account, "business_identity", "") or "").strip().lower()
+        if value in {BUSINESS_IDENTITY_MASTER_AGENT, BUSINESS_IDENTITY_SUB_AGENT}:
+            return value
+        normalized_role = str(getattr(account, "role_code", "") or "").strip().lower()
+        if normalized_role == ROLE_MASTER_AGENT:
+            return BUSINESS_IDENTITY_MASTER_AGENT
+        if normalized_role == ROLE_SUB_AGENT:
+            return BUSINESS_IDENTITY_SUB_AGENT
+        return None
+
+    def _is_staff(self, account: AdminAccount) -> bool:
+        return self._account_type(account) == ACCOUNT_TYPE_STAFF
+
+    def _is_agent(self, account: AdminAccount) -> bool:
+        return self._account_type(account) == ACCOUNT_TYPE_AGENT
+
+    def _is_master_agent(self, account: AdminAccount) -> bool:
+        return self._business_identity(account) == BUSINESS_IDENTITY_MASTER_AGENT
+
+    def _is_sub_agent(self, account: AdminAccount) -> bool:
+        return self._business_identity(account) == BUSINESS_IDENTITY_SUB_AGENT
+
+    def _is_super_admin(self, account: AdminAccount) -> bool:
+        return ROLE_SUPER_ADMIN in set(get_admin_rbac_service().get_role_keys_for_account(account))
+
+    def _has_permission(self, account: AdminAccount, *permission_codes: str) -> bool:
+        granted = set(get_admin_rbac_service().get_permission_codes_for_account(account))
+        required = {str(code or "").strip() for code in permission_codes if str(code or "").strip()}
+        return required.issubset(granted)
 
     async def _append_audit(
         self,
@@ -104,6 +151,8 @@ class AdminPanelService:
             "username": account.username,
             "display_name": account.display_name,
             "role_code": account.role_code,
+            "account_type": self._account_type(account),
+            "business_identity": self._business_identity(account),
             "province_code": account.province_code,
             "parent_account_id": account.parent_account_id,
             "root_master_account_id": account.root_master_account_id,
@@ -114,6 +163,7 @@ class AdminPanelService:
             "credit_limit_cents": int(account.credit_limit_cents or 0),
             "allocated_credit_limit_cents": int(account.allocated_credit_limit_cents or 0),
             "credit_used_cents": int(account.credit_used_cents or 0),
+            "credit_prepay_cents": int(getattr(account, "credit_prepay_cents", 0) or 0),
             "balance_cents": int(account.balance_cents or 0),
             "force_password_change": bool(account.force_password_change),
             "contact_name": account.contact_name,
@@ -305,7 +355,7 @@ class AdminPanelService:
         return sorted(visited)
 
     async def _visible_account_ids(self, session: Any, current_admin: AdminAccount) -> List[int]:
-        if current_admin.role_code == ROLE_SUPER_ADMIN:
+        if self._is_staff(current_admin):
             rows = (
                 await session.execute(
                     select(AdminAccount.id).where(AdminAccount.province_code == current_admin.province_code)
@@ -324,7 +374,7 @@ class AdminPanelService:
         target = await session.get(AdminAccount, int(target_account_id))
         if target is None:
             raise HTTPException(status_code=404, detail="后台账号不存在")
-        if current_admin.role_code == ROLE_SUPER_ADMIN:
+        if self._is_staff(current_admin):
             if target.province_code != current_admin.province_code:
                 raise HTTPException(status_code=403, detail="不能访问其他省份后台账号")
             return target
@@ -345,9 +395,9 @@ class AdminPanelService:
         if parent is None:
             raise HTTPException(status_code=404, detail="目标账号上级不存在")
 
-        if current_admin.role_code == ROLE_SUPER_ADMIN:
+        if self._is_staff(current_admin):
             allowed = True
-        elif current_admin.role_code == ROLE_MASTER_AGENT:
+        elif self._is_master_agent(current_admin):
             allowed = int(target.root_master_account_id or 0) == int(current_admin.id)
         else:
             allowed = int(target.parent_account_id or 0) == int(current_admin.id)
@@ -592,14 +642,6 @@ class AdminPanelService:
         self._ensure_balance_available(operator, amount_cents)
         operator.balance_cents = int(operator.balance_cents or 0) - int(amount_cents or 0)
 
-    @staticmethod
-    def _split_recharge_allocation(*, amount_cents: int, credit_used_cents: int) -> Tuple[int, int]:
-        amount = max(0, int(amount_cents or 0))
-        credit_used = max(0, int(credit_used_cents or 0))
-        repay_credit_amount = min(amount, credit_used)
-        top_up_balance_amount = amount - repay_credit_amount
-        return repay_credit_amount, top_up_balance_amount
-
     def _apply_credit_generation(
         self,
         session: Any,
@@ -660,9 +702,12 @@ class AdminPanelService:
             raise HTTPException(status_code=400, detail="当前批次不是待结算的授信批次")
         if int(batch.current_liability_account_id or 0) != int(subject.id):
             raise HTTPException(status_code=400, detail="该批次当前不由此账号负责结算")
+        if int(getattr(subject, "credit_prepay_cents", 0) or 0) < amount:
+            raise HTTPException(status_code=400, detail="当前账号授信预抵金额不足，无法结清该批次")
         if int(subject.credit_used_cents or 0) < amount:
             raise HTTPException(status_code=400, detail="当前账号授信欠款不足，无法结清该批次")
 
+        subject.credit_prepay_cents = int(getattr(subject, "credit_prepay_cents", 0) or 0) - amount
         subject.credit_used_cents = int(subject.credit_used_cents or 0) - amount
         if subject.parent_account_id is not None:
             row = (
@@ -733,10 +778,8 @@ class AdminPanelService:
         *,
         subject: AdminAccount,
         operator: AdminAccount,
-        amount_cents: int,
     ) -> Tuple[int, List[str]]:
-        remaining = max(0, int(amount_cents or 0))
-        if remaining <= 0:
+        if int(getattr(subject, "credit_prepay_cents", 0) or 0) <= 0:
             return 0, []
 
         pending_batches = (
@@ -756,8 +799,10 @@ class AdminPanelService:
         settled_batch_ids: List[str] = []
         for batch in pending_batches:
             batch_amount = max(0, int(batch.total_amount_cents or 0))
-            if batch_amount <= 0 or remaining < batch_amount:
+            if batch_amount <= 0:
                 continue
+            if int(getattr(subject, "credit_prepay_cents", 0) or 0) < batch_amount:
+                break
             request_id = f"direct-recharge-settle-{uuid.uuid4().hex[:20]}"
             await self._apply_settlement_for_batch(
                 session,
@@ -766,11 +811,30 @@ class AdminPanelService:
                 operator=operator,
                 request_id=request_id,
             )
-            remaining -= batch_amount
             settled_amount += batch_amount
             settled_batch_ids.append(str(batch.batch_id))
 
         return settled_amount, settled_batch_ids
+
+    async def _has_pending_credit_batches(
+        self,
+        session: Any,
+        *,
+        subject_account_id: int,
+    ) -> bool:
+        pending_batch_id = (
+            await session.execute(
+                select(CardBatch.batch_id)
+                .where(
+                    CardBatch.current_liability_account_id == int(subject_account_id),
+                    CardBatch.payment_status == "credit",
+                    CardBatch.settlement_status == "pending",
+                )
+                .order_by(CardBatch.created_at.asc(), CardBatch.batch_id.asc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        return pending_batch_id is not None
 
     async def get_profile(self, current_admin: AdminAccount) -> Dict[str, Any]:
         async with get_async_session() as session:
@@ -814,7 +878,7 @@ class AdminPanelService:
         contact_phone: Optional[str] = None,
         ip_address: Optional[str] = None,
     ) -> Dict[str, Any]:
-        if current_admin.role_code != ROLE_SUPER_ADMIN:
+        if not self._has_permission(current_admin, "agents.master.create"):
             raise HTTPException(status_code=403, detail="只有超管可以创建总代")
         if len(password or "") < 6:
             raise HTTPException(status_code=400, detail="密码至少 6 位")
@@ -823,7 +887,8 @@ class AdminPanelService:
                 await session.execute(
                     select(AdminAccount)
                     .where(
-                        AdminAccount.role_code == ROLE_MASTER_AGENT,
+                        AdminAccount.account_type == ACCOUNT_TYPE_AGENT,
+                        AdminAccount.business_identity == BUSINESS_IDENTITY_MASTER_AGENT,
                         AdminAccount.province_code == current_admin.province_code,
                         AdminAccount.status == "active",
                     )
@@ -846,6 +911,8 @@ class AdminPanelService:
                 username=(username or "").strip(),
                 password_hash=auth.get_password_hash(password),
                 role_code=ROLE_MASTER_AGENT,
+                account_type=ACCOUNT_TYPE_AGENT,
+                business_identity=BUSINESS_IDENTITY_MASTER_AGENT,
                 province_code=current_admin.province_code,
                 parent_account_id=None,
                 root_master_account_id=None,
@@ -890,11 +957,11 @@ class AdminPanelService:
         is_credit_whitelisted: Optional[bool] = None,
         ip_address: Optional[str] = None,
     ) -> Dict[str, Any]:
-        if current_admin.role_code != ROLE_SUPER_ADMIN:
+        if not self._has_permission(current_admin, "agents.credit.master.write"):
             raise HTTPException(status_code=403, detail="只有超管可以配置总代总额度")
         async with get_async_session() as session:
             target = await self._ensure_visible_account(session, current_admin, int(account_id))
-            if target.role_code != ROLE_MASTER_AGENT:
+            if not self._is_master_agent(target):
                 raise HTTPException(status_code=400, detail="只能为总代设置总额度")
             if int(target.allocated_credit_limit_cents or 0) > int(credit_limit_cents or 0):
                 raise HTTPException(status_code=400, detail="总代已分配给下级的额度超过目标总额度")
@@ -922,7 +989,7 @@ class AdminPanelService:
         is_credit_whitelisted: bool,
         ip_address: Optional[str] = None,
     ) -> Dict[str, Any]:
-        if current_admin.role_code != ROLE_SUPER_ADMIN:
+        if not self._has_permission(current_admin, "agents.credit.master.write"):
             raise HTTPException(status_code=403, detail="只有超管可以设置授信白名单")
         async with get_async_session() as session:
             target = await self._ensure_visible_account(session, current_admin, int(account_id))
@@ -946,6 +1013,7 @@ class AdminPanelService:
         current_admin: AdminAccount,
         search: Optional[str] = None,
         role_code: Optional[str] = None,
+        business_identity: Optional[str] = None,
         status: Optional[str] = None,
         parent_account_id: Optional[int] = None,
         limit: int = 100,
@@ -959,8 +1027,13 @@ class AdminPanelService:
                 .options(selectinload(AdminAccount.tg_binding))
                 .options(selectinload(AdminAccount.role_bindings).selectinload(AdminAccountRole.role))
                 .where(AdminAccount.id.in_(visible_ids))
+                .where(AdminAccount.account_type == ACCOUNT_TYPE_AGENT)
             )
-            count_stmt = select(func.count(AdminAccount.id)).where(AdminAccount.id.in_(visible_ids))
+            count_stmt = (
+                select(func.count(AdminAccount.id))
+                .where(AdminAccount.id.in_(visible_ids))
+                .where(AdminAccount.account_type == ACCOUNT_TYPE_AGENT)
+            )
             normalized_search = (search or "").strip()
             if normalized_search:
                 search_value = f"%{normalized_search}%"
@@ -974,8 +1047,12 @@ class AdminPanelService:
                 count_stmt = count_stmt.where(search_condition)
             normalized_role = (role_code or "").strip().lower()
             if normalized_role and normalized_role != "all":
-                stmt = stmt.where(AdminAccount.role_code == normalized_role)
-                count_stmt = count_stmt.where(AdminAccount.role_code == normalized_role)
+                stmt = stmt.where(AdminAccount.business_identity == normalized_role)
+                count_stmt = count_stmt.where(AdminAccount.business_identity == normalized_role)
+            normalized_business_identity = (business_identity or "").strip().lower()
+            if normalized_business_identity and normalized_business_identity != "all":
+                stmt = stmt.where(AdminAccount.business_identity == normalized_business_identity)
+                count_stmt = count_stmt.where(AdminAccount.business_identity == normalized_business_identity)
             normalized_status = (status or "").strip().lower()
             if normalized_status and normalized_status != "all":
                 stmt = stmt.where(AdminAccount.status == normalized_status)
@@ -1009,7 +1086,10 @@ class AdminPanelService:
         contact_phone: Optional[str] = None,
         ip_address: Optional[str] = None,
     ) -> Dict[str, Any]:
-        if current_admin.role_code not in {ROLE_MASTER_AGENT, ROLE_SUB_AGENT}:
+        if not self._is_agent(current_admin) or self._business_identity(current_admin) not in {
+            BUSINESS_IDENTITY_MASTER_AGENT,
+            BUSINESS_IDENTITY_SUB_AGENT,
+        }:
             raise HTTPException(status_code=403, detail="当前角色不能创建下级代理")
         async with get_async_session() as session:
             parent = await session.get(AdminAccount, int(current_admin.id))
@@ -1024,6 +1104,8 @@ class AdminPanelService:
                 username=(username or "").strip(),
                 password_hash=auth.get_password_hash(password),
                 role_code=ROLE_SUB_AGENT,
+                account_type=ACCOUNT_TYPE_AGENT,
+                business_identity=BUSINESS_IDENTITY_SUB_AGENT,
                 province_code=parent.province_code,
                 parent_account_id=int(parent.id),
                 root_master_account_id=int(parent.root_master_account_id or parent.id),
@@ -1085,11 +1167,13 @@ class AdminPanelService:
             raise HTTPException(status_code=400, detail="不支持的结算模式")
         async with get_async_session() as session:
             target = await self._ensure_visible_account(session, current_admin, int(account_id))
-            if target.id == current_admin.id and current_admin.role_code != ROLE_SUPER_ADMIN:
+            if not self._is_agent(target):
+                raise HTTPException(status_code=400, detail="只能调整代理账号的结算模式")
+            if target.id == current_admin.id and not self._is_staff(current_admin):
                 raise HTTPException(status_code=400, detail="不能修改自己的结算模式")
-            if current_admin.role_code != ROLE_SUPER_ADMIN:
+            if not self._is_staff(current_admin):
                 if target.parent_account_id != current_admin.id and not (
-                    current_admin.role_code == ROLE_MASTER_AGENT and target.root_master_account_id == current_admin.id
+                    self._is_master_agent(current_admin) and target.root_master_account_id == current_admin.id
                 ):
                     raise HTTPException(status_code=403, detail="只能修改直系下级或总代链路内下级的结算模式")
             target.settlement_mode = settlement_mode
@@ -1220,7 +1304,7 @@ class AdminPanelService:
         funding_source: str,
         ip_address: Optional[str] = None,
     ) -> Dict[str, Any]:
-        if current_admin.role_code not in {ROLE_SUPER_ADMIN, ROLE_MASTER_AGENT, ROLE_SUB_AGENT}:
+        if not self._has_permission(current_admin, "batches.generate"):
             raise HTTPException(status_code=403, detail="当前角色不能生成卡密")
         normalized_funding_source = (funding_source or "").strip().lower()
         if normalized_funding_source not in {"balance", "credit"}:
@@ -1237,7 +1321,7 @@ class AdminPanelService:
                 valid_days=valid_days,
             )
             total_amount = int(quote["total_amount_cents"])
-            if current_admin.role_code == ROLE_SUPER_ADMIN:
+            if self._is_staff(current_admin):
                 payment_status = "paid"
                 settlement_status = "settled"
                 card_source_type = "platform"
@@ -1275,10 +1359,10 @@ class AdminPanelService:
                 settlement_status=settlement_status,
                 payment_status=payment_status,
                 card_source_type=card_source_type,
-                remark=f"funding_source={'platform' if current_admin.role_code == ROLE_SUPER_ADMIN else normalized_funding_source}",
+                remark=f"funding_source={'platform' if self._is_staff(current_admin) else normalized_funding_source}",
             )
 
-            if current_admin.role_code == ROLE_SUPER_ADMIN:
+            if self._is_staff(current_admin):
                 pass
             elif normalized_funding_source == "balance":
                 session.add(
@@ -1316,7 +1400,7 @@ class AdminPanelService:
                     "plan_code": quote["plan"].plan_code,
                     "quantity": int(quote["quantity"]),
                     "total_amount_cents": int(total_amount),
-                    "funding_source": "platform" if current_admin.role_code == ROLE_SUPER_ADMIN else normalized_funding_source,
+                    "funding_source": "platform" if self._is_staff(current_admin) else normalized_funding_source,
                 },
                 ip_address=ip_address,
             )
@@ -1787,18 +1871,31 @@ class AdminPanelService:
         async with get_async_session() as session:
             operator = await session.get(AdminAccount, int(current_admin.id))
             subject = await self._ensure_visible_account(session, operator, int(subject_account_id))
-            if operator.role_code != ROLE_SUPER_ADMIN and int(subject.parent_account_id or 0) != int(operator.id):
+            if not self._is_agent(subject):
+                raise HTTPException(status_code=400, detail="只能为代理账号直接充值入账")
+            if not self._is_staff(operator) and int(subject.parent_account_id or 0) != int(operator.id):
                 raise HTTPException(status_code=403, detail="只能为直系下级直接充值入账")
 
+            subject.credit_prepay_cents = int(getattr(subject, "credit_prepay_cents", 0) or 0) + amount
             settled_credit_amount, settled_batch_ids = await self._auto_settle_credit_batches_for_recharge(
                 session,
                 subject=subject,
                 operator=operator,
-                amount_cents=amount,
             )
-            top_up_balance_amount = amount - settled_credit_amount
-            if top_up_balance_amount > 0:
-                subject.balance_cents = int(subject.balance_cents or 0) + top_up_balance_amount
+            has_pending_credit_batches = await self._has_pending_credit_batches(
+                session,
+                subject_account_id=int(subject.id),
+            )
+
+            prepay_carried_amount = 0
+            top_up_balance_amount = 0
+            if has_pending_credit_batches:
+                prepay_carried_amount = int(getattr(subject, "credit_prepay_cents", 0) or 0)
+            else:
+                top_up_balance_amount = int(getattr(subject, "credit_prepay_cents", 0) or 0)
+                if top_up_balance_amount > 0:
+                    subject.balance_cents = int(subject.balance_cents or 0) + top_up_balance_amount
+                    subject.credit_prepay_cents = 0
 
             split_remark_parts: List[str] = []
             if settled_credit_amount > 0:
@@ -1806,12 +1903,14 @@ class AdminPanelService:
                     f"先结清授信批次 {settled_credit_amount / 100:.2f}"
                     + (f"（{len(settled_batch_ids)} 批）" if settled_batch_ids else "")
                 )
+            if prepay_carried_amount > 0:
+                split_remark_parts.append(f"授信预抵结转 {prepay_carried_amount / 100:.2f}")
             if top_up_balance_amount > 0:
                 split_remark_parts.append(f"再补余额 {top_up_balance_amount / 100:.2f}")
             split_remark = "；".join(split_remark_parts)
             session.add(
                 AgentFundLedger(
-                    ledger_scope="platform" if operator.role_code == ROLE_SUPER_ADMIN else "channel",
+                    ledger_scope="platform" if self._is_staff(operator) else "channel",
                     account_id=int(subject.id),
                     counterparty_account_id=int(operator.id) if int(subject.id) != int(operator.id) else None,
                     biz_type="recharge",
@@ -1837,7 +1936,9 @@ class AdminPanelService:
                     "amount_cents": amount,
                     "credit_repaid_cents": settled_credit_amount,
                     "settled_batch_ids": settled_batch_ids,
+                    "credit_prepay_cents": prepay_carried_amount,
                     "balance_topped_up_cents": top_up_balance_amount,
+                    "credit_prepay_after_cents": int(getattr(subject, "credit_prepay_cents", 0) or 0),
                     "remark": (remark or "").strip() or None,
                 },
                 ip_address=ip_address,
@@ -2061,7 +2162,8 @@ class AdminPanelService:
                 stmt = stmt.where(keyword_condition)
                 count_stmt = count_stmt.where(keyword_condition)
             visible_ids = set(await self._visible_account_ids(session, current_admin))
-            if current_admin.role_code == ROLE_SUPER_ADMIN:
+            can_read_system_audit = self._has_permission(current_admin, "audit.system.read")
+            if can_read_system_audit:
                 total = int((await session.execute(count_stmt)).scalar_one() or 0)
                 rows = (
                     await session.execute(
@@ -2078,7 +2180,7 @@ class AdminPanelService:
         for row in rows:
             detail = row.detail or {}
             actor_account_id = detail.get("actor_account_id")
-            if current_admin.role_code != ROLE_SUPER_ADMIN and actor_account_id is not None and int(actor_account_id) not in visible_ids:
+            if not can_read_system_audit and actor_account_id is not None and int(actor_account_id) not in visible_ids:
                 continue
             result.append(
                 {
@@ -2094,7 +2196,7 @@ class AdminPanelService:
                     "created_at": row.created_at.isoformat() if row.created_at else None,
                 }
             )
-        if current_admin.role_code != ROLE_SUPER_ADMIN:
+        if not can_read_system_audit:
             total = len(result)
             result = result[offset:offset + limit]
         return {

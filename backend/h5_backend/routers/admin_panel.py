@@ -143,6 +143,7 @@ async def set_credit_whitelist(
 async def list_accounts(
     search: Optional[str] = Query(default=None),
     role_code: Optional[str] = Query(default=None),
+    business_identity: Optional[str] = Query(default=None),
     status: Optional[str] = Query(default=None),
     parent_account_id: Optional[int] = Query(default=None, ge=1),
     limit: int = Query(default=100, ge=1, le=500),
@@ -156,6 +157,7 @@ async def list_accounts(
             current_admin=current_admin,
             search=search,
             role_code=role_code,
+            business_identity=business_identity,
             status=status,
             parent_account_id=parent_account_id,
             limit=limit,
@@ -505,7 +507,7 @@ async def list_audit_logs(
     keyword: Optional[str] = Query(default=None),
     limit: int = Query(default=200, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
-    current_admin: AdminAccount = Depends(require_admin_permissions("audit.read")),
+    current_admin: AdminAccount = Depends(require_admin_permissions("audit.system.read")),
 ):
     service = get_admin_panel_service()
     return {

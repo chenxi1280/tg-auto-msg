@@ -56,6 +56,8 @@ class AdminAccount(Base):
     username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, comment="后台登录名")
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False, comment="密码哈希")
     role_code: Mapped[str] = mapped_column(String(32), nullable=False, comment="角色代码")
+    account_type: Mapped[str] = mapped_column(String(20), default="staff", nullable=False, comment="账号类型")
+    business_identity: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, comment="业务身份")
     province_code: Mapped[str] = mapped_column(String(32), nullable=False, comment="省份编码")
     parent_account_id: Mapped[Optional[int]] = mapped_column(
         Integer,
@@ -76,6 +78,7 @@ class AdminAccount(Base):
     credit_limit_cents: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False, comment="总额度")
     allocated_credit_limit_cents: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False, comment="已分配额度总和")
     credit_used_cents: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False, comment="已使用额度")
+    credit_prepay_cents: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False, comment="授信预抵金额")
     balance_cents: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False, comment="余额")
     force_password_change: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, comment="是否强制改密")
     display_name: Mapped[str] = mapped_column(String(100), nullable=False, comment="展示名称")
@@ -111,6 +114,8 @@ class AdminAccount(Base):
 
     __table_args__ = (
         Index("idx_admin_accounts_role_status", "role_code", "status"),
+        Index("idx_admin_accounts_type_status", "account_type", "status"),
+        Index("idx_admin_accounts_business_identity", "business_identity"),
         Index("idx_admin_accounts_parent", "parent_account_id"),
         Index("idx_admin_accounts_root_master", "root_master_account_id"),
         Index("idx_admin_accounts_province_role", "province_code", "role_code"),

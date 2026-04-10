@@ -82,6 +82,14 @@ class AdminPanelRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.json()["detail"], "无权访问该后台资源")
 
+    def test_audit_logs_now_require_system_audit_permission(self):
+        client = self._build_client(_build_admin("operation_logs.scope.read"))
+
+        response = client.get("/api/agent/audit-logs")
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["detail"], "无权访问该后台资源")
+
 
 if __name__ == "__main__":
     unittest.main()

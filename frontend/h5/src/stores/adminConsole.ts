@@ -1,7 +1,6 @@
 import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
 import type {
-  AdminAuditLog,
   DeveloperAppSettings,
   AdminProfile,
   AgentAccount,
@@ -12,7 +11,6 @@ import type {
 } from '@/api/admin'
 import {
   adminListAccounts,
-  adminListAuditLogs,
   adminListCardBatches,
   adminListCards,
   adminListPricingPlans,
@@ -27,7 +25,6 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
   const plans = ref<AgentPlan[]>([])
   const batches = ref<CardBatch[]>([])
   const cards = ref<AgentCard[]>([])
-  const auditLogs = ref<AdminAuditLog[]>([])
   const selfLedgers = ref<FundLedger[]>([])
   const visibleLedgers = ref<FundLedger[]>([])
   const developerAppSettings = ref<DeveloperAppSettings | null>(null)
@@ -38,16 +35,13 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
     plans: false,
     batches: false,
     cards: false,
-    auditLogs: false,
     selfLedgers: false,
     visibleLedgers: false,
   })
 
-  const roleKeys = computed(() => profile.value?.roles || [])
   const permissionSet = computed(() => new Set(profile.value?.permissions || []))
   const hasPermission = (permissionCode: string) => permissionSet.value.has(permissionCode)
   const hasAnyPermission = (permissionCodes: string[]) => permissionCodes.some((permissionCode) => permissionSet.value.has(permissionCode))
-  const hasRole = (roleKey: string) => roleKeys.value.includes(roleKey)
   const canManageAgents = computed(() => hasAnyPermission(['agents.read', 'agents.write']))
   const canCreateMasterAgents = computed(() => hasPermission('agents.master.create'))
   const canCreateChildAgents = computed(() => hasPermission('agents.child.create'))
@@ -64,7 +58,6 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
     plans.value = []
     batches.value = []
     cards.value = []
-    auditLogs.value = []
     selfLedgers.value = []
     visibleLedgers.value = []
     developerAppSettings.value = null
@@ -125,17 +118,6 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
     }
   }
 
-  const loadAuditLogs = async () => {
-    loading.auditLogs = true
-    try {
-      const response = await adminListAuditLogs({ limit: 200, offset: 0 })
-      auditLogs.value = response.data.items
-      return response.data.items
-    } finally {
-      loading.auditLogs = false
-    }
-  }
-
   const loadSelfLedgers = async () => {
     loading.selfLedgers = true
     try {
@@ -176,16 +158,13 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
     plans,
     batches,
     cards,
-    auditLogs,
     selfLedgers,
     visibleLedgers,
     developerAppSettings,
     loading,
-    roleKeys,
     permissionSet,
     hasPermission,
     hasAnyPermission,
-    hasRole,
     canManageAgents,
     canCreateMasterAgents,
     canCreateChildAgents,
@@ -200,7 +179,6 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
     loadPlans,
     loadBatches,
     loadCards,
-    loadAuditLogs,
     loadSelfLedgers,
     loadVisibleLedgers,
   }
