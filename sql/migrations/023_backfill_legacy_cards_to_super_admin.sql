@@ -5,7 +5,6 @@ WITH target_super_admin AS (
     FROM admin_accounts
     WHERE role_code = 'super_admin'
       AND status = 'active'
-      AND province_code = current_setting('app.province_code', true)
     ORDER BY id ASC
     LIMIT 1
 )

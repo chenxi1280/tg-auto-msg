@@ -98,14 +98,14 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'security',
         name: 'AdminSecurity',
-        component: () => import('@/views/admin/SecurityPage.vue'),
-        meta: { title: '账户与安全', requiresAdminSession: true, permissions: ['security.read'] }
+        redirect: '/admin/account-center?tab=me',
+        meta: { title: '账号中心', requiresAdminSession: true, permissions: ['security.read'] }
       },
       {
         path: 'account-center',
         name: 'AdminAccountCenter',
         component: () => import('@/views/admin/AccountCenterPage.vue'),
-        meta: { title: '账号中心', requiresAdminSession: true, permissions: ['users.read', 'agents.read', 'admin_accounts.read'] }
+        meta: { title: '账号中心', requiresAdminSession: true, permissions: ['security.read', 'users.read', 'agents.read', 'admin_accounts.read'] }
       },
       {
         path: 'pricing',

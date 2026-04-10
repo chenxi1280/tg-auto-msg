@@ -6,4 +6,6 @@ Requires=docker.service
 [Service]
 Type=oneshot
 WorkingDirectory=/data/tgmsg/current
+Environment=TZ=Asia/Shanghai
+Environment=HEALTHCHECK_TIMEZONE=Asia/Shanghai
 ExecStart=/usr/bin/env bash /data/tgmsg/current/deploy/check-services.sh
