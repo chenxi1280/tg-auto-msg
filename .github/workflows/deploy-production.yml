@@ -2,9 +2,11 @@ name: Deploy Production
 
 'on':
   workflow_dispatch:
-  push:
-    branches:
-      - release
+  workflow_run:
+    workflows:
+      - Python Checks
+    types:
+      - completed
 
 concurrency:
   group: deploy-production
@@ -12,6 +14,7 @@ concurrency:
 
 jobs:
   checks:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
 
     steps:
@@ -21,7 +24,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: '3.11'
           cache: 'pip'
           cache-dependency-path: |
             requirements.txt
@@ -56,7 +59,75 @@ jobs:
           set -euo pipefail
           python -m unittest discover -s tests -t .
 
-  deploy:
+  deploy_from_checks:
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'release'
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Checkout verified release commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Validate deploy secrets
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.PRODUCTION_SSH_PRIVATE_KEY }}
+          DEPLOY_HOST: ${{ secrets.PRODUCTION_HOST }}
+          DEPLOY_USER: ${{ secrets.PRODUCTION_USER }}
+        run: |
+          set -euo pipefail
+          test -n "${SSH_PRIVATE_KEY}"
+          test -n "${DEPLOY_HOST}"
+          test -n "${DEPLOY_USER}"
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.PRODUCTION_SSH_PRIVATE_KEY }}
+          DEPLOY_HOST: ${{ secrets.PRODUCTION_HOST }}
+          DEPLOY_USER: ${{ secrets.PRODUCTION_USER }}
+          DEPLOY_PORT: ${{ secrets.PRODUCTION_PORT }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+          PORT="${DEPLOY_PORT:-22}"
+          cat > ~/.ssh/config <<EOF
+          Host production-server
+            HostName ${DEPLOY_HOST}
+            User ${DEPLOY_USER}
+            Port ${PORT}
+            IdentityFile ~/.ssh/id_ed25519
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+            ServerAliveInterval 15
+            ServerAliveCountMax 4
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Deploy verified release via SSH release script
+        env:
+          PRODUCTION_BASE_DIR: ${{ vars.PRODUCTION_BASE_DIR }}
+          RELEASE_BRANCHES: ${{ vars.RELEASE_BRANCHES }}
+        run: |
+          set -euo pipefail
+          BASE_DIR="${PRODUCTION_BASE_DIR:-/data/tgmsg}"
+          BRANCHES="${RELEASE_BRANCHES:-release main master}"
+          bash deploy/release.sh \
+            --host production-server \
+            --base-dir "${BASE_DIR}" \
+            --branch-list "${BRANCHES}"
+
+  deploy_manual:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: production
     needs: checks

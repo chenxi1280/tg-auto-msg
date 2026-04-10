@@ -6,11 +6,15 @@
 > 如果你是在维护 `47.250.167.174` 的生产环境，请优先参考
 > `docs/GITHUB_ACTIONS_SSH_DEPLOY.md`。另外，线上 `PostgreSQL/Redis` 已建议拆分到独立的
 > `infra-compose` 项目，不再跟随 `tgmsg` 一起发版。
+>
+> 当前 CI、容器和推荐开发环境统一使用 Python `3.11`。`release` 分支会先跑
+> `Python Checks`，通过后再自动链式触发 `Deploy Production`；手动触发部署时，
+> workflow 内也会先执行同一套检查。
 
 ## 📋 前置要求
 
 ### 必须安装
-- Python 3.10+
+- Python 3.11
 - PostgreSQL 13+
 - Redis 7+
 - (可选) Docker & Docker Compose
@@ -29,7 +33,7 @@ cd tg-auto-msg
 
 ### 2. 创建虚拟环境
 ```bash
-python3 -m venv venv
+python3.11 -m venv venv
 source venv/bin/activate  # Linux/Mac
 # 或
 venv\Scripts\activate  # Windows
