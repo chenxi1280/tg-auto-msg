@@ -40,6 +40,34 @@ class _FakeEngine:
 
 
 class MigrationManagerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_apply_pending_migrations_accepts_legacy_checksum_for_023(self):
+        connection = _FakeConnection()
+        engine = _FakeEngine(connection)
+        migration = MigrationFile(
+            version="023",
+            filename="023_backfill_legacy_cards_to_super_admin.sql",
+            path=Path("sql/migrations/023_backfill_legacy_cards_to_super_admin.sql"),
+            checksum="170160c58d97d0492aa3660b447ae1a3f2c6fd6f679da931bcc37509cc0114eb",
+            statements=["SELECT 1"],
+            rollback_filename=None,
+            rollback_path=None,
+        )
+
+        with patch(
+            "backend.database.runtime.migration_manager._discover_migration_files",
+            return_value=[migration],
+        ), patch(
+            "backend.database.runtime.migration_manager._ensure_schema_migrations_table",
+            AsyncMock(),
+        ), patch(
+            "backend.database.runtime.migration_manager._get_migration_record",
+            AsyncMock(return_value={"status": "applied", "checksum": "c93877d366dea1ab1d54fe637afb04eb4af6e2cf370d10b201c48e1afa3776ba"}),
+        ):
+            result = await apply_pending_migrations(engine)
+
+        self.assertEqual(result, {"total": 1, "applied": 0, "skipped": 1})
+        self.assertFalse(any("SELECT 1" in sql for sql, _ in connection.calls))
+
     async def test_apply_pending_migrations_sets_province_context_before_sql(self):
         connection = _FakeConnection()
         engine = _FakeEngine(connection)

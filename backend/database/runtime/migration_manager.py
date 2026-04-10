@@ -21,6 +21,11 @@ MIGRATIONS_DIR = SQL_DIR / "migrations"
 ROLLBACK_DIR = MIGRATIONS_DIR / "rollback"
 MIGRATION_STATEMENT_MARKER = "-- @statement"
 VERSION_RE = re.compile(r"^(\d+)_.*\.sql$")
+LEGACY_MIGRATION_CHECKSUMS: Dict[str, set[str]] = {
+    "023": {
+        "c93877d366dea1ab1d54fe637afb04eb4af6e2cf370d10b201c48e1afa3776ba",
+    }
+}
 
 
 @dataclass(frozen=True)
@@ -186,6 +191,12 @@ def _discover_migration_files() -> List[MigrationFile]:
     return files
 
 
+def _is_checksum_compatible(version: str, existing_checksum: str, current_checksum: str) -> bool:
+    accepted_checksums = {str(current_checksum or "")}
+    accepted_checksums.update(LEGACY_MIGRATION_CHECKSUMS.get(str(version), set()))
+    return str(existing_checksum or "") in accepted_checksums
+
+
 async def _ensure_schema_migrations_table(conn: AsyncConnection) -> None:
     await conn.execute(
         text(
@@ -329,7 +340,11 @@ async def apply_pending_migrations(engine: AsyncEngine) -> Dict[str, int]:
             await _ensure_schema_migrations_table(conn)
             existing = await _get_migration_record(conn, migration.version)
             if existing and existing.get("status") == "applied":
-                if str(existing.get("checksum") or "") != migration.checksum:
+                if not _is_checksum_compatible(
+                    migration.version,
+                    str(existing.get("checksum") or ""),
+                    migration.checksum,
+                ):
                     raise RuntimeError(
                         "迁移文件校验失败，数据库已应用版本与当前文件不一致: "
                         f"version={migration.version}, file={migration.filename}"
