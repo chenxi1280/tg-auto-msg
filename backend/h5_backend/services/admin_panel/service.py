@@ -2140,6 +2140,7 @@ class AdminPanelService:
         offset: int = 0,
     ) -> Dict[str, Any]:
         limit, offset = self._normalize_page(limit, offset)
+        total = 0
         async with get_async_session() as session:
             stmt = select(AdminAuditLog)
             count_stmt = select(func.count(AdminAuditLog.id))
