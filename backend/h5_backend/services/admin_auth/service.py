@@ -92,6 +92,8 @@ class AdminAuthService:
                 "scope": "admin",
                 "username": account.username,
                 "role": account.role_code,
+                "account_type": getattr(account, "account_type", None),
+                "business_identity": getattr(account, "business_identity", None),
                 "province_code": account.province_code,
             }
         )
@@ -142,6 +144,8 @@ class AdminAuthService:
                 username=username,
                 password_hash=self.get_password_hash(password),
                 role_code="super_admin",
+                account_type="staff",
+                business_identity=None,
                 province_code=settings.province_code,
                 parent_account_id=None,
                 root_master_account_id=None,

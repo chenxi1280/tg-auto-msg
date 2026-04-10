@@ -33,9 +33,7 @@ class CreateAdminAccountRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=64)
     password: str = Field(..., min_length=6, max_length=128)
     display_name: str = Field(..., min_length=1, max_length=100)
-    role_code: str = Field(..., min_length=1, max_length=32)
     role_keys: List[str] = Field(default_factory=list)
-    parent_account_id: Optional[int] = Field(default=None, ge=1)
     contact_name: Optional[str] = Field(default=None, max_length=100)
     contact_phone: Optional[str] = Field(default=None, max_length=50)
 
@@ -123,6 +121,8 @@ async def list_admin_accounts(
     search: Optional[str] = Query(default=None),
     status: Optional[str] = Query(default=None),
     role_key: Optional[str] = Query(default=None),
+    account_type: Optional[str] = Query(default=None),
+    business_identity: Optional[str] = Query(default=None),
     limit: int = Query(default=20, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     current_admin: AdminAccount = Depends(require_admin_permissions("admin_accounts.read")),
@@ -132,6 +132,8 @@ async def list_admin_accounts(
         search=search,
         status=status,
         role_key=role_key,
+        account_type=account_type,
+        business_identity=business_identity,
         limit=limit,
         offset=offset,
     )
@@ -149,9 +151,7 @@ async def create_admin_account(
         username=payload.username,
         password=payload.password,
         display_name=payload.display_name,
-        role_code=payload.role_code,
         role_keys=payload.role_keys,
-        parent_account_id=payload.parent_account_id,
         contact_name=payload.contact_name,
         contact_phone=payload.contact_phone,
     )

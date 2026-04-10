@@ -64,6 +64,8 @@ export interface AdminProfileAccount {
   username: string
   display_name: string
   role_code: string
+  account_type: 'staff' | 'agent'
+  business_identity: 'master_agent' | 'sub_agent' | null
   province_code: string
   parent_account_id: number | null
   root_master_account_id: number | null
@@ -74,6 +76,7 @@ export interface AdminProfileAccount {
   credit_limit_cents: number
   allocated_credit_limit_cents: number
   credit_used_cents: number
+  credit_prepay_cents: number
   balance_cents: number
   force_password_change: boolean
   contact_name: string | null
@@ -436,6 +439,7 @@ export const adminListPlans = (params?: {
 export const adminListAccounts = (params?: {
   search?: string
   role_code?: string
+  business_identity?: string
   status?: string
   parent_account_id?: number
   limit?: number
@@ -838,6 +842,8 @@ export const adminListAdminAccounts = (params?: {
   search?: string
   status?: string
   role_key?: string
+  account_type?: string
+  business_identity?: string
   limit?: number
   offset?: number
 }): Promise<{ success: boolean; data: PaginatedResponse<AgentAccount> }> =>
@@ -847,9 +853,7 @@ export const adminCreateAdminAccount = (payload: {
   username: string
   password: string
   display_name: string
-  role_code: string
   role_keys: string[]
-  parent_account_id?: number
   contact_name?: string
   contact_phone?: string
 }): Promise<{ success: boolean; data: AgentAccount }> =>

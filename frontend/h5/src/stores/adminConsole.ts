@@ -43,11 +43,9 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
     visibleLedgers: false,
   })
 
-  const roleKeys = computed(() => profile.value?.roles || [])
   const permissionSet = computed(() => new Set(profile.value?.permissions || []))
   const hasPermission = (permissionCode: string) => permissionSet.value.has(permissionCode)
   const hasAnyPermission = (permissionCodes: string[]) => permissionCodes.some((permissionCode) => permissionSet.value.has(permissionCode))
-  const hasRole = (roleKey: string) => roleKeys.value.includes(roleKey)
   const canManageAgents = computed(() => hasAnyPermission(['agents.read', 'agents.write']))
   const canCreateMasterAgents = computed(() => hasPermission('agents.master.create'))
   const canCreateChildAgents = computed(() => hasPermission('agents.child.create'))
@@ -181,11 +179,9 @@ export const useAdminConsoleStore = defineStore('adminConsole', () => {
     visibleLedgers,
     developerAppSettings,
     loading,
-    roleKeys,
     permissionSet,
     hasPermission,
     hasAnyPermission,
-    hasRole,
     canManageAgents,
     canCreateMasterAgents,
     canCreateChildAgents,

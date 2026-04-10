@@ -30,7 +30,7 @@
         </el-form>
       </el-card>
 
-      <el-card v-if="store.canCreateChildAgents && !store.hasRole('super_admin')" shadow="hover">
+      <el-card v-if="store.canCreateChildAgents && store.profile?.account.account_type === 'agent'" shadow="hover">
         <template #header>
           <div class="card-header">
             <span>创建直属下级</span>
@@ -65,13 +65,12 @@
     <el-card shadow="hover">
       <template #header>
         <div class="card-header">
-          <span>代理树与后台账号</span>
+          <span>代理账号</span>
           <div class="header-actions">
             <el-button v-if="isCompact" class="mobile-filter-trigger" @click="filtersVisible = true">筛选条件</el-button>
             <template v-else>
               <el-input v-model.trim="filters.search" clearable placeholder="搜索账号/显示名" style="width: 220px" />
-              <el-select v-model="filters.role_code" clearable placeholder="角色" style="width: 140px">
-                <el-option label="超管" value="super_admin" />
+              <el-select v-model="filters.business_identity" clearable placeholder="业务身份" style="width: 140px">
                 <el-option label="总代" value="master_agent" />
                 <el-option label="下级代理" value="sub_agent" />
               </el-select>
@@ -94,9 +93,9 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="角色" width="110">
+        <el-table-column label="业务身份" width="120">
           <template #default="{ row }">
-            <el-tag>{{ roleLabel(row.role_code) }}</el-tag>
+            <el-tag>{{ businessIdentityLabel(row.business_identity) }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="结算模式" width="120">
@@ -121,7 +120,7 @@
         <el-table-column label="操作" min-width="320" fixed="right">
           <template #default="{ row }">
             <el-button
-              v-if="store.canManageMasterCredit && row.role_code === 'master_agent'"
+              v-if="store.canManageMasterCredit && row.business_identity === 'master_agent'"
               link
               type="primary"
               @click="openCreditDialog(row, 'master')"
@@ -160,7 +159,7 @@
           <div class="mobile-data-card__header">
             <div>
               <div class="mobile-data-card__title">{{ row.display_name }}</div>
-              <div class="mobile-data-card__subtitle">{{ row.username }} · {{ roleLabel(row.role_code) }}</div>
+              <div class="mobile-data-card__subtitle">{{ row.username }} · {{ businessIdentityLabel(row.business_identity) }}</div>
             </div>
             <el-tag :type="row.is_credit_whitelisted ? 'success' : 'info'">
               {{ row.is_credit_whitelisted ? '授信已开' : '普通模式' }}
@@ -190,7 +189,7 @@
           </div>
           <div class="mobile-action-bar">
             <el-button
-              v-if="store.canManageMasterCredit && row.role_code === 'master_agent'"
+              v-if="store.canManageMasterCredit && row.business_identity === 'master_agent'"
               type="primary"
               plain
               @click="openCreditDialog(row, 'master')"
@@ -276,8 +275,7 @@
     <el-drawer v-model="filtersVisible" title="筛选账号" size="100%" append-to-body>
       <div class="mobile-card-list">
         <el-input v-model.trim="filters.search" clearable placeholder="搜索账号/显示名" />
-        <el-select v-model="filters.role_code" clearable placeholder="角色">
-          <el-option label="超管" value="super_admin" />
+        <el-select v-model="filters.business_identity" clearable placeholder="业务身份">
           <el-option label="总代" value="master_agent" />
           <el-option label="下级代理" value="sub_agent" />
         </el-select>
@@ -309,7 +307,7 @@ import {
   adminSetSettlementMode,
 } from '@/api/admin'
 import { useAdminConsoleStore } from '@/stores/adminConsole'
-import { centsToYuan, roleLabel, settlementLabel, yuanToCents } from '@/utils/adminConsole'
+import { businessIdentityLabel, centsToYuan, settlementLabel, yuanToCents } from '@/utils/adminConsole'
 import { useResponsive } from '@/composables/useResponsive'
 import ResponsiveFormLayer from '@/components/responsive/ResponsiveFormLayer.vue'
 
@@ -325,7 +323,7 @@ const pagination = reactive({
 })
 const filters = reactive({
   search: '',
-  role_code: '',
+  business_identity: '',
   status: '',
 })
 
@@ -378,7 +376,7 @@ const loadAccountsPage = async (resetPage = false) => {
   if (resetPage) pagination.currentPage = 1
   const response = await adminListAccounts({
     search: filters.search || undefined,
-    role_code: filters.role_code || undefined,
+    business_identity: filters.business_identity || undefined,
     status: filters.status || undefined,
     limit: pagination.pageSize,
     offset: (pagination.currentPage - 1) * pagination.pageSize,

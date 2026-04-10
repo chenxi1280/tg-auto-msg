@@ -4,7 +4,7 @@
       <template #header>
         <div class="card-header">
           <span>账号信息</span>
-          <el-tag v-if="store.profile">{{ roleLabel(store.profile.account.role_code) }}</el-tag>
+          <el-tag v-if="store.profile">{{ accountIdentitySummary(store.profile.account) }}</el-tag>
         </div>
       </template>
       <el-descriptions v-if="store.profile" :column="1" border>
@@ -19,6 +19,7 @@
           </div>
         </el-descriptions-item>
         <el-descriptions-item label="余额">¥{{ centsToYuan(store.profile.account.balance_cents) }}</el-descriptions-item>
+        <el-descriptions-item label="授信预抵">¥{{ centsToYuan(store.profile.account.credit_prepay_cents) }}</el-descriptions-item>
         <el-descriptions-item label="授信白名单">
           <el-tag :type="store.profile.account.is_credit_whitelisted ? 'success' : 'info'">
             {{ store.profile.account.is_credit_whitelisted ? '已开通' : '未开通' }}
@@ -119,7 +120,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { adminChangePassword, adminIssueTgBindCode, adminUnbindTg } from '@/api/admin'
 import { useAdminConsoleStore } from '@/stores/adminConsole'
-import { centsToYuan, formatDateTime, roleLabel } from '@/utils/adminConsole'
+import { accountIdentitySummary, centsToYuan, formatDateTime, roleLabel } from '@/utils/adminConsole'
 
 const store = useAdminConsoleStore()
 const issuingBindCode = ref(false)

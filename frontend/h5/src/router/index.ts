@@ -105,7 +105,7 @@ const routes: RouteRecordRaw[] = [
         path: 'account-center',
         name: 'AdminAccountCenter',
         component: () => import('@/views/admin/AccountCenterPage.vue'),
-        meta: { title: '账号中心', requiresAdminSession: true, permissions: ['users.read', 'agents.read'] }
+        meta: { title: '账号中心', requiresAdminSession: true, permissions: ['users.read', 'agents.read', 'admin_accounts.read'] }
       },
       {
         path: 'pricing',
@@ -195,7 +195,7 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'admin-accounts',
         name: 'AdminAccountsManage',
-        component: () => import('@/views/admin/AdminAccountsPage.vue'),
+        redirect: '/admin/account-center?tab=staff',
         meta: { title: '后台账号', requiresAdminSession: true, permissions: ['admin_accounts.read'] }
       },
       {

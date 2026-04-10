@@ -23,6 +23,10 @@ from backend.h5_backend.services.auth.service import get_auth_service
 ROLE_SUPER_ADMIN = "super_admin"
 ROLE_MASTER_AGENT = "master_agent"
 ROLE_SUB_AGENT = "sub_agent"
+ACCOUNT_TYPE_STAFF = "staff"
+ACCOUNT_TYPE_AGENT = "agent"
+BUSINESS_IDENTITY_MASTER_AGENT = "master_agent"
+BUSINESS_IDENTITY_SUB_AGENT = "sub_agent"
 
 PERMISSION_DEFINITIONS: List[Dict[str, str]] = [
     {"code": "dashboard.read", "module": "dashboard", "name": "查看仪表盘", "description": "允许进入后台仪表盘"},
@@ -110,8 +114,8 @@ ROLE_DEFAULT_PERMISSION_CODES: Dict[str, List[str]] = {
 
 SYSTEM_ROLE_META: Dict[str, Dict[str, str]] = {
     ROLE_SUPER_ADMIN: {"display_name": "超管", "description": "系统超管，拥有后台全部能力"},
-    ROLE_MASTER_AGENT: {"display_name": "省总代", "description": "省级总代，负责分销链路运营"},
-    ROLE_SUB_AGENT: {"display_name": "下级代理", "description": "管理自己链路内的代理和批次"},
+    ROLE_MASTER_AGENT: {"display_name": "总代默认角色", "description": "省总代账号默认角色"},
+    ROLE_SUB_AGENT: {"display_name": "下级代理默认角色", "description": "下级代理账号默认角色"},
 }
 
 
@@ -126,6 +130,37 @@ class AdminRbacService:
     def _slugify_role_key(value: str) -> str:
         normalized = re.sub(r"[^a-zA-Z0-9_]+", "_", (value or "").strip()).strip("_").lower()
         return normalized[:64]
+
+    @staticmethod
+    def _resolve_account_type(account: AdminAccount) -> str:
+        if getattr(account, "account_type", None) in {ACCOUNT_TYPE_STAFF, ACCOUNT_TYPE_AGENT}:
+            return str(account.account_type)
+        if str(account.role_code or "").strip().lower() in {ROLE_MASTER_AGENT, ROLE_SUB_AGENT}:
+            return ACCOUNT_TYPE_AGENT
+        return ACCOUNT_TYPE_STAFF
+
+    @staticmethod
+    def _resolve_business_identity(account: AdminAccount) -> Optional[str]:
+        identity = str(getattr(account, "business_identity", "") or "").strip().lower()
+        if identity in {BUSINESS_IDENTITY_MASTER_AGENT, BUSINESS_IDENTITY_SUB_AGENT}:
+            return identity
+        normalized_role = str(account.role_code or "").strip().lower()
+        if normalized_role == ROLE_MASTER_AGENT:
+            return BUSINESS_IDENTITY_MASTER_AGENT
+        if normalized_role == ROLE_SUB_AGENT:
+            return BUSINESS_IDENTITY_SUB_AGENT
+        return None
+
+    def _default_role_keys_for_account(self, account: AdminAccount) -> List[str]:
+        role_keys: List[str] = []
+        if str(account.role_code or "").strip().lower() == ROLE_SUPER_ADMIN:
+            role_keys.append(ROLE_SUPER_ADMIN)
+        business_identity = self._resolve_business_identity(account)
+        if business_identity == BUSINESS_IDENTITY_MASTER_AGENT:
+            role_keys.append(ROLE_MASTER_AGENT)
+        elif business_identity == BUSINESS_IDENTITY_SUB_AGENT:
+            role_keys.append(ROLE_SUB_AGENT)
+        return role_keys
 
     @staticmethod
     def _mask_actor(account: AdminAccount) -> str:
@@ -199,6 +234,8 @@ class AdminRbacService:
             "username": account.username,
             "display_name": account.display_name,
             "role_code": account.role_code,
+            "account_type": self._resolve_account_type(account),
+            "business_identity": self._resolve_business_identity(account),
             "province_code": account.province_code,
             "parent_account_id": account.parent_account_id,
             "root_master_account_id": account.root_master_account_id,
@@ -209,6 +246,7 @@ class AdminRbacService:
             "credit_limit_cents": int(account.credit_limit_cents or 0),
             "allocated_credit_limit_cents": int(account.allocated_credit_limit_cents or 0),
             "credit_used_cents": int(account.credit_used_cents or 0),
+            "credit_prepay_cents": int(getattr(account, "credit_prepay_cents", 0) or 0),
             "balance_cents": int(account.balance_cents or 0),
             "force_password_change": bool(account.force_password_change),
             "contact_name": account.contact_name,
@@ -264,8 +302,8 @@ class AdminRbacService:
             for binding in role_bindings
             if getattr(binding, "role", None) is not None and binding.role.status == "active"
         }
-        if not role_keys and account.role_code:
-            role_keys.add(account.role_code)
+        if not role_keys:
+            role_keys.update(self._default_role_keys_for_account(account))
         return sorted(role_keys)
 
     def get_permission_codes_for_account(self, account: AdminAccount) -> List[str]:
@@ -345,23 +383,24 @@ class AdminRbacService:
                     if permission_id not in existing_bindings:
                         session.add(AdminRolePermission(role_id=int(role.id), permission_id=int(permission_id)))
 
-            accounts = (await session.execute(select(AdminAccount.id, AdminAccount.role_code))).all()
-            for account_id, role_code in accounts:
-                role = existing_roles.get(str(role_code or "").strip())
-                if role is None:
-                    continue
-                binding_exists = (
-                    await session.execute(
-                        select(AdminAccountRole.id)
-                        .where(
-                            AdminAccountRole.admin_account_id == int(account_id),
-                            AdminAccountRole.role_id == int(role.id),
+            accounts = (await session.execute(select(AdminAccount))).scalars().all()
+            for account in accounts:
+                for role_key in self._default_role_keys_for_account(account):
+                    role = existing_roles.get(role_key)
+                    if role is None:
+                        continue
+                    binding_exists = (
+                        await session.execute(
+                            select(AdminAccountRole.id)
+                            .where(
+                                AdminAccountRole.admin_account_id == int(account.id),
+                                AdminAccountRole.role_id == int(role.id),
+                            )
+                            .limit(1)
                         )
-                        .limit(1)
-                    )
-                ).scalar_one_or_none()
-                if binding_exists is None:
-                    session.add(AdminAccountRole(admin_account_id=int(account_id), role_id=int(role.id)))
+                    ).scalar_one_or_none()
+                    if binding_exists is None:
+                        session.add(AdminAccountRole(admin_account_id=int(account.id), role_id=int(role.id)))
 
     async def list_permissions(self) -> Dict[str, Any]:
         async with get_async_session() as session:
@@ -534,6 +573,8 @@ class AdminRbacService:
         search: Optional[str] = None,
         status: Optional[str] = None,
         role_key: Optional[str] = None,
+        account_type: Optional[str] = None,
+        business_identity: Optional[str] = None,
         limit: int = 20,
         offset: int = 0,
     ) -> Dict[str, Any]:
@@ -558,6 +599,14 @@ class AdminRbacService:
             if normalized_status and normalized_status != "all":
                 stmt = stmt.where(AdminAccount.status == normalized_status)
                 count_stmt = count_stmt.where(AdminAccount.status == normalized_status)
+            normalized_account_type = (account_type or "").strip().lower()
+            if normalized_account_type and normalized_account_type != "all":
+                stmt = stmt.where(AdminAccount.account_type == normalized_account_type)
+                count_stmt = count_stmt.where(AdminAccount.account_type == normalized_account_type)
+            normalized_business_identity = (business_identity or "").strip().lower()
+            if normalized_business_identity and normalized_business_identity != "all":
+                stmt = stmt.where(AdminAccount.business_identity == normalized_business_identity)
+                count_stmt = count_stmt.where(AdminAccount.business_identity == normalized_business_identity)
             normalized_role_key = (role_key or "").strip()
             if normalized_role_key:
                 stmt = stmt.join(AdminAccountRole, AdminAccountRole.admin_account_id == AdminAccount.id).join(
@@ -586,63 +635,39 @@ class AdminRbacService:
         username: str,
         password: str,
         display_name: str,
-        role_code: str,
         role_keys: Sequence[str],
-        parent_account_id: Optional[int] = None,
+        account_type: str = ACCOUNT_TYPE_STAFF,
+        business_identity: Optional[str] = None,
         contact_name: Optional[str] = None,
         contact_phone: Optional[str] = None,
     ) -> Dict[str, Any]:
-        normalized_role_code = (role_code or "").strip().lower()
-        if normalized_role_code not in {ROLE_SUPER_ADMIN, ROLE_MASTER_AGENT, ROLE_SUB_AGENT}:
-            raise HTTPException(status_code=400, detail="后台账号身份标签不合法")
         if len(password or "") < 6:
             raise HTTPException(status_code=400, detail="密码至少 6 位")
+        normalized_account_type = (account_type or "").strip().lower() or ACCOUNT_TYPE_STAFF
+        if normalized_account_type != ACCOUNT_TYPE_STAFF:
+            raise HTTPException(status_code=400, detail="后台账号仅支持创建员工账号")
+        normalized_business_identity = (business_identity or "").strip().lower() or None
+        if normalized_business_identity is not None:
+            raise HTTPException(status_code=400, detail="后台账号不能设置代理业务身份")
+        normalized_role_keys = sorted({str(key or "").strip() for key in role_keys if str(key or "").strip()})
+        if not normalized_role_keys:
+            raise HTTPException(status_code=400, detail="请至少绑定一个后台角色")
         async with get_async_session() as session:
             exists = (
                 await session.execute(select(AdminAccount.id).where(AdminAccount.username == (username or "").strip()).limit(1))
             ).scalar_one_or_none()
             if exists is not None:
                 raise HTTPException(status_code=409, detail="后台用户名已存在")
-            parent: Optional[AdminAccount] = None
-            root_master_account_id: Optional[int] = None
-            level_depth = 0
-            if parent_account_id is not None:
-                parent = await session.get(AdminAccount, int(parent_account_id))
-                if parent is None:
-                    raise HTTPException(status_code=404, detail="指定上级账号不存在")
-                root_master_account_id = int(parent.root_master_account_id or parent.id)
-                level_depth = int(parent.level_depth or 0) + 1
-            if normalized_role_code == ROLE_MASTER_AGENT:
-                existing_master = (
-                    await session.execute(
-                        select(AdminAccount.id)
-                        .where(
-                            AdminAccount.role_code == ROLE_MASTER_AGENT,
-                            AdminAccount.province_code == current_admin.province_code,
-                            AdminAccount.status == "active",
-                        )
-                        .limit(1)
-                    )
-                ).scalar_one_or_none()
-                if existing_master is not None:
-                    raise HTTPException(status_code=409, detail="当前省份已存在总代账号")
-                parent = None
-                parent_account_id = None
-                root_master_account_id = None
-                level_depth = 0
-            if normalized_role_code == ROLE_SUPER_ADMIN:
-                parent = None
-                parent_account_id = None
-                root_master_account_id = None
-                level_depth = 0
             account = AdminAccount(
                 username=(username or "").strip(),
                 password_hash=get_auth_service().get_password_hash(password),
-                role_code=normalized_role_code,
+                role_code=ACCOUNT_TYPE_STAFF,
+                account_type=ACCOUNT_TYPE_STAFF,
+                business_identity=None,
                 province_code=current_admin.province_code,
-                parent_account_id=int(parent.id) if parent is not None else None,
-                root_master_account_id=root_master_account_id,
-                level_depth=level_depth,
+                parent_account_id=None,
+                root_master_account_id=None,
+                level_depth=0,
                 status="active",
                 settlement_mode="prepaid",
                 is_credit_whitelisted=False,
@@ -658,13 +683,11 @@ class AdminRbacService:
             )
             session.add(account)
             await session.flush()
-            if normalized_role_code == ROLE_MASTER_AGENT:
-                account.root_master_account_id = int(account.id)
             roles = (
-                await session.execute(select(AdminRole).where(AdminRole.role_key.in_(sorted(set(role_keys or [normalized_role_code])))))
+                await session.execute(select(AdminRole).where(AdminRole.role_key.in_(normalized_role_keys)))
             ).scalars().all()
             role_map = {item.role_key: item for item in roles}
-            missing = [key for key in sorted(set(role_keys or [normalized_role_code])) if key not in role_map]
+            missing = [key for key in normalized_role_keys if key not in role_map]
             if missing:
                 raise HTTPException(status_code=400, detail=f"角色不存在: {', '.join(missing)}")
             for item in role_map.values():
@@ -675,7 +698,7 @@ class AdminRbacService:
                 action="admin_account.create",
                 target_type="admin_account",
                 target_id=str(account.id),
-                detail={"username": account.username, "role_code": normalized_role_code},
+                detail={"username": account.username, "account_type": ACCOUNT_TYPE_STAFF, "role_keys": normalized_role_keys},
             )
             account = (
                 await session.execute(

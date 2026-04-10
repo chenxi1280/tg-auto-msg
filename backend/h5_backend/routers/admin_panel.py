@@ -143,6 +143,7 @@ async def set_credit_whitelist(
 async def list_accounts(
     search: Optional[str] = Query(default=None),
     role_code: Optional[str] = Query(default=None),
+    business_identity: Optional[str] = Query(default=None),
     status: Optional[str] = Query(default=None),
     parent_account_id: Optional[int] = Query(default=None, ge=1),
     limit: int = Query(default=100, ge=1, le=500),
@@ -156,6 +157,7 @@ async def list_accounts(
             current_admin=current_admin,
             search=search,
             role_code=role_code,
+            business_identity=business_identity,
             status=status,
             parent_account_id=parent_account_id,
             limit=limit,
