@@ -507,7 +507,7 @@ async def list_audit_logs(
     keyword: Optional[str] = Query(default=None),
     limit: int = Query(default=200, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
-    current_admin: AdminAccount = Depends(require_admin_permissions("audit.read")),
+    current_admin: AdminAccount = Depends(require_admin_permissions("audit.system.read")),
 ):
     service = get_admin_panel_service()
     return {

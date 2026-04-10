@@ -48,7 +48,6 @@ PERMISSION_DEFINITIONS: List[Dict[str, str]] = [
     {"code": "batches.generate", "module": "batches", "name": "生成卡密批次", "description": "允许直接生成卡密批次"},
     {"code": "batches.export", "module": "batches", "name": "导出卡密", "description": "允许导出卡密 Excel"},
     {"code": "batches.copy", "module": "batches", "name": "复制卡密", "description": "允许复制卡密"},
-    {"code": "audit.read", "module": "audit", "name": "查看审计", "description": "允许查看审计日志"},
     {"code": "audit.system.read", "module": "audit", "name": "查看系统审计", "description": "允许查看系统级全量审计日志"},
     {"code": "system.settings.read", "module": "system_settings", "name": "查看系统配置", "description": "允许查看购买入口和 Bot 公告栏"},
     {"code": "system.settings.update", "module": "system_settings", "name": "修改系统配置", "description": "允许更新购买入口和 Bot 公告栏"},
@@ -91,7 +90,6 @@ ROLE_DEFAULT_PERMISSION_CODES: Dict[str, List[str]] = {
         "batches.generate",
         "batches.export",
         "batches.copy",
-        "audit.read",
     ],
     ROLE_SUB_AGENT: [
         "dashboard.read",
@@ -108,7 +106,6 @@ ROLE_DEFAULT_PERMISSION_CODES: Dict[str, List[str]] = {
         "batches.generate",
         "batches.export",
         "batches.copy",
-        "audit.read",
     ],
 }
 

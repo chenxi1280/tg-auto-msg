@@ -148,7 +148,7 @@ const routes: RouteRecordRaw[] = [
         path: 'audit',
         name: 'AdminAudit',
         component: () => import('@/views/admin/AuditPage.vue'),
-        meta: { title: '审计日志', requiresAdminSession: true, permissions: ['audit.read', 'audit.system.read'] }
+        meta: { title: '审计日志', requiresAdminSession: true, permissions: ['audit.system.read'] }
       },
       {
         path: 'system-settings',

@@ -596,15 +596,6 @@ export const adminListOperationLogs = (params?: {
 }): Promise<{ success: boolean; data: PaginatedResponse<OperationLog> }> =>
   adminApi.get('/admin/operation-logs', { params })
 
-export const adminListAuditLogs = (params?: {
-  action?: string
-  target_type?: string
-  keyword?: string
-  limit?: number
-  offset?: number
-}): Promise<{ success: boolean; data: PaginatedResponse<AdminAuditLog> }> =>
-  adminApi.get('/agent/audit-logs', { params })
-
 export const adminGetPurchaseSettings = (): Promise<{ success: boolean; data: PurchaseSettings }> =>
   adminApi.get('/admin/system/purchase-settings')
 
