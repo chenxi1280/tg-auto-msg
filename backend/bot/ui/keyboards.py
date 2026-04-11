@@ -5,7 +5,7 @@ from typing import Optional, List, Any
 from telethon import Button
 from telethon.tl.types import KeyboardButtonUrl
 
-from backend.database.schema.models import ScheduledMessageTask, MediaType
+from backend.database.schema.models import ScheduledMessageTask, MediaType, TaskTriggerMode
 
 def _display_hour(hour: Optional[int]) -> str:
     """Render hour value for UI, preserving 0."""
@@ -74,6 +74,7 @@ def get_task_settings_keyboard(task: ScheduledMessageTask) -> list:
         InlineKeyboardMarkup
     """
     buttons = []
+    is_manual_shortcut = str(task.trigger_mode or TaskTriggerMode.SCHEDULED.value) == TaskTriggerMode.MANUAL_SHORTCUT.value
 
     # 状态开关
     buttons.append([
@@ -102,6 +103,23 @@ def get_task_settings_keyboard(task: ScheduledMessageTask) -> list:
         ),
     ])
 
+    buttons.append([
+        Button.inline(
+            f"🕹️ 类型: {'手动快捷' if is_manual_shortcut else '定时任务'}",
+            data=f"toggle_trigger_mode:{task.task_id}",
+        ),
+    ])
+
+    if is_manual_shortcut:
+        slot_label = f"槽位 {task.shortcut_slot}" if task.shortcut_slot else "未加入"
+        buttons.append([
+            Button.inline(f"📌 快捷栏: {slot_label}", data=f"edit_shortcut_slot:{task.task_id}"),
+            Button.inline("🏷️ 快捷名称", data=f"edit_shortcut_label:{task.task_id}"),
+        ])
+        buttons.append([
+            Button.inline("🚀 立即执行一次", data=f"trigger_once:{task.task_id}"),
+        ])
+
     # 编辑入口
     buttons.append([
         Button.inline(
@@ -119,30 +137,31 @@ def get_task_settings_keyboard(task: ScheduledMessageTask) -> list:
     ])
 
     # 时间控制
-    buttons.append([
-        Button.inline(
-            f"⏰ 间隔: 每 {task.repeat_interval_min} 分钟",
-            data=f"edit_interval:{task.task_id}"
-        ),
-    ])
+    if not is_manual_shortcut:
+        buttons.append([
+            Button.inline(
+                f"⏰ 间隔: 每 {task.repeat_interval_min} 分钟",
+                data=f"edit_interval:{task.task_id}"
+            ),
+        ])
 
-    buttons.append([
-        Button.inline(
-            f"⏰ 时段: {_format_time_range(task.day_start_hour, task.day_end_hour)}",
-            data=f"edit_hours:{task.task_id}"
-        ),
-    ])
+        buttons.append([
+            Button.inline(
+                f"⏰ 时段: {_format_time_range(task.day_start_hour, task.day_end_hour)}",
+                data=f"edit_hours:{task.task_id}"
+            ),
+        ])
 
-    buttons.append([
-        Button.inline(
-            f"📅 开始: {_format_timestamp(task.start_at)}",
-            data=f"edit_start:{task.task_id}"
-        ),
-        Button.inline(
-            f"📆 结束: {_format_timestamp(task.end_at)}",
-            data=f"edit_end:{task.task_id}"
-        ),
-    ])
+        buttons.append([
+            Button.inline(
+                f"📅 开始: {_format_timestamp(task.start_at)}",
+                data=f"edit_start:{task.task_id}"
+            ),
+            Button.inline(
+                f"📆 结束: {_format_timestamp(task.end_at)}",
+                data=f"edit_end:{task.task_id}"
+            ),
+        ])
 
     buttons.append([
         Button.inline("📋 查看记录", data=f"task_logs:{task.task_id}"),
@@ -155,6 +174,39 @@ def get_task_settings_keyboard(task: ScheduledMessageTask) -> list:
     ])
 
     return buttons
+
+
+def get_shortcut_slot_keyboard(task_id: str, current_slot: Optional[int]) -> list:
+    """快捷栏位置选择。"""
+    return [
+        [
+            Button.inline(f"{'✅ ' if current_slot == 1 else ''}槽位 1", data=f"set_shortcut_slot:{task_id}:1"),
+            Button.inline(f"{'✅ ' if current_slot == 2 else ''}槽位 2", data=f"set_shortcut_slot:{task_id}:2"),
+            Button.inline(f"{'✅ ' if current_slot == 3 else ''}槽位 3", data=f"set_shortcut_slot:{task_id}:3"),
+        ],
+        [Button.inline("❎ 移出快捷栏", data=f"set_shortcut_slot:{task_id}:clear")],
+        [
+            Button.inline("⬅️ 返回任务设置", data=f"settings:{task_id}"),
+            Button.inline("🏠 返回主菜单", data="bot_home"),
+        ],
+    ]
+
+
+def build_reply_shortcut_keyboard(labels: List[str]) -> list:
+    """Build reply keyboard for manual shortcut tasks."""
+    rows: list[list[Any]] = []
+    if labels:
+        current_row: list[Any] = []
+        for label in labels[:3]:
+            current_row.append(Button.text(label, resize=True))
+            if len(current_row) == 2:
+                rows.append(current_row)
+                current_row = []
+        if current_row:
+            rows.append(current_row)
+    else:
+        rows.append([Button.text("🏠 主菜单", resize=True)])
+    return rows
 
 
 # ============ 时间间隔选择 ============

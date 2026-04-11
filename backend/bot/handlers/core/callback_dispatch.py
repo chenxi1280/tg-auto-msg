@@ -32,16 +32,20 @@ from backend.bot.handlers.task.editing import (
     set_end_at_timestamp,
     set_hour,
     set_interval,
+    set_shortcut_slot,
     set_start_at_timestamp,
     show_interval_selection,
+    show_shortcut_slot_selection,
     start_edit_buttons,
     start_edit_end_at,
     start_edit_hours,
     start_edit_media,
+    start_edit_shortcut_label,
     start_edit_start_at,
     start_edit_text,
     toggle_delete_previous,
     toggle_pin_message,
+    toggle_trigger_mode,
 )
 from backend.bot.handlers.core.helpers import (
     login_help_text as _login_help_text,
@@ -60,6 +64,7 @@ from backend.bot.handlers.task.management import (
     open_task_logs_page,
     show_task_list,
     show_task_settings,
+    trigger_task_once_from_bot,
     toggle_task,
     update_task_enabled,
 )
@@ -125,6 +130,14 @@ async def _handle_set_end_ts_callback(event, user_id: int, parts: list[str]):
     task_id = parts[1]
     timestamp = int(parts[2])
     await set_end_at_timestamp(event, user_id, task_id, timestamp)
+
+
+async def _handle_set_shortcut_slot_callback(event, user_id: int, parts: list[str]):
+    if len(parts) < 3:
+        await event.answer("参数错误", alert=True)
+        return
+    task_id = parts[1]
+    await set_shortcut_slot(event, user_id, task_id, parts[2])
 
 
 async def _handle_pick_acc_callback(event, user_id: int, parts: list[str]):
@@ -477,15 +490,19 @@ _TASK_ACTION_HANDLERS = {
     "edit_targets": _handle_edit_targets,
     "toggle_delete": toggle_delete_previous,
     "toggle_pin": toggle_pin_message,
+    "toggle_trigger_mode": toggle_trigger_mode,
     "edit_text": start_edit_text,
     "edit_media": start_edit_media,
     "edit_buttons": start_edit_buttons,
+    "edit_shortcut_slot": show_shortcut_slot_selection,
+    "edit_shortcut_label": start_edit_shortcut_label,
     "edit_interval": show_interval_selection,
     "edit_hours": start_edit_hours,
     "edit_start": start_edit_start_at,
     "edit_end": start_edit_end_at,
     "open_h5": open_h5_webapp,
     "task_logs": open_task_logs_page,
+    "trigger_once": trigger_task_once_from_bot,
 }
 
 _SET_ENABLE_ACTIONS = {
@@ -499,6 +516,7 @@ _CUSTOM_ACTION_HANDLERS = {
     "set_hours_allday": _handle_set_hours_allday_callback,
     "set_start_ts": _handle_set_start_ts_callback,
     "set_end_ts": _handle_set_end_ts_callback,
+    "set_shortcut_slot": _handle_set_shortcut_slot_callback,
     "pick_acc": _handle_pick_acc_callback,
     "pick_res": _handle_pick_res_callback,
     "pick_page": _handle_pick_page_callback,

@@ -13,6 +13,9 @@ export interface TaskItem {
   target_peers: Array<{ peer_id: number; peer_type: string; access_hash?: number | null }>
   title: string
   enabled: boolean
+  trigger_mode: string
+  shortcut_slot: number | null
+  shortcut_label: string | null
   priority: number
   repeat_interval_min: number
   jitter_seconds: number
@@ -49,6 +52,9 @@ export interface CreateTaskPayload {
   target_peers?: Array<{ peer_id: number; peer_type: string; access_hash?: number | null }>
   title: string
   enabled: boolean
+  trigger_mode?: string
+  shortcut_slot?: number | null
+  shortcut_label?: string | null
   priority?: number
   repeat_interval_min: number
   jitter_seconds?: number
@@ -77,9 +83,23 @@ export interface TaskLogItem {
   id: number
   send_at: string | null
   result: string
+  trigger_source: string
   error_code: string | null
   error_message: string | null
   message_id: number | null
+}
+
+export interface TaskTriggerSummary {
+  task_id: string
+  title: string
+  account_id: string | null
+  trigger_source: string
+  status: string
+  total_targets: number
+  success_count: number
+  failed_count: number
+  error_summary: string | null
+  executed_at: string
 }
 
 export const getTasks = (): Promise<ApiResponse<TaskItem[]>> => {
@@ -114,4 +134,8 @@ export const deleteTask = (taskId: string): Promise<ApiResponse<any>> => {
 
 export const getTaskLogs = (taskId: string, limit = 100): Promise<ApiResponse<TaskLogItem[]>> => {
   return request.get(`/tasks/${taskId}/logs`, { params: { limit } })
+}
+
+export const triggerTask = (taskId: string): Promise<ApiResponse<TaskTriggerSummary>> => {
+  return request.post(`/tasks/${taskId}/trigger`)
 }

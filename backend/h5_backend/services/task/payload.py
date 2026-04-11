@@ -6,7 +6,12 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 
-from backend.database.schema.models import Account, MediaType, ScheduledMessageTask
+from backend.database.schema.models import (
+    Account,
+    MediaType,
+    ScheduledMessageTask,
+    TaskTriggerMode,
+)
 from backend.h5_backend.services.task.helpers import (
     build_auto_delay_profile,
     normalize_media_type,
@@ -103,6 +108,38 @@ def normalize_targets(payload: Dict[str, Any], fallback_task: Optional[Scheduled
 
 def validate_task_payload(payload: Dict[str, Any], current_task: Optional[ScheduledMessageTask]) -> None:
     """Validate and coerce task payload fields."""
+    raw_trigger_mode = payload.get("trigger_mode")
+    if raw_trigger_mode is None and current_task is not None:
+        raw_trigger_mode = current_task.trigger_mode
+    trigger_mode = str(raw_trigger_mode or TaskTriggerMode.SCHEDULED.value).strip().lower()
+    if trigger_mode not in {TaskTriggerMode.SCHEDULED.value, TaskTriggerMode.MANUAL_SHORTCUT.value}:
+        raise HTTPException(status_code=400, detail="trigger_mode 非法")
+    payload["trigger_mode"] = trigger_mode
+
+    shortcut_slot_value = payload.get("shortcut_slot")
+    if shortcut_slot_value is None and current_task is not None:
+        shortcut_slot_value = current_task.shortcut_slot
+    shortcut_slot: Optional[int] = None
+    if shortcut_slot_value not in (None, "", 0, "0"):
+        try:
+            shortcut_slot = int(shortcut_slot_value)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="shortcut_slot 非法") from exc
+        if shortcut_slot not in {1, 2, 3}:
+            raise HTTPException(status_code=400, detail="shortcut_slot 仅支持 1-3")
+    payload["shortcut_slot"] = shortcut_slot
+
+    shortcut_label_value = payload.get("shortcut_label")
+    if shortcut_label_value is None and current_task is not None:
+        shortcut_label_value = current_task.shortcut_label
+    shortcut_label = str(shortcut_label_value or "").strip()
+    if len(shortcut_label) > 20:
+        raise HTTPException(status_code=400, detail="shortcut_label 最长 20 个字符")
+    payload["shortcut_label"] = shortcut_label or None
+
+    if trigger_mode != TaskTriggerMode.MANUAL_SHORTCUT.value and shortcut_slot is not None:
+        raise HTTPException(status_code=400, detail="仅手动快捷任务可加入快捷栏")
+
     repeat_value = payload.get("repeat_interval_min")
     if repeat_value is None and current_task is not None:
         repeat_value = current_task.repeat_interval_min
@@ -155,11 +192,21 @@ def ensure_initial_next_run(
     was_enabled: Optional[bool] = None,
 ) -> None:
     """Initialize or refresh next_run_at when enabling task."""
+    trigger_mode = str(
+        payload.get(
+            "trigger_mode",
+            current_task.trigger_mode if current_task is not None else TaskTriggerMode.SCHEDULED.value,
+        )
+        or TaskTriggerMode.SCHEDULED.value
+    ).strip().lower()
+
     if current_task is None:
         enabled = bool(payload.get("enabled"))
         has_next = payload.get("next_run_at") is not None
         start_at_ts = int(payload.get("start_at") or 0)
-        if enabled and not has_next:
+        if trigger_mode != TaskTriggerMode.SCHEDULED.value:
+            payload["next_run_at"] = None
+        elif enabled and not has_next:
             payload["next_run_at"] = max(now_ts, start_at_ts) if start_at_ts > 0 else now_ts
         return
 
@@ -170,6 +217,9 @@ def ensure_initial_next_run(
 
     start_at_value = payload.get("start_at", current_task.start_at)
     start_at_ts = int(start_at_value or 0)
+    if trigger_mode != TaskTriggerMode.SCHEDULED.value:
+        current_task.next_run_at = None
+        return
     if enabled_now and (not previous_enabled or current_task.next_run_at is None):
         current_task.next_run_at = max(now_ts, start_at_ts) if start_at_ts > 0 else now_ts
         if not previous_enabled:
@@ -187,6 +237,8 @@ def apply_update_payload(task: ScheduledMessageTask, payload: Dict[str, Any]) ->
         "text",
         "buttons",
         "target_access_hash",
+        "shortcut_slot",
+        "shortcut_label",
     }
 
     for key, value in payload.items():

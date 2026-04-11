@@ -70,6 +70,14 @@ async def get_task_logs(task_id: str, limit: int = 50, current_user: User = Depe
     return {"success": True, "data": logs}
 
 
+@router.post("/api/tasks/{task_id}/trigger")
+async def trigger_task(task_id: str, current_user: User = Depends(get_current_user)):
+    """手动执行一次任务。"""
+    service = get_task_service()
+    summary = await service.trigger_task_once(task_id, current_user.id)
+    return {"success": True, "data": summary}
+
+
 @router.post("/api/tasks/batch")
 async def batch_update_tasks(task_ids: List[str], update_data: dict, current_user: User = Depends(get_current_user)):
     """批量更新任务"""

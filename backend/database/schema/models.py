@@ -685,6 +685,19 @@ class MediaType(str, Enum):
     ANIMATION = "animation"
 
 
+class TaskTriggerMode(str, Enum):
+    """任务触发方式枚举。"""
+    SCHEDULED = "scheduled"
+    MANUAL_SHORTCUT = "manual_shortcut"
+
+
+class TaskTriggerSource(str, Enum):
+    """任务执行来源枚举。"""
+    SCHEDULER = "scheduler"
+    BOT_SHORTCUT = "bot_shortcut"
+    API_MANUAL = "api_manual"
+
+
 class HealthStatus(str, Enum):
     """账号健康状态枚举"""
     ONLINE = "online"
@@ -776,6 +789,14 @@ class ScheduledMessageTask(Base):
 
     # 启用状态
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否启用")
+    trigger_mode: Mapped[str] = mapped_column(
+        String(20),
+        default=TaskTriggerMode.SCHEDULED.value,
+        nullable=False,
+        comment="触发方式：scheduled/manual_shortcut",
+    )
+    shortcut_slot: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="快捷栏位置 1-3")
+    shortcut_label: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, comment="快捷按钮名称")
 
     # 优先级（用于紧急任务插队）
     priority: Mapped[int] = mapped_column(Integer, default=0, comment="任务优先级，越大越优先")
@@ -832,6 +853,7 @@ class ScheduledMessageTask(Base):
         Index("idx_user_chat", "user_id", "chat_id"),
         Index("idx_account_id", "account_id"),
         Index("idx_enabled_next_run", "enabled", "next_run_at"),
+        Index("idx_task_user_trigger_shortcut", "user_id", "trigger_mode", "shortcut_slot"),
     )
 
     def __repr__(self) -> str:
@@ -846,6 +868,12 @@ class TaskLog(Base):
     task_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True, comment="任务 ID")
     send_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), comment="发送时间")
     result: Mapped[str] = mapped_column(String(20), nullable=False, comment="执行结果: success/failed")
+    trigger_source: Mapped[str] = mapped_column(
+        String(20),
+        default=TaskTriggerSource.SCHEDULER.value,
+        nullable=False,
+        comment="触发来源: scheduler/bot_shortcut/api_manual",
+    )
     error_code: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, comment="错误代码")
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="错误信息")
     message_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="消息 ID")

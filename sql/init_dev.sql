@@ -622,6 +622,9 @@ CREATE TABLE IF NOT EXISTS scheduled_message_tasks (
 
     -- 启用状态
     enabled BOOLEAN DEFAULT FALSE,
+    trigger_mode VARCHAR(20) DEFAULT 'scheduled' NOT NULL,
+    shortcut_slot SMALLINT,
+    shortcut_label VARCHAR(20),
     priority INTEGER DEFAULT 0,                          -- 任务优先级（越大越优先）
 
     -- 重复设置
@@ -658,6 +661,10 @@ CREATE TABLE IF NOT EXISTS scheduled_message_tasks (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
     -- 注释
+    CONSTRAINT scheduled_message_tasks_trigger_mode_check
+        CHECK (trigger_mode IN ('scheduled', 'manual_shortcut')),
+    CONSTRAINT scheduled_message_tasks_shortcut_slot_check
+        CHECK (shortcut_slot IS NULL OR shortcut_slot BETWEEN 1 AND 3),
     CONSTRAINT text_length_check CHECK (LENGTH(text) <= 4096)
 );
 
@@ -683,6 +690,12 @@ ALTER TABLE IF EXISTS scheduled_message_tasks
 ALTER TABLE IF EXISTS scheduled_message_tasks
     ADD COLUMN IF NOT EXISTS next_run_at BIGINT;
 ALTER TABLE IF EXISTS scheduled_message_tasks
+    ADD COLUMN IF NOT EXISTS trigger_mode VARCHAR(20) DEFAULT 'scheduled';
+ALTER TABLE IF EXISTS scheduled_message_tasks
+    ADD COLUMN IF NOT EXISTS shortcut_slot SMALLINT;
+ALTER TABLE IF EXISTS scheduled_message_tasks
+    ADD COLUMN IF NOT EXISTS shortcut_label VARCHAR(20);
+ALTER TABLE IF EXISTS scheduled_message_tasks
     ADD COLUMN IF NOT EXISTS media_type VARCHAR(20) DEFAULT 'none';
 ALTER TABLE IF EXISTS scheduled_message_tasks
     ADD COLUMN IF NOT EXISTS media_file_id VARCHAR(255);
@@ -702,6 +715,10 @@ BEGIN
         SET media_type = 'none'
         WHERE media_type IS NULL OR TRIM(media_type) = '';
 
+        UPDATE scheduled_message_tasks
+        SET trigger_mode = 'scheduled'
+        WHERE trigger_mode IS NULL OR TRIM(trigger_mode) = '';
+
         IF EXISTS (
             SELECT 1
             FROM pg_constraint
@@ -714,6 +731,32 @@ BEGIN
         ALTER TABLE scheduled_message_tasks
         ADD CONSTRAINT scheduled_message_tasks_media_type_check
         CHECK (media_type IN ('none', 'photo', 'video', 'sticker', 'animation'));
+
+        IF EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'scheduled_message_tasks_trigger_mode_check'
+        ) THEN
+            ALTER TABLE scheduled_message_tasks
+            DROP CONSTRAINT scheduled_message_tasks_trigger_mode_check;
+        END IF;
+
+        IF EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'scheduled_message_tasks_shortcut_slot_check'
+        ) THEN
+            ALTER TABLE scheduled_message_tasks
+            DROP CONSTRAINT scheduled_message_tasks_shortcut_slot_check;
+        END IF;
+
+        ALTER TABLE scheduled_message_tasks
+        ADD CONSTRAINT scheduled_message_tasks_trigger_mode_check
+        CHECK (trigger_mode IN ('scheduled', 'manual_shortcut'));
+
+        ALTER TABLE scheduled_message_tasks
+        ADD CONSTRAINT scheduled_message_tasks_shortcut_slot_check
+        CHECK (shortcut_slot IS NULL OR shortcut_slot BETWEEN 1 AND 3);
     END IF;
 END
 $$;
@@ -722,6 +765,10 @@ $$;
 CREATE INDEX IF NOT EXISTS idx_scheduled_user_chat ON scheduled_message_tasks(user_id, chat_id);
 CREATE INDEX IF NOT EXISTS idx_scheduled_account_id ON scheduled_message_tasks(account_id);
 CREATE INDEX IF NOT EXISTS idx_scheduled_enabled_next_run ON scheduled_message_tasks(enabled, next_run_at);
+CREATE INDEX IF NOT EXISTS idx_task_user_trigger_shortcut ON scheduled_message_tasks(user_id, trigger_mode, shortcut_slot);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_task_user_shortcut_slot
+    ON scheduled_message_tasks(user_id, shortcut_slot)
+    WHERE shortcut_slot IS NOT NULL;
 
 -- 注释
 COMMENT ON TABLE scheduled_message_tasks IS '定时消息任务表';
@@ -732,6 +779,9 @@ COMMENT ON COLUMN scheduled_message_tasks.target_peer_type IS '目标 Peer 类�
 COMMENT ON COLUMN scheduled_message_tasks.target_access_hash IS '目标 Access Hash';
 COMMENT ON COLUMN scheduled_message_tasks.target_peers IS '多目标 Peer 列表';
 COMMENT ON COLUMN scheduled_message_tasks.priority IS '任务优先级（越大越优先）';
+COMMENT ON COLUMN scheduled_message_tasks.trigger_mode IS '触发方式：scheduled/manual_shortcut';
+COMMENT ON COLUMN scheduled_message_tasks.shortcut_slot IS '快捷栏位置（1-3）';
+COMMENT ON COLUMN scheduled_message_tasks.shortcut_label IS '快捷按钮名称';
 COMMENT ON COLUMN scheduled_message_tasks.jitter_seconds IS '随机抖动秒数（0-300）';
 COMMENT ON COLUMN scheduled_message_tasks.delay_min_seconds IS '随机延迟下限（秒）';
 COMMENT ON COLUMN scheduled_message_tasks.delay_max_seconds IS '随机延迟上限（秒）';
@@ -765,6 +815,8 @@ CREATE TABLE IF NOT EXISTS task_logs (
     task_id VARCHAR(36) NOT NULL,
     send_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     result VARCHAR(20) NOT NULL CHECK (result IN ('success', 'failed')),
+    trigger_source VARCHAR(20) DEFAULT 'scheduler' NOT NULL
+        CHECK (trigger_source IN ('scheduler', 'bot_shortcut', 'api_manual')),
     error_code VARCHAR(50),
     error_message TEXT,
     message_id INTEGER
@@ -777,6 +829,7 @@ CREATE INDEX IF NOT EXISTS idx_task_logs_send_at ON task_logs(send_at);
 -- 注释
 COMMENT ON TABLE task_logs IS '任务执行日志表';
 COMMENT ON COLUMN task_logs.result IS '执行结果: success/failed';
+COMMENT ON COLUMN task_logs.trigger_source IS '触发来源: scheduler/bot_shortcut/api_manual';
 
 -- ============================================
 -- 表: 任务目标发送异常状态 (task_target_send_issues)

@@ -5,6 +5,8 @@ from datetime import datetime
 
 from telethon import Button, events
 from sqlalchemy import select
+from fastapi import HTTPException
+from loguru import logger
 
 from backend.bot.account.reauth import (
     get_reauth_required_message,
@@ -35,8 +37,17 @@ from backend.bot.ui.keyboards import (
     get_task_settings_keyboard,
 )
 from backend.bot.ui.messages import *
-from backend.database.schema.models import Account, MediaType, Resource, ScheduledMessageTask
+from backend.database.schema.models import (
+    Account,
+    MediaType,
+    Resource,
+    ScheduledMessageTask,
+    TaskTriggerMode,
+    TaskTriggerSource,
+)
 from backend.database.runtime.session import get_async_session
+from backend.h5_backend.services.licensing.service import require_account_task_permission
+from backend.scheduler.core.task_runner import execute_task_once
 
 # Selection flows (kept import-compatible for callback/message dispatch modules)
 from backend.bot.handlers.task.target_selection import (
@@ -74,6 +85,20 @@ def _should_edit_event(event) -> bool:
     return isinstance(event, events.CallbackQuery.Event)
 
 
+async def _answer_or_respond(event, text: str, *, alert: bool = False, parse_mode: str | None = None):
+    """Safely reply for both callback and message events."""
+    if hasattr(event, "answer"):
+        try:
+            await event.answer(text, alert=alert)
+            return
+        except TypeError:
+            pass
+        except Exception:
+            # Fall back to message reply when callback answer is unavailable.
+            pass
+    await event.respond(text, parse_mode=parse_mode)
+
+
 def _display_hour(hour: int | None) -> str:
     """Render hour for settings text, preserving 0."""
     return "-" if hour is None else f"{hour:02d}"
@@ -89,6 +114,19 @@ def _format_time_range(start_hour: int | None, end_hour: int | None) -> str:
 def _format_run_bound(ts: int | None) -> str:
     """Render start/end bound with continuous-run hint."""
     return "未设置（一直执行）" if ts is None else _format_timestamp(ts)
+
+
+def _render_shortcut_status(task: ScheduledMessageTask) -> str:
+    if str(task.trigger_mode or "") != TaskTriggerMode.MANUAL_SHORTCUT.value:
+        return "不适用"
+    return f"槽位 {task.shortcut_slot}" if task.shortcut_slot else "未加入快捷栏"
+
+
+def _render_shortcut_label(task: ScheduledMessageTask) -> str:
+    label = str(task.shortcut_label or "").strip()
+    if label:
+        return label
+    return _truncate_text(str(task.title or "快捷任务"), 20)
 
 
 async def show_task_list(event, user_id: int):
@@ -223,12 +261,28 @@ async def show_task_settings(event, user_id: int, task_id: str):
     text = TASK_SETTINGS_TEMPLATE.format(
         title=_escape_markdown(task.title),
         enabled_status=STATUS_ENABLED if task.enabled else STATUS_DISABLED,
-        interval=task.repeat_interval_min,
+        trigger_mode="手动快捷任务" if str(task.trigger_mode or "") == TaskTriggerMode.MANUAL_SHORTCUT.value else "定时任务",
+        shortcut_status=_render_shortcut_status(task),
+        shortcut_label=_escape_markdown(_render_shortcut_label(task)),
+        interval_line=(
+            f"• 重复间隔: 每 {task.repeat_interval_min} 分钟"
+            if str(task.trigger_mode or "") != TaskTriggerMode.MANUAL_SHORTCUT.value
+            else "• 触发方式: 仅点击底部快捷按钮时执行一次"
+        ),
         account_display=_escape_markdown(account_display),
         target_display=_escape_markdown(target_display),
-        time_range=_format_time_range(task.day_start_hour, task.day_end_hour),
-        start_date=_format_run_bound(task.start_at),
-        end_date=_format_run_bound(task.end_at),
+        time_control_block=(
+            "\n".join(
+                [
+                    f"• 发送时段: {_format_time_range(task.day_start_hour, task.day_end_hour)}",
+                    f"• 开始日期: {_format_run_bound(task.start_at)}",
+                    f"• 结束日期: {_format_run_bound(task.end_at)}",
+                    "• 规则说明: 未设置开始/结束时间时，任务将一直执行",
+                ]
+            )
+            if str(task.trigger_mode or "") != TaskTriggerMode.MANUAL_SHORTCUT.value
+            else "• 手动快捷任务不参与自动调度，点击快捷按钮时立即执行"
+        ),
         text_status=STATUS_HAS if task.text else STATUS_NOT_SET,
         media_status=task.media_type.value if task.media_type != MediaType.NONE else "无",
         buttons_status=STATUS_HAS if task.buttons else STATUS_NOT_SET,
@@ -375,7 +429,11 @@ async def toggle_task(event, user_id: int, task_id: str):
         task = await _get_user_task(session, task_id, user_id)
         if task:
             task.enabled = not task.enabled
-            if task.enabled and task.next_run_at is None:
+            if (
+                task.enabled
+                and task.next_run_at is None
+                and str(task.trigger_mode or TaskTriggerMode.SCHEDULED.value) == TaskTriggerMode.SCHEDULED.value
+            ):
                 now_ts = int(datetime.now().timestamp())
                 start_at_ts = int(task.start_at or 0)
                 task.next_run_at = max(now_ts, start_at_ts) if start_at_ts > 0 else now_ts
@@ -414,7 +472,11 @@ async def update_task_enabled(event, user_id: int, task_id: str, enabled: bool):
         task = await _get_user_task(session, task_id, user_id)
         if task:
             task.enabled = enabled
-            if enabled and task.next_run_at is None:
+            if (
+                enabled
+                and task.next_run_at is None
+                and str(task.trigger_mode or TaskTriggerMode.SCHEDULED.value) == TaskTriggerMode.SCHEDULED.value
+            ):
                 now_ts = int(datetime.now().timestamp())
                 start_at_ts = int(task.start_at or 0)
                 task.next_run_at = max(now_ts, start_at_ts) if start_at_ts > 0 else now_ts
@@ -452,3 +514,88 @@ async def open_task_logs_page(event, user_id: int, task_id: str):
         return
 
     await event.answer(f"📊 请在浏览器打开任务发送记录:\n{url}", alert=True)
+
+
+async def trigger_task_once_from_bot(event, user_id: int, task_id: str):
+    """从 Bot 立即执行一次任务。"""
+    async with get_async_session() as session:
+        task = await _get_user_task(session, task_id, user_id)
+        if not task:
+            await _answer_or_respond(event, "任务不存在或无权限", alert=True)
+            return
+        if not task.enabled:
+            await _answer_or_respond(event, "任务已禁用，请启用后再执行", alert=True)
+            return
+        if task.account_id:
+            await require_account_task_permission(
+                task.account_id,
+                session=session,
+                action_text="手动执行任务",
+            )
+    await event.respond("⏳ 任务处理中，请稍候...")
+    summary = (await execute_task_once(
+        task_id,
+        trigger_source=TaskTriggerSource.BOT_SHORTCUT.value,
+        advance_schedule=False,
+        respect_schedule_constraints=False,
+    )).to_dict()
+    text = (
+        "🚀 **任务执行完成**\n\n"
+        f"任务：{_escape_markdown(summary['title'])}\n"
+        f"执行账号：`{summary.get('account_id') or 'default'}`\n"
+        f"成功目标：{summary['success_count']}\n"
+        f"失败目标：{summary['failed_count']}\n"
+        f"执行状态：`{summary['status']}`"
+    )
+    if summary.get("error_summary"):
+        text += f"\n失败摘要：{_escape_markdown(_truncate_text(summary['error_summary'], 80))}"
+    await event.respond(text, parse_mode="markdown")
+
+
+async def try_handle_manual_shortcut_message(event, user_id: int, text: str) -> bool:
+    """Handle manual shortcut reply-keyboard text."""
+    normalized = (text or "").strip()
+    if not normalized:
+        return False
+    if normalized == "🏠 主菜单":
+        from backend.bot.onboarding import get_onboarding_service
+        await get_onboarding_service().show_home(event, user_id)
+        return True
+
+    async with get_async_session() as session:
+        access_ctx = await _resolve_actor_access_context(session, user_id)
+        db_user_id = access_ctx.system_user_id
+        if db_user_id is None:
+            return False
+        stmt = (
+            select(ScheduledMessageTask)
+            .where(
+                ScheduledMessageTask.user_id == db_user_id,
+                ScheduledMessageTask.enabled == True,
+                ScheduledMessageTask.trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value,
+                ScheduledMessageTask.shortcut_slot.is_not(None),
+            )
+            .order_by(ScheduledMessageTask.shortcut_slot.asc(), ScheduledMessageTask.created_at.asc())
+        )
+        if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED and access_ctx.scoped_account_id:
+            stmt = stmt.where(ScheduledMessageTask.account_id == str(access_ctx.scoped_account_id))
+        tasks = list((await session.execute(stmt)).scalars().all())
+
+    matched_tasks = [
+        task for task in tasks
+        if _render_shortcut_label(task) == normalized
+    ]
+    if not matched_tasks:
+        return False
+    if len(matched_tasks) > 1:
+        await event.respond("⚠️ 当前快捷任务名称冲突，请先在任务设置里修改快捷名称后再试。")
+        return True
+
+    try:
+        await trigger_task_once_from_bot(event, user_id, matched_tasks[0].task_id)
+    except HTTPException as exc:
+        await _answer_or_respond(event, str(exc.detail or "执行失败，请稍后重试"), alert=True)
+    except Exception as exc:
+        logger.exception("手动快捷任务执行失败: user_id={}, task_id={}, error={!r}", user_id, matched_tasks[0].task_id, exc)
+        await event.respond("⚠️ 快捷任务执行失败，请稍后重试。")
+    return True
