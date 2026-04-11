@@ -11,6 +11,7 @@
 - `setup/PROJECT_STRUCTURE.md`：仓库结构与主要入口
 - `setup/MIGRATIONS.md`：数据库迁移说明
 - `deployment/DEPLOYMENT.md`：生产部署与运维流程
+- `GITHUB_ACTIONS_SSH_DEPLOY.md`：GitHub Actions + SSH 标准发布流程
 - `deployment/PRODUCTION_RUNTIME.md`：当前线上部署、目录与挂载说明
 - `../scripts/README.md`：本地维护脚本说明
 - `../docker/README.md`：Docker 构建文件说明
