@@ -33,6 +33,39 @@
             <el-input v-model="form.title" placeholder="例如：午间频道推送" />
           </el-form-item>
 
+          <el-form-item label="任务类型">
+            <el-radio-group v-model="form.triggerMode" @change="onTriggerModeChange">
+              <el-radio label="scheduled">定时任务</el-radio>
+              <el-radio label="manual_shortcut">手动快捷任务</el-radio>
+            </el-radio-group>
+            <div class="hint-text">
+              手动快捷任务不会自动调度，只会在 Bot 底部快捷按钮或“立即执行一次”时触发。
+            </div>
+          </el-form-item>
+
+          <template v-if="form.triggerMode === 'manual_shortcut'">
+            <div class="grid-two">
+              <el-form-item label="加入快捷栏">
+                <el-switch v-model="form.addToShortcut" />
+              </el-form-item>
+              <el-form-item label="快捷位" v-if="form.addToShortcut">
+                <el-select v-model="form.shortcutSlot" placeholder="请选择 1-3 号位" style="width: 100%">
+                  <el-option label="槽位 1" :value="1" />
+                  <el-option label="槽位 2" :value="2" />
+                  <el-option label="槽位 3" :value="3" />
+                </el-select>
+              </el-form-item>
+            </div>
+            <el-form-item label="快捷名称">
+              <el-input
+                v-model="form.shortcutLabel"
+                maxlength="20"
+                show-word-limit
+                placeholder="不填则默认使用任务标题"
+              />
+            </el-form-item>
+          </template>
+
           <el-form-item label="执行账号">
             <el-select v-model="form.accountId" placeholder="请选择账号" style="width: 100%" @change="onAccountChange">
               <el-option
@@ -117,15 +150,24 @@
               <el-input-number v-model="form.priority" :min="0" :max="1000" style="width: 100%" />
             </el-form-item>
             <el-form-item label="发送间隔（分钟）">
-              <el-input-number v-model="form.repeatIntervalMin" :min="1" :max="1440" style="width: 100%" />
+              <el-input-number
+                v-model="form.repeatIntervalMin"
+                :min="1"
+                :max="1440"
+                :disabled="form.triggerMode === 'manual_shortcut'"
+                style="width: 100%"
+              />
             </el-form-item>
           </div>
 
-          <div class="hint-text">
+          <div class="hint-text" v-if="form.triggerMode !== 'manual_shortcut'">
             系统会自动生成 30 秒到 5 分钟的随机延迟与抖动参数，不需要手工配置。
           </div>
+          <div class="hint-text" v-else>
+            手动快捷任务不参与自动调度，开始/结束时间与下次执行时间不生效。
+          </div>
 
-          <div class="grid-two">
+          <div v-if="form.triggerMode !== 'manual_shortcut'" class="grid-two">
             <el-form-item label="开始时间（可选）">
               <el-input v-model="form.startAtLocal" type="datetime-local" />
             </el-form-item>
@@ -147,6 +189,15 @@
             <el-button type="primary" :loading="submitting" @click="submitTask">
               {{ editingTaskId ? '保存修改' : '创建任务' }}
             </el-button>
+            <el-button
+              v-if="editingTaskId"
+              type="success"
+              plain
+              :disabled="!form.enabled"
+              @click="runTaskOnce(editingTaskId, form.title)"
+            >
+              立即执行一次
+            </el-button>
             <el-button v-if="editingTaskId" @click="cancelEdit">取消编辑</el-button>
             <el-button @click="closeEditor">返回任务管理</el-button>
           </div>
@@ -158,6 +209,14 @@
         <div class="table-wrap">
           <el-table v-if="!isCompact" :data="tasks" stripe v-loading="loadingTasks">
             <el-table-column prop="title" label="任务名" min-width="260" show-overflow-tooltip />
+            <el-table-column label="类型/快捷栏" width="150">
+              <template #default="{ row }">
+                <div>{{ row.trigger_mode === 'manual_shortcut' ? '手动快捷' : '定时任务' }}</div>
+                <div class="table-subtext">
+                  {{ row.shortcut_slot ? `槽位 ${row.shortcut_slot}` : '-' }}
+                </div>
+              </template>
+            </el-table-column>
             <el-table-column label="目标" min-width="280">
               <template #default="{ row }">
                 {{ renderTaskTarget(row) }}
@@ -175,16 +234,17 @@
             </el-table-column>
             <el-table-column label="间隔/抖动" width="140">
               <template #default="{ row }">
-                {{ row.repeat_interval_min }}m / {{ row.jitter_seconds }}s
+                {{ row.trigger_mode === 'manual_shortcut' ? '手动触发' : `${row.repeat_interval_min}m / ${row.jitter_seconds}s` }}
               </template>
             </el-table-column>
             <el-table-column label="下次执行" width="185">
               <template #default="{ row }">
-                {{ formatUnix(row.next_run_at) }}
+                {{ row.trigger_mode === 'manual_shortcut' ? '-' : formatUnix(row.next_run_at) }}
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="220" fixed="right">
+            <el-table-column label="操作" width="280" fixed="right">
               <template #default="{ row }">
+                <el-button type="success" link @click="runTaskOnce(row.task_id, row.title)">立即执行</el-button>
                 <el-button type="primary" link @click="openTaskLogs(row.task_id)">发送记录</el-button>
                 <el-button type="primary" link @click="startEdit(row)">编辑</el-button>
                 <el-button type="danger" link @click="removeTask(row.task_id)">删除</el-button>
@@ -202,19 +262,29 @@
               </div>
               <div class="mobile-data-card__grid">
                 <div class="mobile-data-card__row">
+                  <span class="mobile-data-card__label">类型/快捷栏</span>
+                  <span class="mobile-data-card__value">
+                    {{ row.trigger_mode === 'manual_shortcut' ? '手动快捷' : '定时任务' }}
+                    <template v-if="row.shortcut_slot"> · 槽位 {{ row.shortcut_slot }}</template>
+                  </span>
+                </div>
+                <div class="mobile-data-card__row">
                   <span class="mobile-data-card__label">优先级</span>
                   <span class="mobile-data-card__value">{{ row.priority ?? 0 }}</span>
                 </div>
                 <div class="mobile-data-card__row">
                   <span class="mobile-data-card__label">间隔/抖动</span>
-                  <span class="mobile-data-card__value">{{ row.repeat_interval_min }}m / {{ row.jitter_seconds }}s</span>
+                  <span class="mobile-data-card__value">
+                    {{ row.trigger_mode === 'manual_shortcut' ? '手动触发' : `${row.repeat_interval_min}m / ${row.jitter_seconds}s` }}
+                  </span>
                 </div>
                 <div class="mobile-data-card__row">
                   <span class="mobile-data-card__label">下次执行</span>
-                  <span class="mobile-data-card__value">{{ formatUnix(row.next_run_at) }}</span>
+                  <span class="mobile-data-card__value">{{ row.trigger_mode === 'manual_shortcut' ? '-' : formatUnix(row.next_run_at) }}</span>
                 </div>
               </div>
               <div class="mobile-action-bar">
+                <el-button type="success" plain @click="runTaskOnce(row.task_id, row.title)">立即执行</el-button>
                 <el-button type="primary" plain @click="openTaskLogs(row.task_id)">发送记录</el-button>
                 <el-button type="primary" plain @click="startEdit(row)">编辑</el-button>
                 <el-button type="danger" plain @click="removeTask(row.task_id)">删除</el-button>
@@ -234,7 +304,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAccountStore } from '@/stores/account'
 import { useUserStore } from '@/stores/user'
 import type { TaskItem, TaskDetail } from '@/api/task'
-import { createTask, deleteTask, getTask, getTasks, updateTask, uploadTaskMedia } from '@/api/task'
+import { createTask, deleteTask, getTask, getTasks, triggerTask, updateTask, uploadTaskMedia } from '@/api/task'
 import { useResponsive } from '@/composables/useResponsive'
 
 interface ResourceOption {
@@ -268,6 +338,10 @@ const form = reactive({
   accountId: '',
   targetKeys: [] as string[],
   text: '',
+  triggerMode: 'scheduled',
+  addToShortcut: false,
+  shortcutSlot: null as number | null,
+  shortcutLabel: '',
   priority: 0,
   repeatIntervalMin: 60,
   mediaType: 'none',
@@ -494,6 +568,13 @@ const onAccountChange = async () => {
   await loadResources(true, false)
 }
 
+const onTriggerModeChange = () => {
+  if (form.triggerMode !== 'manual_shortcut') {
+    form.addToShortcut = false
+    form.shortcutSlot = null
+  }
+}
+
 const onTargetFilter = (keyword: string) => {
   resourceKeyword.value = keyword || ''
 }
@@ -504,6 +585,10 @@ const resetForm = (keepCurrentAccount = true) => {
   form.title = ''
   form.targetKeys = []
   form.text = ''
+  form.triggerMode = 'scheduled'
+  form.addToShortcut = false
+  form.shortcutSlot = null
+  form.shortcutLabel = ''
   form.priority = 0
   form.repeatIntervalMin = 60
   form.mediaType = 'none'
@@ -606,6 +691,10 @@ const startEdit = async (task: TaskItem) => {
     form.title = detail.title
     form.accountId = detail.account_id || ''
     form.text = detail.text || ''
+    form.triggerMode = detail.trigger_mode || 'scheduled'
+    form.addToShortcut = Boolean(detail.shortcut_slot)
+    form.shortcutSlot = detail.shortcut_slot ?? null
+    form.shortcutLabel = detail.shortcut_label || ''
     form.priority = detail.priority || 0
     form.repeatIntervalMin = detail.repeat_interval_min
     form.mediaType = (detail.media_type || 'none').toLowerCase()
@@ -661,10 +750,13 @@ const buildPayload = (
   })),
   title: form.title,
   enabled: form.enabled,
+  trigger_mode: form.triggerMode,
+  shortcut_slot: form.triggerMode === 'manual_shortcut' && form.addToShortcut ? form.shortcutSlot : null,
+  shortcut_label: form.triggerMode === 'manual_shortcut' ? (form.shortcutLabel.trim() || null) : null,
   priority: form.priority,
   repeat_interval_min: form.repeatIntervalMin,
-  start_at: toUnix(form.startAtLocal),
-  end_at: toUnix(form.endAtLocal),
+  start_at: form.triggerMode === 'manual_shortcut' ? null : toUnix(form.startAtLocal),
+  end_at: form.triggerMode === 'manual_shortcut' ? null : toUnix(form.endAtLocal),
   text: form.text || null,
   media_type: mediaType,
   media_file_id: mediaType === 'none' ? null : mediaFileId,
@@ -685,10 +777,14 @@ const submitTask = async () => {
     ElMessage.warning('请至少选择一个目标聊天')
     return
   }
+  if (form.triggerMode === 'manual_shortcut' && form.addToShortcut && !form.shortcutSlot) {
+    ElMessage.warning('加入快捷栏时请选择快捷位')
+    return
+  }
 
   const startAt = toUnix(form.startAtLocal)
   const endAt = toUnix(form.endAtLocal)
-  if (startAt && endAt && endAt < startAt) {
+  if (form.triggerMode !== 'manual_shortcut' && startAt && endAt && endAt < startAt) {
     ElMessage.warning('结束时间不能早于开始时间')
     return
   }
@@ -742,6 +838,37 @@ const submitTask = async () => {
     ElMessage.error(err.message || '提交失败')
   } finally {
     submitting.value = false
+  }
+}
+
+const runTaskOnce = async (taskId: string, title: string) => {
+  try {
+    const summary = (await triggerTask(taskId)).data
+    const statusLabel = summary.status === 'partial_success'
+      ? '部分成功'
+      : summary.status === 'success'
+        ? '执行成功'
+        : summary.status === 'failed'
+          ? '执行失败'
+          : '已处理'
+    const message = `${title}：${statusLabel}（成功 ${summary.success_count} / 失败 ${summary.failed_count}）`
+    if (summary.status === 'success') {
+      ElMessage.success(message)
+    } else if (summary.status === 'partial_success') {
+      ElMessage.warning(message)
+    } else if (summary.status === 'failed') {
+      ElMessage.error(message)
+    } else {
+      ElMessage.info(message)
+    }
+    if (summary.error_summary) {
+      ElMessageBox.alert(summary.error_summary, `${title} 执行摘要`, {
+        confirmButtonText: '知道了'
+      })
+    }
+    await loadTasks()
+  } catch (err: any) {
+    ElMessage.error(err.message || '执行任务失败')
   }
 }
 
@@ -907,6 +1034,11 @@ onMounted(async () => {
 .summary {
   margin-left: auto;
   color: #606266;
+}
+
+.table-subtext {
+  color: #909399;
+  font-size: 12px;
 }
 
 .main {

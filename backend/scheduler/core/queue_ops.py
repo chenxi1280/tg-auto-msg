@@ -6,7 +6,7 @@ from typing import Optional
 
 from sqlalchemy import select
 
-from backend.database.schema.models import ScheduledMessageTask
+from backend.database.schema.models import ScheduledMessageTask, TaskTriggerMode
 from backend.database.runtime.session import get_async_session
 
 
@@ -25,6 +25,7 @@ async def enqueue_due_tasks(
             select(ScheduledMessageTask)
             .where(
                 ScheduledMessageTask.enabled == True,
+                ScheduledMessageTask.trigger_mode == TaskTriggerMode.SCHEDULED.value,
                 ScheduledMessageTask.next_run_at.isnot(None),
                 ScheduledMessageTask.next_run_at <= now,
             )
@@ -96,7 +97,7 @@ async def get_pending_tasks(
                 )
             )
             task = result.scalar_one_or_none()
-            if task and task.enabled:
+            if task and task.enabled and task.trigger_mode == TaskTriggerMode.SCHEDULED.value:
                 tasks.append(task)
     return tasks
 

@@ -28,6 +28,7 @@ from backend.bot.notice_manager import get_bot_notice_manager
 from backend.bot.client_runtime.qr_login import wait_for_qr_login as _wait_for_qr_login_flow
 from backend.bot.developer_apps import get_developer_app_service
 from backend.bot.handlers.core.helpers import is_valid_button_url
+from backend.bot.handlers.core.helpers import truncate_text as _truncate_text
 from backend.bot.handlers.core.user_link import (
     USER_MODE_ACCOUNT_SCOPED,
     USER_MODE_OWNER,
@@ -57,6 +58,8 @@ from backend.h5_backend.services.licensing.service import (
 )
 from backend.h5_backend.services.login.service import get_login_service
 from backend.h5_backend.services.me.service import get_me_service
+from backend.h5_backend.services.task.service import get_task_service
+from backend.bot.ui.keyboards import build_reply_shortcut_keyboard
 from backend.bot.ui.messages import BOT_HELP_MANUAL
 from backend.utils.security.crypto import decrypt_string_session, encrypt_string_session, get_crypto_manager
 
@@ -64,6 +67,7 @@ _PENDING_LOGIN_TASKS: dict[int, asyncio.Task] = {}
 _PENDING_LOGIN_CLIENTS: dict[int, TelegramClient] = {}
 _PENDING_LOGIN_MESSAGE_IDS: dict[int, set[int]] = {}
 _QR_MESSAGE_TTL_SECONDS = 60
+_HOME_REPLY_KEYBOARD_SIGNATURES: dict[int, tuple[str, ...]] = {}
 
 
 def _random_password(length: int = 14) -> str:
@@ -787,6 +791,35 @@ class BotOnboardingService:
         if user.get("bot_initial_password_viewable"):
             buttons.append([Button.inline("🔑 查看初始密码", data="bot_show_initial_password")])
         return text, buttons
+
+    async def build_home_reply_keyboard(self, tg_user_id: int) -> list:
+        labels = await self.get_home_reply_keyboard_labels(tg_user_id)
+        return build_reply_shortcut_keyboard(labels)
+
+    async def get_home_reply_keyboard_labels(self, tg_user_id: int) -> list[str]:
+        access_ctx = await self._get_actor_access_context(tg_user_id)
+        if access_ctx.system_user_id is None:
+            return []
+        shortcuts = await get_task_service().list_manual_shortcuts(
+            access_ctx.system_user_id,
+            account_id=access_ctx.scoped_account_id if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED else None,
+        )
+        labels = []
+        for task in shortcuts[:3]:
+            label = str(task.shortcut_label or "").strip() or _truncate_text(str(task.title or "快捷任务"), 20)
+            labels.append(label)
+        return labels
+
+    async def sync_home_reply_keyboard(self, tg_user_id: int) -> None:
+        labels = await self.get_home_reply_keyboard_labels(tg_user_id)
+        signature = tuple(labels)
+        previous_signature = _HOME_REPLY_KEYBOARD_SIGNATURES.get(int(tg_user_id))
+        if previous_signature == signature:
+            return
+
+        _HOME_REPLY_KEYBOARD_SIGNATURES[int(tg_user_id)] = signature
+        keyboard = Button.clear() if not labels else build_reply_shortcut_keyboard(labels)
+        await bot_client.send_message(tg_user_id, "\u2063", buttons=keyboard)
 
     async def show_home(self, event, tg_user_id: int) -> None:
         text, buttons = await self.build_home_view(tg_user_id)

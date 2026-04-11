@@ -6,10 +6,16 @@ import io
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, UploadFile
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from backend.bot.account.manager import get_account_manager
-from backend.database.schema.models import Account, ScheduledMessageTask, TaskLog
+from backend.database.schema.models import (
+    Account,
+    ScheduledMessageTask,
+    TaskLog,
+    TaskTriggerMode,
+    TaskTriggerSource,
+)
 from backend.database.runtime.session import get_async_session
 from backend.h5_backend.dependencies import check_account_permission, check_task_permission
 from backend.h5_backend.services.licensing.service import require_account_task_permission
@@ -30,10 +36,50 @@ from backend.h5_backend.services.task.helpers import (
     build_telegram_media_ref,
     resolve_upload_media_type,
 )
+from backend.scheduler.core.task_runner import execute_task_once
 
 
 class TaskService:
     """Task business service."""
+
+    async def _validate_shortcut_constraints(
+        self,
+        session,
+        *,
+        user_id: int,
+        payload: Dict[str, Any],
+        current_task_id: Optional[str] = None,
+    ) -> None:
+        trigger_mode = str(payload.get("trigger_mode") or TaskTriggerMode.SCHEDULED.value).strip().lower()
+        shortcut_slot = payload.get("shortcut_slot")
+
+        if trigger_mode != TaskTriggerMode.MANUAL_SHORTCUT.value:
+            payload["shortcut_slot"] = None
+            return
+
+        if shortcut_slot is None:
+            return
+
+        same_slot_stmt = select(ScheduledMessageTask.task_id).where(
+            ScheduledMessageTask.user_id == user_id,
+            ScheduledMessageTask.shortcut_slot == int(shortcut_slot),
+        )
+        if current_task_id:
+            same_slot_stmt = same_slot_stmt.where(ScheduledMessageTask.task_id != current_task_id)
+        same_slot_exists = (await session.execute(same_slot_stmt.limit(1))).scalar_one_or_none()
+        if same_slot_exists is not None:
+            raise HTTPException(status_code=400, detail=f"快捷栏位置 {shortcut_slot} 已被其他任务占用")
+
+        total_stmt = select(func.count()).select_from(ScheduledMessageTask).where(
+            ScheduledMessageTask.user_id == user_id,
+            ScheduledMessageTask.trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value,
+            ScheduledMessageTask.shortcut_slot.is_not(None),
+        )
+        if current_task_id:
+            total_stmt = total_stmt.where(ScheduledMessageTask.task_id != current_task_id)
+        occupied_count = int((await session.execute(total_stmt)).scalar_one() or 0)
+        if occupied_count >= 3:
+            raise HTTPException(status_code=400, detail="每个用户最多只能配置 3 个快捷任务")
 
     async def list_tasks(self, user_id: int) -> List[Dict[str, Any]]:
         async with get_async_session() as session:
@@ -64,6 +110,11 @@ class TaskService:
         ensure_initial_next_run(payload, now_ts, current_task=None)
 
         async with get_async_session() as session:
+            await self._validate_shortcut_constraints(
+                session,
+                user_id=user_id,
+                payload=payload,
+            )
             task = ScheduledMessageTask(**payload)
             session.add(task)
             await session.commit()
@@ -83,6 +134,12 @@ class TaskService:
         apply_system_strategy_fields(payload, account)
 
         async with get_async_session() as session:
+            await self._validate_shortcut_constraints(
+                session,
+                user_id=user_id,
+                payload=payload,
+                current_task_id=task_id,
+            )
             task = await session.merge(original_task)
             was_enabled = bool(task.enabled)
             apply_update_payload(task, payload)
@@ -106,6 +163,49 @@ class TaskService:
             logs = result.scalars().all()
         return serialize_task_logs(logs)
 
+    async def trigger_task_once(
+        self,
+        task_id: str,
+        user_id: int,
+        *,
+        trigger_source: str = TaskTriggerSource.API_MANUAL.value,
+    ) -> Dict[str, Any]:
+        task = await check_task_permission(task_id, user_id)
+        if not task.enabled:
+            raise HTTPException(status_code=400, detail="任务已禁用，请启用后再手动执行")
+        if task.account_id:
+            await require_account_task_permission(task.account_id, action_text="手动执行任务")
+
+        summary = await execute_task_once(
+            task_id,
+            trigger_source=trigger_source,
+            advance_schedule=False,
+            respect_schedule_constraints=False,
+        )
+        return summary.to_dict()
+
+    async def list_manual_shortcuts(
+        self,
+        user_id: int,
+        *,
+        account_id: Optional[str] = None,
+    ) -> List[ScheduledMessageTask]:
+        async with get_async_session() as session:
+            stmt = (
+                select(ScheduledMessageTask)
+                .where(
+                    ScheduledMessageTask.user_id == user_id,
+                    ScheduledMessageTask.enabled == True,
+                    ScheduledMessageTask.trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value,
+                    ScheduledMessageTask.shortcut_slot.is_not(None),
+                )
+                .order_by(ScheduledMessageTask.shortcut_slot.asc(), ScheduledMessageTask.created_at.asc())
+            )
+            if account_id:
+                stmt = stmt.where(ScheduledMessageTask.account_id == str(account_id))
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
     async def batch_update_tasks(self, task_ids: List[str], update_data: dict, user_id: int) -> int:
         async with get_async_session() as session:
             now_ts = int(datetime.now().timestamp())
@@ -125,7 +225,11 @@ class TaskService:
                     if hasattr(task, key) and key not in {"user_id", "task_id"}:
                         setattr(task, key, value)
 
-                if task.enabled and task.next_run_at is None:
+                if (
+                    task.enabled
+                    and task.next_run_at is None
+                    and str(task.trigger_mode or TaskTriggerMode.SCHEDULED.value) == TaskTriggerMode.SCHEDULED.value
+                ):
                     start_at_ts = int(task.start_at or 0)
                     task.next_run_at = max(now_ts, start_at_ts) if start_at_ts > 0 else now_ts
                 count += 1

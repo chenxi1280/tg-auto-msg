@@ -1,208 +1,228 @@
 # GitHub Actions + SSH 发布
 
-这套方案不需要额外购买服务器。
+更新时间：`2026-04-11`
 
-工作方式是：
+这份文档只描述当前 `tgmsg` 的标准线上发布方式：
 
-1. 代码 push 到 GitHub
-2. `pull_request` 与 `main` 使用 `Python Checks` 做代码检查
-3. `release` 分支触发 `Deploy Production`
-4. deploy runner 先执行 `ruff`、`pylint`、`unittest`
-5. 检查通过后，runner 使用 SSH 连到生产机并执行 `deploy/release.sh`
-6. 生产机接收 release 包并完成 `docker compose` 更新
+- GitHub Actions 负责检查与触发发布
+- SSH 负责把 release 包送到生产机
+- 生产机使用 `deploy/release.sh` 和 `deploy/server-install-release.sh` 完成上线
 
-## 适用范围
+## 1. 当前工作方式
 
-当前这份配置针对 `tgmsg` 项目，默认发布目录为 `/data/tgmsg`。
+当前仓库的发布链路如下：
 
-如果要给 `tggrouprobot` 也接一套 GitHub Actions，可以复用同样模式，只需要：
+1. 代码合入 `main`
+2. `pull_request` 与 `push main` 运行 `Python Checks`
+3. `push release` 或手动点击 `Deploy Production`
+4. `Deploy Production` 先重新运行：
+   - `ruff`
+   - `pylint`
+   - `python -m unittest discover -s tests -t .`
+5. 检查通过后，workflow 通过 SSH 调用 `deploy/release.sh`
+6. 生产机收到 release 包并完成容器更新
 
-- 单独一份仓库内 workflow
-- 单独一个 `PRODUCTION_BASE_DIR=/data/tggrouprobot`
-- 单独的 release / rollback 脚本
+重要结论：
 
-## 一、先准备服务器 SSH Key 登录
+- `main` 当前不会自动部署
+- `release` 是当前自动部署分支
+- 手动 `workflow_dispatch` 也会先检查再部署
 
-GitHub Actions 不适合用密码 SSH，推荐改成密钥登录。
+## 2. 需要的 GitHub 配置
 
-### 1. 在本地生成部署专用私钥
+进入：
 
-```bash
-ssh-keygen -t ed25519 -C "github-actions-tgmsg" -f ~/.ssh/tgmsg_github_actions
+```text
+Settings -> Secrets and variables -> Actions
 ```
-
-会生成：
-
-- 私钥：`~/.ssh/tgmsg_github_actions`
-- 公钥：`~/.ssh/tgmsg_github_actions.pub`
-
-### 2. 把公钥加到服务器
-
-如果先继续使用 `root`：
-
-```bash
-ssh-copy-id -i ~/.ssh/tgmsg_github_actions.pub root@47.250.167.174
-```
-
-如果没有 `ssh-copy-id`，就手工追加到服务器：
-
-```bash
-cat ~/.ssh/tgmsg_github_actions.pub
-```
-
-把输出追加到服务器 `/root/.ssh/authorized_keys`。
-
-### 3. 本地验证密钥可登录
-
-```bash
-ssh -i ~/.ssh/tgmsg_github_actions root@47.250.167.174
-```
-
-验证通过后，再配置 GitHub Secrets。
-
-## 二、配置 GitHub Secrets 和 Variables
-
-打开 GitHub 仓库：
-
-`Settings -> Secrets and variables -> Actions`
 
 ### 必填 Secrets
 
 - `PRODUCTION_SSH_PRIVATE_KEY`
-  - 内容填 `~/.ssh/tgmsg_github_actions` 私钥全文
 - `PRODUCTION_HOST`
-  - 例如 `47.250.167.174`
 - `PRODUCTION_USER`
-  - 当前可先填 `root`
 
 ### 可选 Secret
 
 - `PRODUCTION_PORT`
-  - 默认是 `22`
 
 ### 可选 Variables
 
 - `PRODUCTION_BASE_DIR`
   - 默认 `/data/tgmsg`
 - `RELEASE_BRANCHES`
-  - 默认 `main master`
-  - 如果你完成了 `main` 迁移，建议只填 `main`
+  - 默认 `release main master`
 
-## 三、第一次发布前的服务器准备
+## 3. 首次准备服务器
 
-先在服务器上准备 shared 目录：
+### 3.1 配置 SSH 免密
+
+本地生成部署专用密钥：
+
+```bash
+ssh-keygen -t ed25519 -C "github-actions-tgmsg" -f ~/.ssh/tgmsg_github_actions
+```
+
+把公钥加入服务器：
+
+```bash
+ssh-copy-id -i ~/.ssh/tgmsg_github_actions.pub root@47.250.167.174
+```
+
+本地验证：
+
+```bash
+ssh -i ~/.ssh/tgmsg_github_actions root@47.250.167.174
+```
+
+### 3.2 准备目录与环境文件
 
 ```bash
 mkdir -p /data/tgmsg/{releases,shared,incoming,backups}
-mkdir -p /data/tgmsg/shared/{logs,uploads,nginx-logs}
-```
-
-然后准备线上环境文件：
-
-```bash
-cp /data/tgmsg/app/.env /data/tgmsg/shared/.env
-```
-
-如果你已经想切到更规范的生产配置，也可以改成：
-
-```bash
-cp /data/tgmsg/app/.env.docker.example /data/tgmsg/shared/.env
+mkdir -p /data/tgmsg/{logs,uploads,nginx-logs}
+cp .env.docker.example /data/tgmsg/shared/.env
 vi /data/tgmsg/shared/.env
 ```
 
-注意：
+`.env` 至少补齐：
 
-- `tgmsg` 不再自行启动 `postgres` / `redis`
-- `DATABASE_URL` 与 `REDIS_URL` 必须指向独立的基础设施项目
-- 默认约定为连接 `infra_default` 网络内的 `postgres` / `redis`
-- `DATABASE_URL` 推荐使用共享业务子账号，例如 `app_user`
-- 发布脚本会在启动容器前自动确保 `tgmsg` 数据库存在
+```env
+TG_API_ID=
+TG_API_HASH=
+BOT_TOKEN=
+DATABASE_URL=
+REDIS_URL=
+JWT_SECRET_KEY=
+ADMIN_API_TOKEN=
+ADMIN_BOOTSTRAP_USERNAME=
+ADMIN_BOOTSTRAP_PASSWORD=
+```
 
-## 四、Workflow 已做什么
+当前线上约定：
 
-仓库里的 workflow 文件：
+- PostgreSQL 与 Redis 由独立 `infra-compose` 项目维护
+- `DATABASE_URL` / `REDIS_URL` 应指向 `infra_default` 网络中的 `postgres` / `redis`
+
+## 4. Workflow 当前做什么
+
+仓库内的 workflow 文件：
 
 - [.github/workflows/python-checks.yml](/Users/xida/PycharmProjects/tg-auto-msg/.github/workflows/python-checks.yml)
 - [.github/workflows/deploy-production.yml](/Users/xida/PycharmProjects/tg-auto-msg/.github/workflows/deploy-production.yml)
 
-其中：
+### `Python Checks`
 
-1. `Python Checks`
-   - 在 `pull_request`、`push main` 时运行
-   - 使用 Python `3.11`
-   - 执行 `ruff`、`pylint`、`unittest`
-2. `Deploy Production`
-   - 支持手动 `workflow_dispatch`
-   - 在 `push release` 时自动触发
-   - workflow 内先跑 `ruff`、`pylint`、`unittest`
-   - 然后读取 GitHub Secrets、写入 SSH 配置，并调用 `bash deploy/release.sh --host production-server`
+触发：
 
-而 `deploy/release.sh` 会：
+- `pull_request`
+- `push main`
 
-1. 校验当前分支
-2. 用 `git archive` 生成干净 release 包
-3. 上传到服务器 `/data/tgmsg/incoming`
+动作：
+
+- Python `3.11`
+- 安装 `requirements-dev.txt`
+- 运行 Ruff / Pylint / unittest
+
+### `Deploy Production`
+
+触发：
+
+- `push release`
+- `workflow_dispatch`
+
+动作：
+
+1. 使用 Python `3.11`
+2. 再次运行 Ruff / Pylint / unittest
+3. 校验生产 Secrets
+4. 生成 SSH 配置
+5. 调用：
+
+```bash
+bash deploy/release.sh --host production-server --base-dir "${PRODUCTION_BASE_DIR:-/data/tgmsg}"
+```
+
+## 5. 服务器侧实际执行什么
+
+`deploy/release.sh` 会：
+
+1. 检查分支和工作区
+2. `git archive` 生成干净发布包
+3. 上传到 `/data/tgmsg/incoming/<release_id>.tar.gz`
 4. 解压到 `/data/tgmsg/releases/<release_id>`
 5. 调用 `deploy/server-install-release.sh`
-6. 执行 `docker compose up -d --build --remove-orphans`
-7. 更新 `/data/tgmsg/current`
 
-当前 `tgmsg` 的 `docker-compose.yml` 只会更新：
+`deploy/server-install-release.sh` 会：
 
-- `app`
-- `frontend`
+1. 准备 shared 目录
+2. 准备 `/data/tgmsg/shared/.env`
+3. 调用 `deploy/compose-up.sh`
+4. 确保业务数据库存在
+5. 构建 `app` 和 `frontend`
+6. 执行数据库迁移
+7. 启动 `tgmsg-app`
+8. 启动 `tgmsg-frontend`
+9. 更新 `/data/tgmsg/current`
+10. 安装并启用巡检 timer
 
-数据库与 Redis 由独立的 `infra-compose` 维护。
+当前 `docker-compose.yml` 只更新业务容器：
 
-## 五、怎么触发发布
+- `tgmsg-app`
+- `tgmsg-frontend`
 
-支持两种方式：
+## 6. 如何触发
 
-### 1. 手动发布
+### 自动触发
 
-GitHub 页面进入：
+```bash
+git push origin release
+```
 
-`Actions -> Deploy Production -> Run workflow`
+### 手动触发
 
-### 2. 自动发布
+GitHub 页面：
 
-当 `release` 有 push 时，会直接触发 `Deploy Production`；该 workflow 会先检查，再部署。
-`main` 上只运行检查，不会自动部署。
+```text
+Actions -> Deploy Production -> Run workflow
+```
 
-## 六、发布后怎么确认
+## 7. 发布后确认
 
-在服务器执行：
+在服务器上执行：
 
 ```bash
 readlink -f /data/tgmsg/current
 cd /data/tgmsg/current
 docker compose --env-file /data/tgmsg/shared/.env ps
+curl -fsS http://127.0.0.1/ >/dev/null && echo ok
+docker logs --tail 100 tgmsg-app
 systemctl list-timers | grep tgmsg
 ```
 
-看 release 是否切换成功，容器是否 healthy。
-
-当前线上目录、挂载和验收清单，见：
+如果需要看线上真实挂载与目录，请再对照：
 
 - `docs/deployment/PRODUCTION_RUNTIME.md`
 
-## 七、回滚
-
-如果某次发布有问题：
+## 8. 回滚
 
 ```bash
 bash /data/tgmsg/current/deploy/rollback.sh <release-id>
 ```
 
-可先查看已有版本：
+先查看 release 列表：
 
 ```bash
 ls -lah /data/tgmsg/releases
 ```
 
-## 八、推荐下一步
+## 9. 本地直发生产的定位
 
-现在这套已经可以用，但还有两件事建议尽快做：
+本地仍然可以调用：
 
-- 把默认发布分支从 `master` 迁移到 `main`
-- 给 `tggrouprobot` 做同样一套 workflow 和 release 结构
+```bash
+bash deploy/release.sh --host 47.250.167.174 --confirm-production-deploy
+```
+
+但它不是默认主路径，只用于应急修复。
+
+出现这种情况后，必须把相同改动补回 Git，并通过标准 GitHub Actions 流程再发布一次，避免线上与仓库状态漂移。

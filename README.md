@@ -53,6 +53,7 @@
 - 项目结构：`docs/setup/PROJECT_STRUCTURE.md`
 - 数据库迁移：`docs/setup/MIGRATIONS.md`
 - 生产部署：`docs/deployment/DEPLOYMENT.md`
+- Actions 发布：`docs/GITHUB_ACTIONS_SSH_DEPLOY.md`
 - 线上运行目录：`docs/deployment/PRODUCTION_RUNTIME.md`
 - 架构文档：`docs/architecture/`
 - 发布与分支：`docs/BRANCHING_AND_RELEASES.md`
@@ -94,6 +95,18 @@ GitHub Actions 约定：
 - `pull_request` 与 `main` 运行 `Python Checks`
 - `release` 分支只运行 `Deploy Production`，并在 workflow 内先检查再部署
 - 手动触发 `Deploy Production` 时，同样会先跑检查再部署
+
+当前标准生产发布路径：
+1. 功能代码合入 `main`，由 `Python Checks` 做静态检查与单测
+2. 需要上线时，推送 `release`，或手动触发 `Deploy Production`
+3. `Deploy Production` 在 GitHub Actions 中再次执行 `ruff`、`pylint`、`unittest`
+4. 检查通过后，通过 SSH 调用 `deploy/release.sh`
+5. 服务器侧完成 release 解包、数据库迁移、容器更新与 `current` 软链切换
+
+更细的线上发布说明见：
+- `docs/GITHUB_ACTIONS_SSH_DEPLOY.md`
+- `docs/deployment/DEPLOYMENT.md`
+- `docs/deployment/PRODUCTION_RUNTIME.md`
 
 ### 3. 配置环境变量
 复制 `.env.example` 为 `.env` 并填写配置：
@@ -185,73 +198,53 @@ npm run build
 python main.py
 ```
 
-### 方式二：使用 Supervisor（生产环境）
-创建配置文件 `/etc/supervisor/conf.d/tg-auto-msg.conf`：
-```ini
-[program:tg-auto-msg]
-command=/path/to/python /path/to/main.py
-directory=/path/to/tg-auto-msg
-user=your_user
-autostart=true
-autorestart=true
-stdout_logfile=/var/log/tg-auto-msg/out.log
-stderr_logfile=/var/log/tg-auto-msg/err.log
-```
+### 方式二：标准生产发布（GitHub Actions + SSH）
 
-启动：
-```bash
-sudo supervisorctl update
-sudo supervisorctl start tg-auto-msg
-```
+当前生产环境的标准入口不是 Supervisor，也不是本地直接发版，而是 GitHub Actions：
 
-### 方式三：使用 Docker Compose（推荐上线，前后端分离）
+1. `pull_request` 与 `main` 只跑 `Python Checks`
+2. `release` 分支触发 `Deploy Production`
+3. `Deploy Production` 先跑检查，再通过 SSH 调用 `deploy/release.sh`
+4. 服务器执行 `deploy/server-install-release.sh`
+5. 发布脚本完成数据库迁移、启动 `tgmsg-app` / `tgmsg-frontend`、切换 `/data/tgmsg/current`
+
+标准目录与入口：
 ```bash
-# 1) 首次准备 shared 环境文件
+# 首次准备 shared 环境文件
 cp .env.docker.example /data/tgmsg/shared/.env
-# 编辑 /data/tgmsg/shared/.env，至少填写以下必填项：
-# TG_API_ID TG_API_HASH BOT_TOKEN JWT_SECRET_KEY
-# DATABASE_URL REDIS_URL
-# ADMIN_BOOTSTRAP_USERNAME ADMIN_BOOTSTRAP_PASSWORD
-# DATABASE_URL 推荐使用共享业务子账号，例如：
-# postgresql+asyncpg://app_user:shared_password@postgres:5432/tgmsg
-
-# 2) 本地统一发版（推荐）
-bash deploy/release.sh --host 47.250.167.174
+vi /data/tgmsg/shared/.env
 ```
 
-线上推荐额外启用前端自愈巡检：
+关键说明：
+- `frontend` 是独立 Nginx 容器，负责静态资源与 SPA 路由，并反代 `/api`
+- `app` 是 FastAPI 容器，只在 Docker 内网暴露 `8000`
+- `postgres` / `redis` 由独立的 `infra-compose` 项目维护，通过 `infra_default` 网络接入
+- 当前线上真实目录、挂载与验收方法，以 `docs/deployment/PRODUCTION_RUNTIME.md` 为准
+
+常见触发方式：
+- 自动发布：push 到 `release`
+- 手动发布：`Actions -> Deploy Production -> Run workflow`
+
+仅在应急情况下，才允许本地直连生产机执行发布脚本；并且需要显式确认：
 ```bash
-# 由 deploy/server-install-release.sh 自动安装
-systemctl list-timers | grep tgmsg
+bash deploy/release.sh --host 47.250.167.174 --confirm-production-deploy
 ```
 
-生产结构说明：
-- `frontend`：独立 Nginx 容器，负责静态资源与 SPA 路由，并反向代理 `/api` 到 `app`
-- `app`：FastAPI API 容器，只在 Docker 内网暴露 `8000`
-- `postgres` / `redis`：由独立的 `infra-compose` 项目维护，通过 `infra_default` 外部网络提供
-
-标准目录结构：
-- `/data/tgmsg/releases/<release_id>`：每次发版的只读源码目录
-- `/data/tgmsg/current`：当前正在运行的版本软链
-- `/data/tgmsg/shared/.env`：线上环境变量
-- `/data/tgmsg/logs`：后端应用日志
-- `/data/tgmsg/uploads`：业务上传目录
-- `/data/tgmsg/nginx-logs`：Nginx 日志
-
-访问入口：
-- `http://your-host/`：前端首页
-- `http://your-host/api/...`：通过 Nginx 反代到后端 API
+回滚：
+```bash
+ssh root@your-host "bash /data/tgmsg/current/deploy/rollback.sh <release-id>"
+```
 
 常用命令：
 ```bash
 # 查看线上容器状态
 ssh root@your-host "cd /data/tgmsg/current && docker compose --env-file /data/tgmsg/shared/.env ps"
 
-# 回滚到指定版本
-ssh root@your-host "bash /data/tgmsg/current/deploy/rollback.sh <release-id>"
+# 查看当前版本
+ssh root@your-host "readlink -f /data/tgmsg/current"
 
-# 查看巡检日志
-ssh root@your-host "tail -f /data/tgmsg/shared/logs/service-health.log"
+# 查看后端容器日志
+ssh root@your-host "docker logs --tail 100 tgmsg-app"
 ```
 
 说明：
@@ -260,7 +253,7 @@ ssh root@your-host "tail -f /data/tgmsg/shared/logs/service-health.log"
 - `DATABASE_URL` 使用共享业务子账号，发布时会自动确保 `tgmsg` 数据库存在。
 - 本地开发仍可设置 `SERVE_FRONTEND=true`，继续由 FastAPI 挂载前端构建产物。
 - 标准发版脚本使用 `git archive`，不会再把 `.DS_Store`、`._*` 等本地垃圾文件带到线上。
-- 推荐尽快把默认发布分支统一到 `main`。详细规范见 `docs/BRANCHING_AND_RELEASES.md`。
+- 当前标准发布分支仍然是 `release`。详细规范见 `docs/BRANCHING_AND_RELEASES.md`。
 - 当前线上真实目录、挂载和兼容说明以 `docs/deployment/PRODUCTION_RUNTIME.md` 为准。
 
 ## 📊 数据库结构

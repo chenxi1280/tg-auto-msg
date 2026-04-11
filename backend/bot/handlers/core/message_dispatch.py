@@ -7,6 +7,7 @@ from backend.bot.handlers.task.editing import (
     handle_buttons_input,
     handle_end_at_input,
     handle_media_input,
+    handle_shortcut_label_input,
     handle_start_at_input,
     handle_text_input,
 )
@@ -23,6 +24,7 @@ _TEXT_STATE_HANDLERS = {
     FSMState.WAIT_BUTTONS: handle_buttons_input,
     FSMState.WAIT_START_AT: handle_start_at_input,
     FSMState.WAIT_END_AT: handle_end_at_input,
+    FSMState.WAIT_SHORTCUT_LABEL: handle_shortcut_label_input,
 }
 
 _MEDIA_STATE_HANDLERS = {

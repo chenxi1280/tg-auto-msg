@@ -12,7 +12,7 @@ from backend.bot.account.reauth import (
 from backend.bot.client_runtime.manager import bot_client
 from backend.bot.state.fsm import FSMState, fsm_storage
 from backend.bot.handlers.task.selector_context import get_selector_context as _get_selector_context
-from backend.bot.handlers.task.management import show_task_settings
+from backend.bot.handlers.task.management import show_task_settings, try_handle_manual_shortcut_message
 from backend.bot.handlers.task.target_selection import handle_target_search_input
 from backend.bot.handlers.core.callback_dispatch import dispatch_callback
 from backend.bot.handlers.core.message_dispatch import dispatch_message_by_state
@@ -215,6 +215,9 @@ async def message_handler(event):
         selector_ctx = _get_selector_context(user_id)
         if selector_ctx and selector_ctx.get("expect_search"):
             await handle_target_search_input(event, user_id, event.message.message or "")
+            return
+
+        if await try_handle_manual_shortcut_message(event, user_id, text):
             return
 
         command_name = _extract_command_name(text)

@@ -4,44 +4,19 @@ from datetime import datetime
 from typing import Optional
 
 import redis.asyncio as redis
+from fastapi import HTTPException
 from loguru import logger
-from telethon.errors import FloodWaitError, PeerFloodError
 
 from backend.bot.account.manager import get_account_manager
 from backend.config.core.settings import settings
 from backend.database.schema.models import ScheduledMessageTask
 from backend.database.runtime.session import get_async_session
-from backend.h5_backend.services.licensing.service import (
-    disable_tasks_for_account_if_unlicensed,
-    get_account_authorization_summary,
-)
-from backend.bot.circuit.breaker import get_circuit_breaker, FloodWaitAction
-from backend.bot.resources.manager import get_resource_manager
 from backend.scheduler.core.queue_ops import (
     enqueue_due_tasks as _enqueue_due_tasks,
     ensure_redis_connection as _ensure_redis_connection,
     get_pending_tasks as _get_pending_tasks,
 )
-from backend.scheduler.core.task_execution import (
-    collect_task_targets as _collect_task_targets,
-    count_configured_task_targets as _count_configured_task_targets,
-    get_target_last_message_id as _get_target_last_message_id,
-    resolve_send_target as _resolve_send_target,
-    send_with_protections as _send_with_protections,
-)
-from backend.scheduler.core.task_issue_classifier import classify_task_send_error
-from backend.scheduler.core.task_issue_state import (
-    record_task_target_send_issue as _record_task_target_send_issue,
-    resolve_task_target_send_issue as _resolve_task_target_send_issue,
-    update_task_target_failure_metadata as _update_task_target_failure_metadata,
-    update_task_target_success_metadata as _update_task_target_success_metadata,
-)
-from backend.scheduler.core.task_lifecycle import (
-    check_time_limit as _check_time_limit,
-    handle_task_failure as _handle_task_failure,
-    handle_task_success as _handle_task_success,
-    suspend_account_tasks as _suspend_account_tasks,
-)
+from backend.scheduler.core.task_runner import execute_task_once as _execute_task_once
 
 
 class TaskScheduler:
@@ -74,8 +49,6 @@ class TaskScheduler:
 
         # 获取各模块实例
         self._account_manager = get_account_manager()
-        self._resource_manager = get_resource_manager()
-        self._circuit_breaker = get_circuit_breaker()
 
     async def init(self):
         """初始化"""
@@ -268,324 +241,26 @@ class TaskScheduler:
                 if not task or not task.enabled:
                     logger.debug(f"任务 {task_id} 不存在或已禁用")
                     return
-
-                if task.account_id:
-                    auth_summary = await get_account_authorization_summary(task.account_id, session=session)
-                    if not auth_summary.can_create_tasks:
-                        disabled_count = await disable_tasks_for_account_if_unlicensed(
-                            account_id=task.account_id,
-                            session=session,
-                        )
-                        logger.warning(
-                            "任务 {} 对应账号已无有效授权，已停用该账号下任务 {} 条",
-                            task_id,
-                            disabled_count,
-                        )
-                        return
-
-                if task.next_run_at is None:
-                    start_at_ts = int(task.start_at or 0)
-                    task.next_run_at = max(now, start_at_ts) if start_at_ts > 0 else now
-                    await session.commit()
-
-                if task.next_run_at and task.next_run_at > now:
-                    await self.redis_client.zadd(self.TASK_QUEUE_KEY, {task.task_id: int(task.next_run_at)})
-                    logger.debug(
-                        f"任务 {task_id} 队列中存在旧调度，已按数据库 next_run_at={task.next_run_at} 重新入队"
-                    )
-                    return
-
-                # 检查账号（新架构）
-                account_id = task.account_id
-
-                # 收集目标列表（兼容旧结构的单目标）
-                target_specs = _collect_task_targets(task)
-                if not target_specs:
-                    configured_target_count = _count_configured_task_targets(task)
-                    if configured_target_count > 0:
-                        task.next_run_at = now + task.repeat_interval_min * 60
-                        await session.commit()
-                        logger.info(
-                            "任务 {} 当前没有可发送目标，已跳过本轮执行（全部目标可能已被系统暂停）",
-                            task_id,
-                        )
-                    else:
-                        logger.warning(f"任务 {task_id} 没有目标 Peer ID")
-                        await _handle_task_failure(
-                            session=session,
-                            task=task,
-                            error_message="缺少目标 Peer ID",
-                            max_failure_count=settings.max_failure_count,
-                        )
-                    return
-
-                # 获取执行账号
-                if not account_id:
-                    # 兼容旧数据：使用默认 Userbot
-                    from backend.bot.client_runtime.manager import userbot_client
-                    client = userbot_client
-                    account_id_str = "default"
-                else:
-                    # 执行前检测代理健康，失效则自动替换
-                    await self._account_manager.ensure_account_proxy(account_id)
-
-                    # 新架构：使用 AccountManager
-                    client = await self._account_manager.get_client(account_id)
-                    account_id_str = account_id
-
-                    if not client:
-                        logger.error(f"无法获取账号客户端: {account_id}")
-                        await _handle_task_failure(
-                            session=session,
-                            task=task,
-                            error_message="无法获取账号客户端",
-                            max_failure_count=settings.max_failure_count,
-                        )
-                        return
-
-                # 检查日期范围
-                if task.start_at and now < task.start_at:
-                    task.next_run_at = max(task.next_run_at or 0, task.start_at)
-                    await session.commit()
-                    logger.debug(f"任务 {task_id} 未到开始时间，next_run_at={task.next_run_at}")
-                    return
-
-                if task.end_at and now > task.end_at:
-                    task.enabled = False
-                    await session.commit()
-                    logger.info(f"任务 {task_id} 已超过结束时间，自动禁用")
-                    return
-
-                # 检查时段限制
-                allowed, next_run_at = _check_time_limit(task, current_hour, now)
-                if not allowed:
-                    if next_run_at is not None:
-                        task.next_run_at = next_run_at
-                        await session.commit()
-                    return
-
-                # 使用速率限制器和熔断器执行发送
-                try:
-                    last_message_id: Optional[int] = None
-                    send_errors: list[str] = []
-                    partial_failure_summaries: list[str] = []
-                    target_message_ids: dict[tuple[str, int], int] = {}
-
-                    for spec in target_specs:
-                        target_peer_id = int(spec["peer_id"])
-                        target_peer_type = spec.get("peer_type")
-                        target_access_hash = spec.get("access_hash")
-                        target_title = spec.get("title")
-                        normalized_target_peer_type = str(
-                            target_peer_type or task.target_peer_type or "user"
-                        ).strip().lower()
-                        target_label = target_title or f"{normalized_target_peer_type}:{target_peer_id}"
-                        previous_message_id = _get_target_last_message_id(
-                            task,
-                            target_peer_id=target_peer_id,
-                            target_peer_type=target_peer_type,
-                        )
-
-                        try:
-                            # 解析发送目标，优先使用资源表中的 peer_type/access_hash，避免误判为 PeerUser
-                            send_target = await _resolve_send_target(
-                                client=client,
-                                task=task,
-                                target_peer_id=target_peer_id,
-                                target_peer_type=target_peer_type,
-                                target_access_hash=target_access_hash,
-                                resource_manager=self._resource_manager,
-                            )
-
-                            message_id = await _send_with_protections(
-                                client=client,
-                                task=task,
-                                send_target=send_target,
-                                lock_peer_id=target_peer_id,
-                                account_id=account_id_str,
-                                previous_message_id=previous_message_id,
-                                media_ref_prefix=self.TELEGRAM_MEDIA_REF_PREFIX,
-                            )
-                        except (FloodWaitError, PeerFloodError):
-                            raise
-                        except Exception as send_err:
-                            classification = classify_task_send_error(send_err)
-                            send_errors.append(
-                                f"peer={target_peer_id}: {type(send_err).__name__}: {send_err}"
-                            )
-                            partial_failure_summaries.append(
-                                f"{target_label}: {classification.user_message}"
-                            )
-                            await _record_task_target_send_issue(
-                                session=session,
-                                task=task,
-                                peer_id=target_peer_id,
-                                peer_type=normalized_target_peer_type,
-                                peer_title=str(target_title).strip() if target_title else None,
-                                classification=classification,
-                            )
-                            _update_task_target_failure_metadata(
-                                task,
-                                peer_id=target_peer_id,
-                                peer_type=normalized_target_peer_type,
-                                peer_title=str(target_title).strip() if target_title else None,
-                                error_type=classification.error_type,
-                                error_message=classification.user_message,
-                                suspension_reason=classification.suspension_reason,
-                            )
-                            logger.warning(
-                                f"任务 {task_id} 发送目标失败: peer={target_peer_id}, "
-                                f"error={type(send_err).__name__}: {send_err}"
-                            )
-                            continue
-
-                        if message_id:
-                            await _resolve_task_target_send_issue(
-                                session=session,
-                                task=task,
-                                peer_id=target_peer_id,
-                                peer_type=normalized_target_peer_type,
-                            )
-                            _update_task_target_success_metadata(
-                                task,
-                                peer_id=target_peer_id,
-                                peer_type=normalized_target_peer_type,
-                            )
-                            last_message_id = message_id
-                            key = (normalized_target_peer_type, target_peer_id)
-                            target_message_ids[key] = message_id
-                        else:
-                            send_errors.append(f"peer={target_peer_id}: send_message returned empty")
-                            empty_result_error = RuntimeError("send_message returned empty")
-                            classification = classify_task_send_error(empty_result_error)
-                            partial_failure_summaries.append(
-                                f"{target_label}: {classification.user_message}"
-                            )
-                            await _record_task_target_send_issue(
-                                session=session,
-                                task=task,
-                                peer_id=target_peer_id,
-                                peer_type=normalized_target_peer_type,
-                                peer_title=str(target_title).strip() if target_title else None,
-                                classification=classification,
-                            )
-                            _update_task_target_failure_metadata(
-                                task,
-                                peer_id=target_peer_id,
-                                peer_type=normalized_target_peer_type,
-                                peer_title=str(target_title).strip() if target_title else None,
-                                error_type=classification.error_type,
-                                error_message=classification.user_message,
-                                suspension_reason=classification.suspension_reason,
-                            )
-
-                    if last_message_id:
-                        partial_failure_summary = None
-                        if send_errors:
-                            partial_failure_summary = (
-                                f"部分目标发送失败，共 {len(send_errors)} 个；"
-                                f"示例：{partial_failure_summaries[0]}"
-                            )
-                        await _handle_task_success(
-                            session=session,
-                            task=task,
-                            message_id=last_message_id,
-                            target_message_ids=target_message_ids,
-                            error_message=partial_failure_summary,
-                            now=now,
-                            account_manager=self._account_manager,
-                        )
-                        if send_errors:
-                            logger.warning(
-                                f"任务 {task_id} 部分目标发送失败: {len(send_errors)} 个; "
-                                f"错误示例: {send_errors[0]}"
-                            )
-                        logger.info(
-                            f"任务 {task_id} 执行成功，目标数={len(target_specs)}，"
-                            f"最后消息 ID: {last_message_id}"
-                            )
-                    else:
-                        reason = send_errors[0] if send_errors else "发送失败"
-                        if partial_failure_summaries:
-                            reason = (
-                                f"目标发送全部失败，共 {len(send_errors)} 个；"
-                                f"示例：{partial_failure_summaries[0]}"
-                            )
-                        await _handle_task_failure(
-                            session=session,
-                            task=task,
-                            error_message=reason,
-                            max_failure_count=settings.max_failure_count,
-                        )
-
-                except FloodWaitError as e:
-                    if account_id_str == "default":
-                        await _handle_task_failure(
-                            session=session,
-                            task=task,
-                            error_message=f"FloodWait: {e.seconds}秒",
-                            max_failure_count=settings.max_failure_count,
-                        )
-                        return
-
-                    # FloodWait 错误处理
-                    action = await self._circuit_breaker.handle_flood_wait(
-                        account_id_str, e
-                    )
-
-                    if action == FloodWaitAction.BAN:
-                        await _handle_task_failure(
-                            session=session,
-                            task=task,
-                            error_message=f"FloodWait: {e.seconds}秒",
-                            max_failure_count=settings.max_failure_count,
-                        )
-
-                        # 24h 以上：暂停该账号全部任务，避免持续触发风控
-                        suspend_until = now + 24 * 3600
-                        account = await self._account_manager.get_account(account_id_str)
-                        if account and account.flood_until:
-                            suspend_until = max(suspend_until, int(account.flood_until.timestamp()))
-                        await _suspend_account_tasks(
-                            session=session,
-                            account_id=account_id_str,
-                            suspend_until=suspend_until,
-                            reason=f"FloodWait({e.seconds}s)",
-                        )
-                    elif action == FloodWaitAction.SKIP:
-                        # 跳过本次，稍后重试
-                        await _handle_task_failure(
-                            session=session,
-                            task=task,
-                            error_message=f"FloodWait: {e.seconds}秒",
-                            max_failure_count=settings.max_failure_count,
-                        )
-
-                except PeerFloodError:
-                    # Telegram PeerFlood 风险：按账号级别熔断 24h
-                    await _handle_task_failure(
-                        session=session,
-                        task=task,
-                        error_message="PeerFloodError",
-                        max_failure_count=settings.max_failure_count,
-                    )
-                    if account_id_str != "default":
-                        suspend_until_dt = await self._circuit_breaker.handle_peer_flood(account_id_str)
-                        await _suspend_account_tasks(
-                            session=session,
-                            account_id=account_id_str,
-                            suspend_until=int(suspend_until_dt.timestamp()),
-                            reason="PeerFloodError",
-                        )
-
-                except Exception as e:
-                    logger.exception(f"执行任务 {task_id} 时出错: {type(e).__name__}: {e!r}")
-                    await _handle_task_failure(
-                        session=session,
-                        task=task,
-                        error_message=str(e),
-                        max_failure_count=settings.max_failure_count,
-                    )
+            try:
+                summary = await _execute_task_once(
+                    task_id,
+                    trigger_source="scheduler",
+                    advance_schedule=True,
+                    respect_schedule_constraints=True,
+                )
+            except HTTPException as exc:
+                logger.debug("任务 {} 跳过执行: {}", task_id, exc.detail)
+                return
+            if summary.status in {"success", "partial_success"}:
+                logger.info(
+                    "任务 {} 执行完成: status={}, success={}, failed={}",
+                    task_id,
+                    summary.status,
+                    summary.success_count,
+                    summary.failed_count,
+                )
+            elif summary.status == "failed":
+                logger.warning("任务 {} 执行失败: {}", task_id, summary.error_summary or "未知错误")
 
         finally:
             # 清除处理标记

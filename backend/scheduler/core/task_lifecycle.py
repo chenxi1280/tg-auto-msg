@@ -6,7 +6,7 @@ from datetime import datetime
 from loguru import logger
 from sqlalchemy import select
 
-from backend.database.schema.models import ScheduledMessageTask, TaskLog
+from backend.database.schema.models import ScheduledMessageTask, TaskLog, TaskTriggerSource
 
 
 def calculate_next_run(now: int, target_hour: int, interval_min: int) -> int:
@@ -43,11 +43,14 @@ async def handle_task_success(
     error_message: str | None,
     now: int,
     account_manager,
+    trigger_source: str = TaskTriggerSource.SCHEDULER.value,
+    advance_schedule: bool = True,
 ) -> None:
     """Persist task success side-effects and schedule next run."""
     log = TaskLog(
         task_id=task.task_id,
         result="success",
+        trigger_source=trigger_source,
         message_id=message_id,
         error_message=error_message,
     )
@@ -63,7 +66,8 @@ async def handle_task_success(
     else:
         task.last_sent_message_id = message_id
     task.failure_count = 0
-    task.next_run_at = now + task.repeat_interval_min * 60
+    if advance_schedule:
+        task.next_run_at = now + task.repeat_interval_min * 60
 
     if task.account_id:
         await account_manager.increment_messages_sent(task.account_id)
@@ -77,18 +81,27 @@ async def handle_task_failure(
     task: ScheduledMessageTask,
     error_message: str,
     max_failure_count: int,
+    trigger_source: str = TaskTriggerSource.SCHEDULER.value,
+    advance_schedule: bool = True,
+    apply_disable_policy: bool = True,
 ) -> None:
     """Persist task failure side-effects and apply auto-disable policy."""
-    log = TaskLog(task_id=task.task_id, result="failed", error_message=error_message)
+    log = TaskLog(
+        task_id=task.task_id,
+        result="failed",
+        trigger_source=trigger_source,
+        error_message=error_message,
+    )
     session.add(log)
 
     task.failure_count += 1
 
-    now = int(datetime.now().timestamp())
-    retry_after = max(30, task.repeat_interval_min * 60)
-    task.next_run_at = now + retry_after
+    if advance_schedule:
+        now = int(datetime.now().timestamp())
+        retry_after = max(30, task.repeat_interval_min * 60)
+        task.next_run_at = now + retry_after
 
-    if task.failure_count >= max_failure_count:
+    if apply_disable_policy and task.failure_count >= max_failure_count:
         task.enabled = False
         logger.warning(
             f"任务 {task.task_id} 连续失败 {task.failure_count} 次，自动禁用"

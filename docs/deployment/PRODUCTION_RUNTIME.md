@@ -1,6 +1,6 @@
 # tgmsg 线上部署与目录说明
 
-更新时间：`2026-04-08`
+更新时间：`2026-04-11`
 
 本文档记录 `tgmsg` 当前线上真实部署方式、目录结构、挂载关系和验收方法。
 
@@ -15,7 +15,7 @@
 
 发布链路：
 
-1. GitHub Actions 触发 `deploy/release.sh`
+1. GitHub Actions `Deploy Production` workflow 触发 `deploy/release.sh`
 2. 生成 release 包并上传到 `/data/tgmsg/incoming`
 3. 解压到 `/data/tgmsg/releases/<release_id>`
 4. 调用 `deploy/server-install-release.sh`

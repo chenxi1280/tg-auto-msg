@@ -1,117 +1,146 @@
 # 分支与发布规范
 
-本文档定义本项目推荐使用的分支模型和标准发布入口，目标是解决以下问题：
+更新时间：`2026-04-11`
 
-- 线上代码来源不透明，靠手工覆盖目录发布
-- `.env`、日志、上传目录和源码目录耦合在一起
-- `master` / `main` 混用，发布入口不统一
-- 线上缺少可回滚、可审计的版本目录
+本文档记录 `tgmsg` 当前真实在用的分支模型与发布入口。
 
-## 推荐分支模型
+## 1. 当前真实分支职责
 
-推荐尽快统一到 `main` 作为唯一发布主干分支。
+当前仓库不是 `main` 直接自动上线，而是：
 
 - `main`
-  - 生产发布主干
-  - 只有通过评审或自测完成的代码才允许合入
+  - 主要开发主干
+  - 合并功能与修复
+  - `pull_request` 与 `push main` 只跑 `Python Checks`
+- `release`
+  - 当前生产发布分支
+  - `push release` 会触发 `Deploy Production`
 - `feature/<name>`
   - 新功能分支
 - `fix/<name>`
   - 缺陷修复分支
 - `ops/<name>`
-  - 运维、部署、脚本和配置变更
-- `release/<version>`
-  - 仅在需要冻结预发布版本时使用，可选
+  - 运维、发布、脚本与基础设施调整
 
-## 从 `master` 迁移到 `main`
+## 2. 当前标准发布节奏
 
-如果仓库还停留在 `master`，建议按下面流程迁移：
+推荐节奏：
+
+1. 在 `feature/*` 或 `fix/*` 开发
+2. 提交 PR，合入 `main`
+3. `main` 上通过 `Python Checks`
+4. 需要上线时，把已确认要发布的提交同步到 `release`
+5. push `release`，触发 `Deploy Production`
+
+这意味着：
+
+- `main` 是主要集成分支
+- `release` 是当前生产发布入口
+- 生产上线不依赖本地手工覆盖目录
+
+## 3. 当前发布入口
+
+当前标准生产发布入口只有两种：
+
+### 自动发布
 
 ```bash
-git checkout master
-git pull origin master
-git branch -m master main
-git push origin main
-git push origin --delete master
+git push origin release
 ```
 
-然后把 GitHub 默认分支切换到 `main`。
+### 手动发布
 
-如果短期内暂时不能迁移，`deploy/release.sh` 仍兼容从 `master` 发布，但会给出警告。
+GitHub 页面：
 
-## 标准发布目录
+```text
+Actions -> Deploy Production -> Run workflow
+```
 
-服务器基准目录为 `/data/tgmsg`，推荐结构如下：
+当前不推荐把下面这条命令当作标准日常入口：
+
+```bash
+bash deploy/release.sh --host 47.250.167.174
+```
+
+它现在只保留为应急修复入口，并且对生产环境会要求显式确认：
+
+```bash
+bash deploy/release.sh --host 47.250.167.174 --confirm-production-deploy
+```
+
+## 4. 发布目录模型
+
+服务器基准目录为：
 
 ```text
 /data/tgmsg
-├── current -> /data/tgmsg/releases/20260403_abcdef1
+├── current -> /data/tgmsg/releases/<release_id>
 ├── releases/
-│   ├── 20260403_abcdef1/
-│   └── 20260403_bcdefa2/
-├── shared/
-│   ├── .env
-│   ├── logs/
-│   ├── uploads/
-│   └── nginx-logs/
 ├── incoming/
-└── backups/
+├── backups/
+├── shared/
+│   └── .env
+├── logs/
+├── uploads/
+└── nginx-logs/
 ```
 
 说明：
 
 - `releases/` 保存每次发版的只读源码
 - `current` 指向当前正在运行的版本
-- `shared/` 保存不应随版本切换而丢失的配置和持久化数据
-- `postgres` / `redis` 建议由独立的 `infra-compose` 项目维护，不再耦合在 `tgmsg` 发版里
+- `incoming/` 保存上传的 release 包
+- `shared/.env` 保存线上环境变量
+- `logs/uploads/nginx-logs` 保存运行期持久化数据
 
-## 标准发布入口
+## 5. 当前发布脚本行为
 
-本地发布统一使用：
+当前标准发布链路是：
 
-```bash
-bash deploy/release.sh --host 47.250.167.174
-```
+1. GitHub Actions 调用 `deploy/release.sh`
+2. `deploy/release.sh` 生成 release 包并上传服务器
+3. 服务器执行 `deploy/server-install-release.sh`
+4. 更新 `tgmsg-app` / `tgmsg-frontend`
+5. 成功后切换 `current`
 
-该脚本会执行：
+数据库和 Redis 不跟随本仓库发版：
 
-1. 校验当前分支和工作区状态
-2. 使用 `git archive` 生成干净的发布包
-3. 上传到服务器 `incoming/`
-4. 解压到 `releases/<release_id>/`
-5. 调用 `deploy/server-install-release.sh`
-6. 构建并启动 Docker 服务
-7. 成功后切换 `current` 软链
+- PostgreSQL：独立 `infra-compose`
+- Redis：独立 `infra-compose`
 
-## 回滚
+## 6. 回滚
 
-服务器上统一使用：
+统一回滚命令：
 
 ```bash
 bash /data/tgmsg/current/deploy/rollback.sh <release-id>
 ```
 
-例如：
+先查看已有版本：
 
 ```bash
-bash /data/tgmsg/current/deploy/rollback.sh 20260403_abcdef1
+ls -lah /data/tgmsg/releases
 ```
 
-## 发布前检查
+## 7. 不再推荐的做法
 
-建议每次发布前执行：
+以下方式都不再作为标准发布流程：
 
-```bash
-git status
-git branch --show-current
-bash deploy/release.sh --host 47.250.167.174
-```
+- 手工覆盖 `/data/tgmsg/current`
+- 直接覆盖旧的应用目录
+- 上传整个本地目录而不是使用 `git archive`
+- 未提交代码就直接改线上
+- 把本地应急发版长期当成主路径
 
-## 不再推荐的做法
+## 8. 后续可选演进
 
-以下做法建议停止使用：
+后续如果要继续简化流程，可以考虑把：
 
-- 手工 `tar.gz` 整个本地目录后上传覆盖
-- 直接覆盖 `/data/tgmsg/app`
-- 把 `.env` 跟随源码版本一起移动
-- 在未提交代码的情况下直接上线
+- `main` 既作为开发主干，也作为唯一发布主干
+
+但这是未来可选优化，不是当前真实线上流程。当前仍以：
+
+- `main` 做检查
+- `release` 做部署
+
+为准。

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from sqlalchemy import select
 from telethon import events
 from telethon.tl.types import MessageMediaDocument, MessageMediaPhoto
 
@@ -12,6 +13,7 @@ from backend.bot.ui.keyboards import (
     get_end_time_keyboard,
     get_hour_select_keyboard,
     get_interval_keyboard,
+    get_shortcut_slot_keyboard,
     get_start_time_keyboard,
 )
 from backend.bot.handlers.core.helpers import (
@@ -20,7 +22,7 @@ from backend.bot.handlers.core.helpers import (
 )
 from backend.bot.handlers.task.queries import get_user_task as _get_user_task
 from backend.bot.ui.messages import *
-from backend.database.schema.models import MediaType
+from backend.database.schema.models import MediaType, ScheduledMessageTask, TaskTriggerMode
 from backend.database.runtime.session import get_async_session
 
 
@@ -96,6 +98,119 @@ async def toggle_pin_message(event, user_id: int, task_id: str):
             task.pin_message = not task.pin_message
             await session.commit()
             await _show_task_settings(event, user_id, task_id)
+
+
+async def toggle_trigger_mode(event, user_id: int, task_id: str):
+    """切换任务类型。"""
+    async with get_async_session() as session:
+        task = await _get_user_task(session, task_id, user_id)
+        if task:
+            current_mode = str(task.trigger_mode or TaskTriggerMode.SCHEDULED.value)
+            next_mode = (
+                TaskTriggerMode.MANUAL_SHORTCUT.value
+                if current_mode != TaskTriggerMode.MANUAL_SHORTCUT.value
+                else TaskTriggerMode.SCHEDULED.value
+            )
+            task.trigger_mode = next_mode
+            if next_mode == TaskTriggerMode.MANUAL_SHORTCUT.value:
+                task.next_run_at = None
+            else:
+                task.shortcut_slot = None
+                if task.enabled and task.next_run_at is None:
+                    now_ts = int(datetime.now().timestamp())
+                    start_at_ts = int(task.start_at or 0)
+                    task.next_run_at = max(now_ts, start_at_ts) if start_at_ts > 0 else now_ts
+            await session.commit()
+    from backend.bot.onboarding import get_onboarding_service
+    await get_onboarding_service().sync_home_reply_keyboard(user_id)
+    await _notify_event(event, SUCCESS_TRIGGER_MODE_UPDATED)
+    await _show_task_settings(event, user_id, task_id)
+
+
+async def show_shortcut_slot_selection(event, user_id: int, task_id: str):
+    """显示快捷栏位置选择。"""
+    async with get_async_session() as session:
+        task = await _get_user_task(session, task_id, user_id)
+        current_slot = task.shortcut_slot if task else None
+    keyboard = get_shortcut_slot_keyboard(task_id, current_slot)
+    await event.edit("📌 **选择快捷栏位置**\n\n请选择 1-3 号槽位，或将任务移出快捷栏。", buttons=keyboard, parse_mode="markdown")
+
+
+async def set_shortcut_slot(event, user_id: int, task_id: str, slot_value: Optional[str]):
+    """设置快捷栏位置。"""
+    async with get_async_session() as session:
+        task = await _get_user_task(session, task_id, user_id)
+        if not task:
+            return
+        task.trigger_mode = TaskTriggerMode.MANUAL_SHORTCUT.value
+        if slot_value in {None, "", "clear"}:
+            task.shortcut_slot = None
+            await session.commit()
+            from backend.bot.onboarding import get_onboarding_service
+            await get_onboarding_service().sync_home_reply_keyboard(user_id)
+            await _notify_event(event, SUCCESS_SHORTCUT_REMOVED)
+        else:
+            slot = int(slot_value)
+            exists = await session.execute(
+                select(ScheduledMessageTask.task_id).where(
+                    ScheduledMessageTask.user_id == task.user_id,
+                    ScheduledMessageTask.shortcut_slot == slot,
+                    ScheduledMessageTask.task_id != task.task_id,
+                )
+            )
+            if exists.scalar_one_or_none() is not None:
+                await _notify_event(event, f"快捷栏位置 {slot} 已被其他任务占用", alert=True)
+                return
+            task.shortcut_slot = slot
+            await session.commit()
+            from backend.bot.onboarding import get_onboarding_service
+            await get_onboarding_service().sync_home_reply_keyboard(user_id)
+            await _notify_event(event, SUCCESS_SHORTCUT_SLOT_UPDATED)
+    await _show_task_settings(event, user_id, task_id)
+
+
+async def start_edit_shortcut_label(event, user_id: int, task_id: str):
+    """开始编辑快捷名称。"""
+    async with get_async_session() as session:
+        task = await _get_user_task(session, task_id, user_id)
+        if not task:
+            return
+
+    fsm_storage.set_state(user_id, FSMState.WAIT_SHORTCUT_LABEL)
+    fsm_storage.update_data(user_id, task_id=task_id)
+    current_label = str(task.shortcut_label or "").strip() or "（默认使用任务标题）"
+    text = (
+        "🏷️ **修改快捷名称**\n\n"
+        "请输入底部快捷按钮显示名称，最长 20 个字符。\n"
+        "发送 `clear` 可恢复为默认标题。\n\n"
+        f"当前名称：`{current_label}`"
+    )
+    keyboard = get_cancel_keyboard(task_id)
+    await event.edit(text, buttons=keyboard, parse_mode="markdown")
+
+
+async def handle_shortcut_label_input(event, user_id: int, task_id: str, text: str):
+    """处理快捷名称输入。"""
+    value = (text or "").strip()
+    if len(value) > 20:
+        await event.respond("❌ 快捷名称最长 20 个字符。")
+        return
+    if value.lower() == "clear":
+        value = ""
+
+    async with get_async_session() as session:
+        task = await _get_user_task(session, task_id, user_id)
+        if task:
+            task.shortcut_label = value or None
+            if str(task.trigger_mode or "") != TaskTriggerMode.MANUAL_SHORTCUT.value:
+                task.trigger_mode = TaskTriggerMode.MANUAL_SHORTCUT.value
+            await session.commit()
+
+    fsm_storage.reset_state(user_id)
+    from backend.bot.onboarding import get_onboarding_service
+    await get_onboarding_service().sync_home_reply_keyboard(user_id)
+    await event.respond(SUCCESS_SHORTCUT_LABEL_UPDATED)
+    await _show_task_settings(event, user_id, task_id)
 
 
 async def start_edit_text(event, user_id: int, task_id: str):

@@ -543,6 +543,9 @@ CREATE TABLE IF NOT EXISTS scheduled_message_tasks (
     target_peers JSONB,
 
     enabled BOOLEAN DEFAULT FALSE NOT NULL,
+    trigger_mode VARCHAR(20) DEFAULT 'scheduled' NOT NULL,
+    shortcut_slot SMALLINT,
+    shortcut_label VARCHAR(20),
     priority INTEGER DEFAULT 0 NOT NULL,
 
     repeat_interval_min INTEGER NOT NULL,
@@ -573,6 +576,10 @@ CREATE TABLE IF NOT EXISTS scheduled_message_tasks (
 
     CONSTRAINT scheduled_message_tasks_media_type_check
         CHECK (media_type IN ('none', 'photo', 'video', 'sticker', 'animation')),
+    CONSTRAINT scheduled_message_tasks_trigger_mode_check
+        CHECK (trigger_mode IN ('scheduled', 'manual_shortcut')),
+    CONSTRAINT scheduled_message_tasks_shortcut_slot_check
+        CHECK (shortcut_slot IS NULL OR shortcut_slot BETWEEN 1 AND 3),
     CONSTRAINT text_length_check
         CHECK (text IS NULL OR LENGTH(text) <= 4096)
 );
@@ -582,6 +589,10 @@ CREATE INDEX IF NOT EXISTS idx_account_id ON scheduled_message_tasks(account_id)
 CREATE INDEX IF NOT EXISTS idx_enabled_next_run ON scheduled_message_tasks(enabled, next_run_at);
 CREATE INDEX IF NOT EXISTS idx_next_run_at ON scheduled_message_tasks(next_run_at);
 CREATE INDEX IF NOT EXISTS idx_created_at ON scheduled_message_tasks(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_task_user_trigger_shortcut ON scheduled_message_tasks(user_id, trigger_mode, shortcut_slot);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_task_user_shortcut_slot
+    ON scheduled_message_tasks(user_id, shortcut_slot)
+    WHERE shortcut_slot IS NOT NULL;
 
 -- ========================================
 -- 14) 任务日志
@@ -591,10 +602,12 @@ CREATE TABLE IF NOT EXISTS task_logs (
     task_id VARCHAR(36) NOT NULL,
     send_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     result VARCHAR(20) NOT NULL,
+    trigger_source VARCHAR(20) DEFAULT 'scheduler' NOT NULL,
     error_code VARCHAR(50),
     error_message TEXT,
     message_id INTEGER,
-    CONSTRAINT task_logs_result_check CHECK (result IN ('success', 'failed'))
+    CONSTRAINT task_logs_result_check CHECK (result IN ('success', 'failed')),
+    CONSTRAINT task_logs_trigger_source_check CHECK (trigger_source IN ('scheduler', 'bot_shortcut', 'api_manual'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_id_send_at ON task_logs(task_id, send_at DESC);

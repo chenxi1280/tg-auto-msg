@@ -99,17 +99,17 @@ TASK_SETTINGS_TEMPLATE = """⚙️ **任务设置**
 
 📊 **状态**
 • 启用状态: {enabled_status}
-• 重复间隔: 每 {interval} 分钟
+• 任务类型: {trigger_mode}
+• 快捷栏: {shortcut_status}
+• 快捷名称: {shortcut_label}
+{interval_line}
 
 👤 **执行账号与目标**
 • 执行账号: {account_display}
 • 目标聊天: {target_display}
 
 ⏰ **时间控制**
-• 发送时段: {time_range}
-• 开始日期: {start_date}
-• 结束日期: {end_date}
-• 规则说明: 未设置开始/结束时间时，任务将一直执行
+{time_control_block}
 
 📝 **消息内容**
 • 文本内容: {text_status}
@@ -203,6 +203,10 @@ SUCCESS_TASK_ENABLED = "✅ 任务已启用。\n下一步：返回任务页可�
 SUCCESS_TASK_DISABLED = "✅ 任务已禁用。\n下一步：如需恢复，可再次启用任务。"
 SUCCESS_DELETE_PREVIOUS_TOGGLED = "✅ 删除上一条设置已更新。"
 SUCCESS_PIN_TOGGLED = "✅ 置顶设置已更新。"
+SUCCESS_TRIGGER_MODE_UPDATED = "✅ 任务类型已更新。"
+SUCCESS_SHORTCUT_SLOT_UPDATED = "✅ 快捷栏位置已更新。"
+SUCCESS_SHORTCUT_REMOVED = "✅ 已移出快捷栏。"
+SUCCESS_SHORTCUT_LABEL_UPDATED = "✅ 快捷名称已更新。"
 SUCCESS_TASK_CREATED = "✅ 任务已创建。\n下一步：请继续选择执行账号和目标聊天。"
 SUCCESS_TASK_DELETED = "✅ 任务已删除。\n下一步：可返回任务页继续管理其他任务。"
 
