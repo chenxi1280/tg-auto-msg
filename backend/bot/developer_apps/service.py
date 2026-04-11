@@ -1170,6 +1170,14 @@ class DeveloperAppService:
         recipient_ids = await self.get_alert_recipient_ids()
         if not recipient_ids:
             return []
+        from backend.bot.client_runtime.manager import ensure_manager_bot_ready
+
+        if not await ensure_manager_bot_ready():
+            logger.warning(
+                "Manager Bot 当前未就绪，跳过本轮开发者应用告警发送: app_id={}",
+                result.app_id,
+            )
+            return []
 
         migrated_count = len(result.migrated_account_ids)
         stalled_count = len(result.stalled_account_ids)

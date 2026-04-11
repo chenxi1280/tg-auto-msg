@@ -18,7 +18,6 @@ from sqlalchemy.orm import selectinload
 
 from backend.bot.developer_apps import get_developer_app_service
 from backend.bot.proxy.pool import get_proxy_pool
-from backend.bot.handlers.core.helpers import is_valid_button_url
 from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import (
     Account,
@@ -40,6 +39,7 @@ from backend.h5_backend.services.licensing.service import (
     list_user_authorizations,
 )
 from backend.config.core.settings import settings
+from backend.utils.url_validation import is_valid_button_url
 
 
 CARD_ALPHABET = string.ascii_uppercase + string.digits

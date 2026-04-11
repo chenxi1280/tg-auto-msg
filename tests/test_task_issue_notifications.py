@@ -204,6 +204,7 @@ class TaskIssueNotifierTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(notifier, "_list_pending_active_issues", AsyncMock(return_value=issues)),
             patch.object(notifier, "_list_pending_recovery_issues", AsyncMock(return_value=[])),
+            patch("backend.bot.task_issue_notifier.ensure_manager_bot_ready", AsyncMock(return_value=True)),
             patch.object(notifier, "_load_user_links", AsyncMock(return_value={9: 987654321})),
             patch.object(notifier, "_load_task_titles", AsyncMock(return_value={"task-1": "测试任务"})),
             patch.object(notifier, "_mark_active_notified", AsyncMock()) as mark_mock,
@@ -245,6 +246,7 @@ class TaskIssueNotifierTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(notifier, "_list_pending_active_issues", AsyncMock(return_value=[])),
             patch.object(notifier, "_list_pending_recovery_issues", AsyncMock(return_value=issues)),
+            patch("backend.bot.task_issue_notifier.ensure_manager_bot_ready", AsyncMock(return_value=True)),
             patch.object(notifier, "_load_user_links", AsyncMock(return_value={9: 987654321})),
             patch.object(notifier, "_load_task_titles", AsyncMock(return_value={"task-2": "恢复任务"})),
             patch.object(notifier, "_mark_recovery_notified", AsyncMock()) as mark_mock,
@@ -260,6 +262,39 @@ class TaskIssueNotifierTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("任务目标已恢复", sent_text)
         self.assertIn("频道 C", sent_text)
         mark_mock.assert_awaited_once()
+
+    async def test_scan_once_skips_when_manager_bot_not_ready(self):
+        notifier = TaskIssueNotifier()
+        now = datetime(2026, 4, 11, 12, 0, 0)
+        issues = [
+            TaskTargetSendIssue(
+                id=4,
+                user_id=9,
+                task_id="task-3",
+                account_id="acc-1",
+                peer_id=3001,
+                peer_type="channel",
+                peer_title="频道 D",
+                current_error_type="RuntimeError",
+                current_error_message="发送失败（RuntimeError）：boom",
+                issue_category="send_error",
+                status="active",
+                auto_suspended=False,
+            )
+        ]
+
+        with (
+            patch.object(notifier, "_list_pending_active_issues", AsyncMock(return_value=issues)),
+            patch.object(notifier, "_list_pending_recovery_issues", AsyncMock(return_value=[])),
+            patch("backend.bot.task_issue_notifier.ensure_manager_bot_ready", AsyncMock(return_value=False)),
+            patch("backend.bot.task_issue_notifier.bot_client.send_message", AsyncMock()) as send_mock,
+            patch("backend.bot.task_issue_notifier.datetime") as datetime_mock,
+        ):
+            datetime_mock.now.return_value = now
+            sent = await notifier.scan_once()
+
+        self.assertEqual(sent, 0)
+        send_mock.assert_not_awaited()
 
     async def test_old_unnotified_active_issue_is_not_backfilled(self):
         notifier = TaskIssueNotifier()
@@ -285,6 +320,8 @@ class TaskIssueNotifierTests(unittest.IsolatedAsyncioTestCase):
             notifier, "_load_user_links", AsyncMock(return_value={9: 987654321})
         ), patch.object(
             notifier, "_load_task_titles", AsyncMock(return_value={"task-old": "旧任务"})
+        ), patch(
+            "backend.bot.task_issue_notifier.ensure_manager_bot_ready", AsyncMock(return_value=True)
         ), patch(
             "backend.bot.task_issue_notifier.bot_client.send_message", AsyncMock()
         ) as send_mock, patch(
@@ -323,6 +360,8 @@ class TaskIssueNotifierTests(unittest.IsolatedAsyncioTestCase):
             notifier, "_load_user_links", AsyncMock(return_value={9: 987654321})
         ), patch.object(
             notifier, "_load_task_titles", AsyncMock(return_value={"task-old-recovery": "旧恢复任务"})
+        ), patch(
+            "backend.bot.task_issue_notifier.ensure_manager_bot_ready", AsyncMock(return_value=True)
         ), patch(
             "backend.bot.task_issue_notifier.bot_client.send_message", AsyncMock()
         ) as send_mock, patch(

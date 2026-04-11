@@ -9,7 +9,7 @@ from typing import Iterable
 from loguru import logger
 from sqlalchemy import and_, or_, select
 
-from backend.bot.client_runtime.manager import bot_client
+from backend.bot.client_runtime.manager import bot_client, ensure_manager_bot_ready
 from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import AppSetting, ScheduledMessageTask, TaskTargetSendIssue
 
@@ -45,6 +45,9 @@ class TaskIssueNotifier:
         active_issues = await self._list_pending_active_issues(now)
         resolved_issues = await self._list_pending_recovery_issues()
         if not active_issues and not resolved_issues:
+            return 0
+        if not await ensure_manager_bot_ready():
+            logger.warning("Manager Bot 当前未就绪，跳过本轮任务异常提醒发送")
             return 0
 
         user_links = await self._load_user_links()
