@@ -1,6 +1,8 @@
 """Telegram clients bootstrap and QR-login API surface."""
 from __future__ import annotations
 
+import asyncio
+
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.functions.bots import SetBotCommandsRequest
@@ -50,6 +52,8 @@ userbot_client = TelegramClient(
     api_id=settings.api_id,
     api_hash=settings.api_hash,
 )
+
+_manager_bot_start_lock = asyncio.Lock()
 
 
 async def _resolve_system_developer_app_id() -> int | None:
@@ -129,6 +133,35 @@ async def start_manager_bot(bot_token: str):
         session_meta={"bot_id": int(me.id), "username": me.username or ""},
     )
     return me
+
+
+async def ensure_manager_bot_ready() -> bool:
+    """Ensure manager bot is connected and authorized before background sends."""
+    if not settings.bot_token:
+        logger.warning("未配置 BOT_TOKEN，无法发送 Manager Bot 通知")
+        return False
+
+    try:
+        if bot_client.is_connected() and await bot_client.is_user_authorized():
+            return True
+    except Exception as e:
+        logger.warning(f"检测 Manager Bot 当前状态失败，将尝试重连: {e}")
+
+    async with _manager_bot_start_lock:
+        try:
+            if bot_client.is_connected() and await bot_client.is_user_authorized():
+                return True
+        except Exception as e:
+            logger.warning(f"检测 Manager Bot 当前状态失败，将继续重建连接: {e}")
+
+        try:
+            bot_me = await start_manager_bot(settings.bot_token)
+            await bot_client.set_receive_updates(True)
+            logger.info(f"✅ Manager Bot 在线: @{bot_me.username} (id={bot_me.id})")
+            return True
+        except Exception as e:
+            logger.warning(f"确保 Manager Bot 在线失败: {type(e).__name__}: {e!r}")
+            return False
 
 
 async def init_userbot() -> bool:

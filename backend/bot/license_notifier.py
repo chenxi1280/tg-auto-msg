@@ -10,8 +10,7 @@ from loguru import logger
 from sqlalchemy import and_, select
 from telethon import Button
 
-from backend.bot.client_runtime.manager import bot_client
-from backend.bot.handlers.core.helpers import is_valid_button_url
+from backend.bot.client_runtime.manager import bot_client, ensure_manager_bot_ready
 from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import (
     AppSetting,
@@ -20,6 +19,7 @@ from backend.database.schema.models import (
 )
 from backend.h5_backend.services.licensing.service import list_due_slot_reminders
 from backend.h5_backend.services.me.service import get_me_service
+from backend.utils.url_validation import is_valid_button_url
 
 NOTICE_DAYS = (7, 3, 1)
 USER_LINK_KEY_PREFIX = "tg_user_link:"
@@ -63,6 +63,9 @@ class LicenseSlotNotifier:
         now = datetime.now()
         reminder_items = await self._collect_due_reminders(now)
         if not reminder_items:
+            return 0
+        if not await ensure_manager_bot_ready():
+            logger.warning("Manager Bot 当前未就绪，跳过本轮授权到期提醒发送")
             return 0
 
         me_service = get_me_service()

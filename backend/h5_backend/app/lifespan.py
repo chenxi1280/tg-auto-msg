@@ -8,8 +8,8 @@ from loguru import logger
 
 from backend.bot.client_runtime.manager import (
     bot_client,
+    ensure_manager_bot_ready,
     init_userbot,
-    start_manager_bot,
     userbot_client,
 )
 from backend.bot.developer_apps import get_developer_app_service
@@ -36,10 +36,9 @@ async def _run_manager_bot_forever() -> None:
                 await asyncio.sleep(10)
                 continue
 
-            if (not bot_client.is_connected()) or (not await bot_client.is_user_authorized()):
-                bot_me = await start_manager_bot(settings.bot_token)
-                await bot_client.set_receive_updates(True)
-                logger.info(f"✅ Manager Bot 在线: @{bot_me.username} (id={bot_me.id})")
+            if not await ensure_manager_bot_ready():
+                await asyncio.sleep(10)
+                continue
 
             await bot_client.run_until_disconnected()
             logger.warning("Manager Bot 连接已断开，3 秒后尝试重连")
@@ -83,6 +82,12 @@ async def app_lifespan(app: FastAPI):
     await scheduler.init()
     logger.info("✅ 调度器初始化完成")
 
+    logger.info("🤖 启动 Bot（后台连接）...")
+    expected_bot_id = str(settings.bot_token).split(":", 1)[0] if settings.bot_token else "unknown"
+    logger.info(f"BOT_TOKEN 对应的 bot_id: {expected_bot_id}")
+    bot_task = asyncio.create_task(_run_manager_bot_forever())
+    logger.info("✅ Bot 后台连接任务已启动")
+
     scheduler_task = asyncio.create_task(scheduler.start())
     logger.info("✅ 任务调度器已启动")
 
@@ -97,13 +102,6 @@ async def app_lifespan(app: FastAPI):
 
     developer_app_health_task = asyncio.create_task(developer_app_health_runtime.start())
     logger.info("✅ 开发者应用健康检查任务已启动")
-
-    logger.info("🤖 启动 Bot（后台连接）...")
-    expected_bot_id = str(settings.bot_token).split(":", 1)[0] if settings.bot_token else "unknown"
-    logger.info(f"BOT_TOKEN 对应的 bot_id: {expected_bot_id}")
-
-    bot_task = asyncio.create_task(_run_manager_bot_forever())
-    logger.info("✅ Bot 后台连接任务已启动")
     logger.info("📱 Web 管理入口: http://localhost:8000/login")
 
     yield

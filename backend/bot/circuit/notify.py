@@ -7,7 +7,11 @@ from loguru import logger
 async def send_notification(user_id: int, message: str) -> None:
     """Send notification message through manager bot."""
     try:
-        from backend.bot.client_runtime.manager import bot_client
+        from backend.bot.client_runtime.manager import bot_client, ensure_manager_bot_ready
+
+        if not await ensure_manager_bot_ready():
+            logger.warning("Manager Bot 当前未就绪，跳过本次通知发送: user_id={}", user_id)
+            return
 
         await bot_client.send_message(user_id, message, parse_mode="html")
     except Exception as e:
