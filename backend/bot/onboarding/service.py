@@ -310,31 +310,92 @@ class BotOnboardingService:
             buttons=[[Button.inline("⬅️ 返回主菜单", data="bot_home")]],
         )
 
-    async def _build_primary_quick_buttons(
-        self,
-        *,
-        include_bind: bool = True,
-        include_task: bool = True,
-        include_notice: bool = True,
-    ) -> list[list[Any]]:
+    @staticmethod
+    def _build_home_notice_button(notice: dict[str, Any]) -> Optional[Any]:
+        if notice.get("enabled") and notice.get("message_text"):
+            return Button.inline(notice.get("entry_button_text") or "📢 公告栏", data="bot_notice")
+        return None
+
+    @staticmethod
+    def _build_unlicensed_home_buttons(notice_button: Optional[Any]) -> list[list[Any]]:
         buttons: list[list[Any]] = [
-            [Button.inline("🚀 开始使用", data="bot_home"), Button.inline("📖 帮助", data="bot_help")]
-        ]
-        second_row: list[Any] = []
-        if include_bind:
-            second_row.append(Button.inline("📱 绑定账号", data="bot_login_account"))
-        if second_row:
-            buttons.append(second_row)
-        if include_task:
-            buttons.append([
+            [
+                Button.inline("📱 绑定账号", data="bot_login_account"),
+                Button.inline("🧾 查看授权", data="bot_authorization"),
+            ],
+            [
+                Button.inline("🎟️ 激活卡密", data="bot_activate"),
+                Button.inline("🛒 立即购买", data="bot_purchase"),
+            ],
+            [
+                Button.inline("👥 查看账号", data="accounts_list"),
+                Button.inline("🗂️ 查看任务", data="task_list"),
+            ],
+            [
                 Button.inline("⏰ 创建定时任务", data="add_scheduled_task"),
                 Button.inline("🖱️ 创建手动任务", data="add_manual_task"),
-            ])
-        if include_notice:
-            notice = await get_me_service().get_public_notice_entry()
-            if notice.get("enabled") and notice.get("message_text"):
-                buttons.append([Button.inline(notice.get("entry_button_text") or "📢 公告栏", data="bot_notice")])
+            ],
+        ]
+        if notice_button is not None:
+            buttons.append([notice_button, Button.inline("📖 帮助", data="bot_help")])
         return buttons
+
+    @staticmethod
+    def _build_authorized_home_buttons(
+        *,
+        notice_button: Optional[Any],
+        can_view_initial_password: bool,
+    ) -> list[list[Any]]:
+        buttons: list[list[Any]] = [
+            [
+                Button.inline("👥 查看账号", data="accounts_list"),
+                Button.inline("🗂️ 查看任务", data="task_list"),
+            ],
+            [
+                Button.inline("⏰ 创建定时任务", data="add_scheduled_task"),
+                Button.inline("🖱️ 创建手动任务", data="add_manual_task"),
+            ],
+            [
+                Button.inline("🧾 查看授权", data="bot_authorization"),
+                Button.inline("🎟️ 激活卡密", data="bot_activate"),
+            ],
+        ]
+        if can_view_initial_password:
+            buttons.append([
+                Button.inline("🛒 立即购买", data="bot_purchase"),
+                Button.inline("🔑 查看初始密码", data="bot_show_initial_password"),
+            ])
+            if notice_button is not None:
+                buttons.append([notice_button, Button.inline("📖 帮助", data="bot_help")])
+        elif notice_button is not None:
+            buttons.append([Button.inline("🛒 立即购买", data="bot_purchase"), notice_button])
+        else:
+            buttons.append([
+                Button.inline("🛒 立即购买", data="bot_purchase"),
+                Button.inline("📖 帮助", data="bot_help"),
+            ])
+        return buttons
+
+    @staticmethod
+    def _build_account_scoped_home_buttons(notice_button: Optional[Any]) -> list[list[Any]]:
+        return [
+            [
+                Button.inline("👥 查看账号", data="accounts_list"),
+                Button.inline("🗂️ 查看任务", data="task_list"),
+            ],
+            [
+                Button.inline("⏰ 创建定时任务", data="add_scheduled_task"),
+                Button.inline("🖱️ 创建手动任务", data="add_manual_task"),
+            ],
+            [
+                Button.inline("🧾 查看授权", data="bot_authorization"),
+                Button.inline("🎟️ 激活卡密", data="bot_activate"),
+            ],
+            [
+                Button.inline("🛒 立即购买", data="bot_purchase"),
+                notice_button or Button.inline("📖 帮助", data="bot_help"),
+            ],
+        ]
 
     @staticmethod
     def _format_notice_updated_at(raw_value: Optional[str]) -> str:
@@ -717,8 +778,9 @@ class BotOnboardingService:
             ]
             notice = await me_service.get_public_notice_entry()
             extra_row: list[Any] = [Button.inline("📖 帮助", data="bot_help")]
-            if notice.get("enabled") and notice.get("message_text"):
-                extra_row.insert(0, Button.inline(notice.get("entry_button_text") or "📢 公告栏", data="bot_notice"))
+            notice_button = self._build_home_notice_button(notice)
+            if notice_button is not None:
+                extra_row.insert(0, notice_button)
             buttons.append(extra_row)
             return text, buttons
 
@@ -731,6 +793,8 @@ class BotOnboardingService:
         if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED and access_ctx.scoped_account_id:
             accounts = [item for item in accounts if str(item.account_id) == str(access_ctx.scoped_account_id)]
         authorization_overview = profile.get("authorization_overview") or {}
+        notice = await me_service.get_public_notice_entry()
+        notice_button = self._build_home_notice_button(notice)
 
         if not authorization_status["is_active"]:
             max_account_count = int(authorization_overview.get("max_account_count") or 1)
@@ -748,11 +812,7 @@ class BotOnboardingService:
                 "首次成功绑定 TG 账号时，系统会自动赠送 7 天试用；试用结束后需输入卡密续费当前唯一授权。\n\n"
                 "下一步：可先绑定 TG 账号，或点击下方「🎟️ 激活卡密」为当前授权续费。"
             )
-            buttons = await self._build_primary_quick_buttons()
-            buttons.extend([
-                [Button.inline("🧾 查看授权", data="bot_authorization"), Button.inline("🛒 立即购买", data="bot_purchase")],
-                [Button.inline("🎟️ 激活卡密", data="bot_activate"), Button.inline("🛒 立即购买", data="bot_purchase")],
-            ])
+            buttons = self._build_unlicensed_home_buttons(notice_button)
             return text, buttons
 
         current = authorization_status["current_authorization"] or {}
@@ -769,11 +829,7 @@ class BotOnboardingService:
                 "你当前只能管理自己的 TG 账号与其任务。\n"
                 "可续费自己的当前授权，但不能绑定其他 TG 账号。"
             )
-            buttons = await self._build_primary_quick_buttons()
-            buttons.extend([
-                [Button.inline("👥 查看账号", data="accounts_list"), Button.inline("🗂️ 查看任务", data="task_list")],
-                [Button.inline("🧾 查看授权", data="bot_authorization")],
-            ])
+            buttons = self._build_account_scoped_home_buttons(notice_button)
             return text, buttons
 
         account_summary = f"{authorization_overview.get('account_count', len(accounts))}/1"
@@ -785,14 +841,10 @@ class BotOnboardingService:
             f"账号数量：{account_summary}\n\n"
             "下一步：可先查看账号，或输入新的卡密续费当前授权。"
         )
-        buttons = await self._build_primary_quick_buttons()
-        buttons.extend([
-            [Button.inline("👥 查看账号", data="accounts_list"), Button.inline("🗂️ 查看任务", data="task_list")],
-            [Button.inline("🧾 查看授权", data="bot_authorization")],
-        ])
-        buttons.append([Button.inline("🎟️ 激活卡密", data="bot_activate"), Button.inline("🛒 立即购买", data="bot_purchase")])
-        if user.get("bot_initial_password_viewable"):
-            buttons.append([Button.inline("🔑 查看初始密码", data="bot_show_initial_password")])
+        buttons = self._build_authorized_home_buttons(
+            notice_button=notice_button,
+            can_view_initial_password=bool(user.get("bot_initial_password_viewable")),
+        )
         return text, buttons
 
     async def build_home_reply_keyboard(self, tg_user_id: int) -> list:

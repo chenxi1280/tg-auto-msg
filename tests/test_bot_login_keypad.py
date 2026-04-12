@@ -36,6 +36,46 @@ class BotLoginKeypadTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         fsm_storage.reset_state(100)
 
+    @staticmethod
+    def _button_rows(buttons):
+        return [[button.text for button in row] for row in buttons]
+
+    @staticmethod
+    def _profile(*, is_active=True, initial_password=False):
+        return {
+            "authorization_status": {
+                "is_active": is_active,
+                "current_authorization": {"end_at": "2026-05-01"} if is_active else None,
+            },
+            "authorization_overview": {
+                "account_count": 1,
+                "max_account_count": 1,
+            },
+            "plans": [
+                {
+                    "display_name": "月卡",
+                    "price_yuan": "99",
+                }
+            ],
+            "user": {
+                "username": "alice",
+                "bot_initial_password_viewable": initial_password,
+            },
+        }
+
+    @staticmethod
+    def _notice(*, enabled=True):
+        return {
+            "enabled": enabled,
+            "message_text": "公告内容" if enabled else "",
+            "entry_button_text": "📢 公告栏",
+        }
+
+    def _assert_registered_menu_is_two_columns(self, rows):
+        self.assertNotIn("🚀 开始使用", [label for row in rows for label in row])
+        for row in rows:
+            self.assertEqual(len(row), 2)
+
     async def test_handle_login_code_text_warns_and_does_not_submit_code(self):
         service = BotOnboardingService()
         fsm_storage.set_state(100, FSMState.WAIT_LOGIN_CODE)
@@ -148,6 +188,115 @@ class BotLoginKeypadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(buttons), 2)
         self.assertEqual([button.text for button in buttons[0]], ["🚀 自动注册", "手动注册"])
         self.assertEqual([button.text for button in buttons[1]], ["📖 帮助"])
+
+    async def test_build_home_view_returns_two_column_unlicensed_menu(self):
+        service = BotOnboardingService()
+        me_service = SimpleNamespace(
+            get_profile=AsyncMock(return_value=self._profile(is_active=False)),
+            get_authorization_status=AsyncMock(return_value={}),
+            get_public_notice_entry=AsyncMock(return_value=self._notice(enabled=True)),
+        )
+        account_manager = SimpleNamespace(get_accounts=AsyncMock(return_value=[]))
+
+        with patch.object(
+            service,
+            "_get_actor_access_context",
+            AsyncMock(return_value=SimpleNamespace(system_user_id=9, mode="owner", scoped_account_id=None)),
+        ), patch(
+            "backend.bot.onboarding.service.get_me_service",
+            return_value=me_service,
+        ), patch(
+            "backend.bot.onboarding.service.get_account_manager",
+            return_value=account_manager,
+        ):
+            _, buttons = await service.build_home_view(100)
+
+        rows = self._button_rows(buttons)
+        self.assertEqual(
+            rows,
+            [
+                ["📱 绑定账号", "🧾 查看授权"],
+                ["🎟️ 激活卡密", "🛒 立即购买"],
+                ["👥 查看账号", "🗂️ 查看任务"],
+                ["⏰ 创建定时任务", "🖱️ 创建手动任务"],
+                ["📢 公告栏", "📖 帮助"],
+            ],
+        )
+        self._assert_registered_menu_is_two_columns(rows)
+        self.assertEqual(sum(label == "🛒 立即购买" for row in rows for label in row), 1)
+
+    async def test_build_home_view_returns_two_column_authorized_menu(self):
+        service = BotOnboardingService()
+        me_service = SimpleNamespace(
+            get_profile=AsyncMock(return_value=self._profile(is_active=True, initial_password=True)),
+            get_authorization_status=AsyncMock(return_value={}),
+            get_public_notice_entry=AsyncMock(return_value=self._notice(enabled=True)),
+        )
+        account = SimpleNamespace(account_id="acc_1", username="alice_tg", phone=None, tg_user_id=123)
+        account_manager = SimpleNamespace(get_accounts=AsyncMock(return_value=[account]))
+
+        with patch.object(
+            service,
+            "_get_actor_access_context",
+            AsyncMock(return_value=SimpleNamespace(system_user_id=9, mode="owner", scoped_account_id=None)),
+        ), patch(
+            "backend.bot.onboarding.service.get_me_service",
+            return_value=me_service,
+        ), patch(
+            "backend.bot.onboarding.service.get_account_manager",
+            return_value=account_manager,
+        ):
+            _, buttons = await service.build_home_view(100)
+
+        rows = self._button_rows(buttons)
+        self.assertEqual(
+            rows,
+            [
+                ["👥 查看账号", "🗂️ 查看任务"],
+                ["⏰ 创建定时任务", "🖱️ 创建手动任务"],
+                ["🧾 查看授权", "🎟️ 激活卡密"],
+                ["🛒 立即购买", "🔑 查看初始密码"],
+                ["📢 公告栏", "📖 帮助"],
+            ],
+        )
+        self._assert_registered_menu_is_two_columns(rows)
+        self.assertEqual(sum(label == "🛒 立即购买" for row in rows for label in row), 1)
+
+    async def test_build_home_view_returns_two_column_account_scoped_menu_without_bind(self):
+        service = BotOnboardingService()
+        me_service = SimpleNamespace(
+            get_profile=AsyncMock(return_value=self._profile(is_active=True)),
+            get_authorization_status=AsyncMock(return_value={}),
+            get_public_notice_entry=AsyncMock(return_value=self._notice(enabled=False)),
+        )
+        account = SimpleNamespace(account_id="acc_1", username="alice_tg", phone=None, tg_user_id=123)
+        account_manager = SimpleNamespace(get_accounts=AsyncMock(return_value=[account]))
+
+        with patch.object(
+            service,
+            "_get_actor_access_context",
+            AsyncMock(return_value=SimpleNamespace(system_user_id=9, mode="account_scoped", scoped_account_id="acc_1")),
+        ), patch(
+            "backend.bot.onboarding.service.get_me_service",
+            return_value=me_service,
+        ), patch(
+            "backend.bot.onboarding.service.get_account_manager",
+            return_value=account_manager,
+        ):
+            _, buttons = await service.build_home_view(100)
+
+        rows = self._button_rows(buttons)
+        self.assertEqual(
+            rows,
+            [
+                ["👥 查看账号", "🗂️ 查看任务"],
+                ["⏰ 创建定时任务", "🖱️ 创建手动任务"],
+                ["🧾 查看授权", "🎟️ 激活卡密"],
+                ["🛒 立即购买", "📖 帮助"],
+            ],
+        )
+        self._assert_registered_menu_is_two_columns(rows)
+        self.assertNotIn("📱 绑定账号", [label for row in rows for label in row])
 
 
 class LoginServicePhoneCodeLoggingTests(unittest.IsolatedAsyncioTestCase):
