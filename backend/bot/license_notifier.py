@@ -35,7 +35,7 @@ class LicenseReminderItem:
     days_before: int
     end_at: datetime
     account_id: Optional[str]
-    account_name: Optional[str]
+    account_name: Optional[str] = None
 
 
 class LicenseSlotNotifier:
