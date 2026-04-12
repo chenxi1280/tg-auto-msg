@@ -6,11 +6,13 @@ import io
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, UploadFile
+from loguru import logger
 from sqlalchemy import delete, func, select
 
 from backend.bot.account.manager import get_account_manager
 from backend.database.schema.models import (
     Account,
+    AppSetting,
     ScheduledMessageTask,
     TaskLog,
     TaskTriggerMode,
@@ -42,6 +44,41 @@ from backend.scheduler.core.task_runner import execute_task_once
 class TaskService:
     """Task business service."""
 
+    async def _sync_user_shortcut_keyboards(self, user_id: int) -> None:
+        async with get_async_session() as session:
+            rows = (
+                await session.execute(
+                    select(AppSetting.key).where(
+                        AppSetting.key.like("tg_user_link:%"),
+                        AppSetting.value == str(int(user_id)),
+                    )
+                )
+            ).all()
+
+        tg_user_ids: list[int] = []
+        for (key,) in rows:
+            try:
+                tg_user_ids.append(int(str(key).split("tg_user_link:", 1)[1]))
+            except Exception:
+                continue
+
+        if not tg_user_ids:
+            return
+
+        from backend.bot.onboarding import get_onboarding_service
+
+        onboarding_service = get_onboarding_service()
+        for tg_user_id in tg_user_ids:
+            try:
+                await onboarding_service.sync_home_reply_keyboard(int(tg_user_id))
+            except Exception as exc:
+                logger.warning(
+                    "同步用户快捷键盘失败: user_id={}, tg_user_id={}, error={!r}",
+                    user_id,
+                    tg_user_id,
+                    exc,
+                )
+
     async def _validate_shortcut_constraints(
         self,
         session,
@@ -55,31 +92,43 @@ class TaskService:
 
         if trigger_mode != TaskTriggerMode.MANUAL_SHORTCUT.value:
             payload["shortcut_slot"] = None
+            payload["shortcut_label"] = None
             return
-
-        if shortcut_slot is None:
-            return
-
-        same_slot_stmt = select(ScheduledMessageTask.task_id).where(
-            ScheduledMessageTask.user_id == user_id,
-            ScheduledMessageTask.shortcut_slot == int(shortcut_slot),
-        )
-        if current_task_id:
-            same_slot_stmt = same_slot_stmt.where(ScheduledMessageTask.task_id != current_task_id)
-        same_slot_exists = (await session.execute(same_slot_stmt.limit(1))).scalar_one_or_none()
-        if same_slot_exists is not None:
-            raise HTTPException(status_code=400, detail=f"快捷栏位置 {shortcut_slot} 已被其他任务占用")
 
         total_stmt = select(func.count()).select_from(ScheduledMessageTask).where(
+            ScheduledMessageTask.user_id == user_id,
+            ScheduledMessageTask.trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value,
+        )
+        if current_task_id:
+            total_stmt = total_stmt.where(ScheduledMessageTask.task_id != current_task_id)
+        manual_task_count = int((await session.execute(total_stmt)).scalar_one() or 0)
+        if manual_task_count >= 3:
+            raise HTTPException(status_code=400, detail="每个用户最多只能配置 3 个快捷任务")
+
+        occupied_slots_stmt = select(ScheduledMessageTask.shortcut_slot).where(
             ScheduledMessageTask.user_id == user_id,
             ScheduledMessageTask.trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value,
             ScheduledMessageTask.shortcut_slot.is_not(None),
         )
         if current_task_id:
-            total_stmt = total_stmt.where(ScheduledMessageTask.task_id != current_task_id)
-        occupied_count = int((await session.execute(total_stmt)).scalar_one() or 0)
-        if occupied_count >= 3:
-            raise HTTPException(status_code=400, detail="每个用户最多只能配置 3 个快捷任务")
+            occupied_slots_stmt = occupied_slots_stmt.where(ScheduledMessageTask.task_id != current_task_id)
+        occupied_slots = {
+            int(slot)
+            for slot in (await session.execute(occupied_slots_stmt)).scalars().all()
+            if slot is not None
+        }
+
+        if shortcut_slot is None:
+            for candidate in (1, 2, 3):
+                if candidate not in occupied_slots:
+                    payload["shortcut_slot"] = candidate
+                    return
+            raise HTTPException(status_code=400, detail="快捷栏位置已满，请先删除一个手动任务后再试")
+
+        shortcut_slot = int(shortcut_slot)
+        if shortcut_slot in occupied_slots:
+            raise HTTPException(status_code=400, detail=f"快捷栏位置 {shortcut_slot} 已被其他任务占用")
+        payload["shortcut_slot"] = shortcut_slot
 
     async def list_tasks(self, user_id: int) -> List[Dict[str, Any]]:
         async with get_async_session() as session:
@@ -119,7 +168,9 @@ class TaskService:
             session.add(task)
             await session.commit()
             await session.refresh(task)
-            return task.task_id
+            created_task_id = task.task_id
+        await self._sync_user_shortcut_keyboards(user_id)
+        return created_task_id
 
     async def update_task(self, task_id: str, task_data: dict, user_id: int) -> None:
         original_task = await check_task_permission(task_id, user_id)
@@ -147,12 +198,14 @@ class TaskService:
 
             await session.commit()
             await session.refresh(task)
+        await self._sync_user_shortcut_keyboards(user_id)
 
     async def delete_task(self, task_id: str, user_id: int) -> None:
         await check_task_permission(task_id, user_id)
         async with get_async_session() as session:
             await session.execute(delete(ScheduledMessageTask).where(ScheduledMessageTask.task_id == task_id))
             await session.commit()
+        await self._sync_user_shortcut_keyboards(user_id)
 
     async def list_task_logs(self, task_id: str, user_id: int, limit: int = 50) -> List[Dict[str, Any]]:
         await check_task_permission(task_id, user_id)
@@ -236,6 +289,8 @@ class TaskService:
 
             if count > 0:
                 await session.commit()
+        if count > 0:
+            await self._sync_user_shortcut_keyboards(user_id)
         return count
 
     async def upload_media(self, account_id: str, user_id: int, media: UploadFile) -> Dict[str, Any]:

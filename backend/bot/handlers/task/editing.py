@@ -20,6 +20,10 @@ from backend.bot.handlers.core.helpers import (
     format_buttons as _format_buttons,
     parse_buttons,
 )
+from backend.bot.handlers.task.manual_helpers import (
+    store_task_media_from_bot_message,
+    task_has_manual_content,
+)
 from backend.bot.handlers.task.queries import get_user_task as _get_user_task
 from backend.bot.ui.messages import *
 from backend.database.schema.models import MediaType, ScheduledMessageTask, TaskTriggerMode
@@ -113,9 +117,29 @@ async def toggle_trigger_mode(event, user_id: int, task_id: str):
             )
             task.trigger_mode = next_mode
             if next_mode == TaskTriggerMode.MANUAL_SHORTCUT.value:
+                if not task_has_manual_content(task):
+                    task.trigger_mode = current_mode
+                    await _notify_event(event, "请先补充文本、按钮或媒体内容后，再切换为手动任务。", alert=True)
+                    return
+                existing_manual_tasks = (
+                    await session.execute(
+                        select(ScheduledMessageTask).where(
+                            ScheduledMessageTask.user_id == task.user_id,
+                            ScheduledMessageTask.trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value,
+                            ScheduledMessageTask.task_id != task.task_id,
+                        )
+                    )
+                ).scalars().all()
+                if len(existing_manual_tasks) >= 3:
+                    await _notify_event(event, "当前最多只能保留 3 个手动任务，请先删除一个后再试。", alert=True)
+                    return
+                used_slots = {int(item.shortcut_slot) for item in existing_manual_tasks if item.shortcut_slot is not None}
+                task.shortcut_slot = next((slot for slot in (1, 2, 3) if slot not in used_slots), None)
+                task.shortcut_label = str(task.shortcut_label or "").strip() or str(task.title or "手动任务").strip()[:20]
                 task.next_run_at = None
             else:
                 task.shortcut_slot = None
+                task.shortcut_label = None
                 if task.enabled and task.next_run_at is None:
                     now_ts = int(datetime.now().timestamp())
                     start_at_ts = int(task.start_at or 0)
@@ -142,7 +166,6 @@ async def set_shortcut_slot(event, user_id: int, task_id: str, slot_value: Optio
         task = await _get_user_task(session, task_id, user_id)
         if not task:
             return
-        task.trigger_mode = TaskTriggerMode.MANUAL_SHORTCUT.value
         if slot_value in {None, "", "clear"}:
             task.shortcut_slot = None
             await session.commit()
@@ -150,6 +173,13 @@ async def set_shortcut_slot(event, user_id: int, task_id: str, slot_value: Optio
             await get_onboarding_service().sync_home_reply_keyboard(user_id)
             await _notify_event(event, SUCCESS_SHORTCUT_REMOVED)
         else:
+            if str(task.trigger_mode or TaskTriggerMode.SCHEDULED.value) != TaskTriggerMode.MANUAL_SHORTCUT.value:
+                if not task_has_manual_content(task):
+                    await _notify_event(event, "请先补充文本、按钮或媒体内容后，再加入手动快捷栏。", alert=True)
+                    return
+                task.trigger_mode = TaskTriggerMode.MANUAL_SHORTCUT.value
+                task.shortcut_label = str(task.shortcut_label or "").strip() or str(task.title or "手动任务").strip()[:20]
+                task.next_run_at = None
             slot = int(slot_value)
             exists = await session.execute(
                 select(ScheduledMessageTask.task_id).where(
@@ -192,18 +222,37 @@ async def start_edit_shortcut_label(event, user_id: int, task_id: str):
 async def handle_shortcut_label_input(event, user_id: int, task_id: str, text: str):
     """处理快捷名称输入。"""
     value = (text or "").strip()
+    if not value or value.lower() == "clear":
+        await event.respond("❌ 手动任务必须填写按钮名称。")
+        return
     if len(value) > 20:
         await event.respond("❌ 快捷名称最长 20 个字符。")
         return
-    if value.lower() == "clear":
-        value = ""
 
     async with get_async_session() as session:
         task = await _get_user_task(session, task_id, user_id)
         if task:
-            task.shortcut_label = value or None
+            task.shortcut_label = value
             if str(task.trigger_mode or "") != TaskTriggerMode.MANUAL_SHORTCUT.value:
+                if not task_has_manual_content(task):
+                    await event.respond("❌ 请先补充文本、按钮或媒体内容后，再改成手动任务。")
+                    return
+                existing_manual_tasks = (
+                    await session.execute(
+                        select(ScheduledMessageTask).where(
+                            ScheduledMessageTask.user_id == task.user_id,
+                            ScheduledMessageTask.trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value,
+                            ScheduledMessageTask.task_id != task.task_id,
+                        )
+                    )
+                ).scalars().all()
+                if len(existing_manual_tasks) >= 3:
+                    await event.respond("❌ 当前最多只能保留 3 个手动任务，请先删除一个后再试。")
+                    return
+                used_slots = {int(item.shortcut_slot) for item in existing_manual_tasks if item.shortcut_slot is not None}
                 task.trigger_mode = TaskTriggerMode.MANUAL_SHORTCUT.value
+                task.shortcut_slot = task.shortcut_slot or next((slot for slot in (1, 2, 3) if slot not in used_slots), None)
+                task.next_run_at = None
             await session.commit()
 
     fsm_storage.reset_state(user_id)
@@ -283,7 +332,16 @@ async def handle_media_input(event, user_id: int, task_id: str, media):
         task = await _get_user_task(session, task_id, user_id)
         if task:
             task.media_type = media_type
-            task.media_file_id = str(file_id)
+            try:
+                task.media_file_id = await store_task_media_from_bot_message(
+                    account_id=str(task.account_id or ""),
+                    event=event,
+                    media=media,
+                    media_type=media_type,
+                )
+            except HTTPException as exc:
+                await event.respond(f"❌ {exc.detail}")
+                return
             await session.commit()
 
     fsm_storage.reset_state(user_id)

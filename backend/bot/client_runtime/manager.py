@@ -38,7 +38,7 @@ _BOT_COMMANDS = [
     BotCommand("start", "开始使用"),
     BotCommand("help", "帮助"),
     BotCommand("login", "绑定账号"),
-    BotCommand("newtask", "创建任务"),
+    BotCommand("newtask", "创建定时/手动任务"),
 ]
 
 bot_client = TelegramClient(

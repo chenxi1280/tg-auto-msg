@@ -323,10 +323,13 @@ class BotOnboardingService:
         second_row: list[Any] = []
         if include_bind:
             second_row.append(Button.inline("📱 绑定账号", data="bot_login_account"))
-        if include_task:
-            second_row.append(Button.inline("📝 创建任务", data="add_task"))
         if second_row:
             buttons.append(second_row)
+        if include_task:
+            buttons.append([
+                Button.inline("⏰ 创建定时任务", data="add_scheduled_task"),
+                Button.inline("🖱️ 创建手动任务", data="add_manual_task"),
+            ])
         if include_notice:
             notice = await get_me_service().get_public_notice_entry()
             if notice.get("enabled") and notice.get("message_text"):
@@ -824,6 +827,8 @@ class BotOnboardingService:
     async def show_home(self, event, tg_user_id: int) -> None:
         text, buttons = await self.build_home_view(tg_user_id)
         await _send_or_edit(event, text, buttons=buttons)
+        if int(tg_user_id) not in _HOME_REPLY_KEYBOARD_SIGNATURES:
+            await self.sync_home_reply_keyboard(tg_user_id)
 
     async def show_help(self, event, tg_user_id: int) -> None:
         text = BOT_HELP_MANUAL
@@ -831,7 +836,8 @@ class BotOnboardingService:
         notice = await get_me_service().get_public_notice_entry()
         if notice.get("enabled") and notice.get("message_text"):
             buttons.append([Button.inline(notice.get("entry_button_text") or "📢 公告栏", data="bot_notice")])
-        buttons.append([Button.inline("📱 绑定账号", data="bot_login_account"), Button.inline("📝 创建任务", data="add_task")])
+        buttons.append([Button.inline("📱 绑定账号", data="bot_login_account")])
+        buttons.append([Button.inline("⏰ 创建定时任务", data="add_scheduled_task"), Button.inline("🖱️ 创建手动任务", data="add_manual_task")])
         buttons.append([Button.inline("🏠 返回主菜单", data="bot_home")])
         await _send_or_edit(event, text, buttons=buttons)
 
@@ -1033,7 +1039,7 @@ class BotOnboardingService:
                 "✅ **全球通授权续费成功**\n\n"
                 + f"最近到期时间：{current.get('end_at') or '-'}\n"
                 + f"当前授权：{'已开通' if status.get('is_active') else '未开通'}\n\n"
-                + "下一步：点击下方「👥 查看账号」，继续查看当前绑定 TG 账号或创建任务。"
+                + "下一步：点击下方「👥 查看账号」，继续查看当前绑定 TG 账号或创建定时/手动任务。"
             ),
             parse_mode="markdown",
             buttons=[
@@ -1169,7 +1175,7 @@ class BotOnboardingService:
             f"{sync_text}"
             f"剩余天数：{status.get('remain_days') if status.get('remain_days') is not None else '-'}\n"
             f"到期时间：{current.get('end_at') or '-'}\n\n"
-            "下一步：可继续查看账号、创建任务或查看当前授权状态。",
+            "下一步：可继续查看账号、创建定时/手动任务或查看当前授权状态。",
             parse_mode="markdown",
             buttons=[
                 [Button.inline("👥 查看账号", data="accounts_list"), Button.inline("🗂️ 查看任务", data="task_list")],

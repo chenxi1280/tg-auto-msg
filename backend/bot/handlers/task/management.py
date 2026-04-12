@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from telethon import Button, events
+from telethon.tl.types import MessageMediaDocument, MessageMediaPhoto
 from sqlalchemy import select
 from fastapi import HTTPException
 from loguru import logger
@@ -13,6 +14,7 @@ from backend.bot.account.reauth import (
     is_reauth_required_account,
 )
 from backend.bot.handlers.core.helpers import (
+    format_buttons as _format_buttons,
     escape_markdown as _escape_markdown,
     format_timestamp as _format_timestamp,
     generate_h5_task_logs_url,
@@ -31,6 +33,9 @@ from backend.bot.handlers.core.user_link import (
     get_active_account_id as _get_active_account_id,
     normalize_operator_account_refs as _normalize_operator_account_refs,
 )
+from backend.bot.handlers.core.helpers import parse_buttons
+from backend.bot.state.fsm import FSMState, fsm_storage
+from backend.bot.handlers.task.manual_helpers import store_task_media_from_bot_message
 from backend.bot.ui.keyboards import (
     get_confirm_delete_keyboard,
     get_task_list_keyboard,
@@ -47,6 +52,7 @@ from backend.database.schema.models import (
 )
 from backend.database.runtime.session import get_async_session
 from backend.h5_backend.services.licensing.service import require_account_task_permission
+from backend.h5_backend.services.task.service import get_task_service
 from backend.scheduler.core.task_runner import execute_task_once
 
 # Selection flows (kept import-compatible for callback/message dispatch modules)
@@ -129,6 +135,17 @@ def _render_shortcut_label(task: ScheduledMessageTask) -> str:
     return _truncate_text(str(task.title or "快捷任务"), 20)
 
 
+def _task_create_entry_keyboard(*, account_id: str | None = None) -> list:
+    suffix = f":{account_id}" if account_id else ""
+    return [
+        [
+            Button.inline("⏰ 创建定时任务", data=f"add_scheduled_task{suffix}"),
+            Button.inline("🖱️ 创建手动任务", data=f"add_manual_task{suffix}"),
+        ],
+        [Button.inline("⬅️ 返回任务页", data="task_list")],
+    ]
+
+
 async def show_task_list(event, user_id: int):
     """显示任务列表。"""
     from backend.bot.onboarding import get_onboarding_service
@@ -169,7 +186,8 @@ async def show_task_list(event, user_id: int):
     if not tasks:
         text = TASK_LIST_HEADER + TASK_EMPTY
         keyboard = [
-            [Button.inline("➕ 新建任务", data="add_task")],
+            [Button.inline("⏰ 创建定时任务", data="add_scheduled_task")],
+            [Button.inline("🖱️ 创建手动任务", data="add_manual_task")],
             [Button.inline("⬅️ 返回主菜单", data="bot_home")],
         ]
     else:
@@ -186,7 +204,7 @@ async def show_task_list(event, user_id: int):
                     task.title[:30] + "..." if len(task.title) > 30 else task.title,
                 )
             )
-        text = TASK_LIST_HEADER + f"📊 共 {len(tasks)} 个任务\n\n下一步：请选择一个任务查看设置，或点击下方按钮新建任务。\n"
+        text = TASK_LIST_HEADER + f"📊 共 {len(tasks)} 个任务\n\n下一步：请选择一个任务查看设置，或点击下方入口继续创建任务。\n"
         keyboard = get_task_list_keyboard(task_data)
 
     if _should_edit_event(event):
@@ -261,7 +279,7 @@ async def show_task_settings(event, user_id: int, task_id: str):
     text = TASK_SETTINGS_TEMPLATE.format(
         title=_escape_markdown(task.title),
         enabled_status=STATUS_ENABLED if task.enabled else STATUS_DISABLED,
-        trigger_mode="手动快捷任务" if str(task.trigger_mode or "") == TaskTriggerMode.MANUAL_SHORTCUT.value else "定时任务",
+        trigger_mode="手动任务" if str(task.trigger_mode or "") == TaskTriggerMode.MANUAL_SHORTCUT.value else "定时任务",
         shortcut_status=_render_shortcut_status(task),
         shortcut_label=_escape_markdown(_render_shortcut_label(task)),
         interval_line=(
@@ -281,7 +299,7 @@ async def show_task_settings(event, user_id: int, task_id: str):
                 ]
             )
             if str(task.trigger_mode or "") != TaskTriggerMode.MANUAL_SHORTCUT.value
-            else "• 手动快捷任务不参与自动调度，点击快捷按钮时立即执行"
+            else "• 手动任务不参与自动调度，点击快捷按钮时立即执行"
         ),
         text_status=STATUS_HAS if task.text else STATUS_NOT_SET,
         media_status=task.media_type.value if task.media_type != MediaType.NONE else "无",
@@ -298,8 +316,8 @@ async def show_task_settings(event, user_id: int, task_id: str):
         await event.respond(text, buttons=keyboard, parse_mode="markdown")
 
 
-async def create_new_task(event, user_id: int):
-    """开始新建任务流程，选择完成前不落库。"""
+async def _start_task_creation(event, user_id: int, *, trigger_mode: str, preferred_account_id: str | None = None):
+    """开始任务创建流程，选择完成前不落库。"""
     from backend.bot.onboarding import get_onboarding_service
     from backend.bot.handlers.task.selector_context import set_selector_context
 
@@ -330,9 +348,9 @@ async def create_new_task(event, user_id: int):
             user_id,
             db_user_id,
             valid_account_ids=[str(item) for item in active_accounts],
-            preferred_account_id=str(active_accounts[0]) if len(active_accounts) == 1 else None,
+            preferred_account_id=preferred_account_id or (str(active_accounts[0]) if len(active_accounts) == 1 else None),
         )
-        preferred_account_id = ref_state.get("active_account_id") or await _get_active_account_id(session, user_id, db_user_id)
+        preferred_account_id = preferred_account_id or ref_state.get("active_account_id") or await _get_active_account_id(session, user_id, db_user_id)
         if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED and access_ctx.scoped_account_id:
             preferred_account_id = str(access_ctx.scoped_account_id)
         if preferred_account_id:
@@ -364,6 +382,7 @@ async def create_new_task(event, user_id: int):
         search="",
         draft_mode=True,
         draft_targets=[],
+        draft_trigger_mode=trigger_mode,
     )
 
     if selected_account_id:
@@ -372,10 +391,46 @@ async def create_new_task(event, user_id: int):
         await start_select_task_account(event, user_id, draft_task_id)
 
 
-async def create_new_task_for_account(event, user_id: int, account_id: str):
-    """从账号页开始新建任务流程，选择完成前不落库。"""
+async def create_new_task(event, user_id: int):
+    """显示任务创建入口。"""
     from backend.bot.onboarding import get_onboarding_service
-    from backend.bot.handlers.task.selector_context import set_selector_context
+
+    if await get_onboarding_service().ensure_registered_user(event, user_id) is None:
+        return
+
+    text = (
+        "🧩 **选择任务类型**\n\n"
+        "• 定时任务：按计划自动发送\n"
+        "• 手动任务：显示在 Bot 底部按钮，点击一次发送一次"
+    )
+    keyboard = _task_create_entry_keyboard()
+    if _should_edit_event(event):
+        await event.edit(text, buttons=keyboard, parse_mode="markdown")
+    else:
+        await event.respond(text, buttons=keyboard, parse_mode="markdown")
+
+
+async def create_new_scheduled_task(event, user_id: int, account_id: str | None = None):
+    await _start_task_creation(
+        event,
+        user_id,
+        trigger_mode=TaskTriggerMode.SCHEDULED.value,
+        preferred_account_id=account_id,
+    )
+
+
+async def create_new_manual_task(event, user_id: int, account_id: str | None = None):
+    await _start_task_creation(
+        event,
+        user_id,
+        trigger_mode=TaskTriggerMode.MANUAL_SHORTCUT.value,
+        preferred_account_id=account_id,
+    )
+
+
+async def create_new_task_for_account(event, user_id: int, account_id: str):
+    """从账号页显示任务创建入口。"""
+    from backend.bot.onboarding import get_onboarding_service
 
     if await get_onboarding_service().ensure_registered_user(event, user_id) is None:
         return
@@ -402,25 +457,19 @@ async def create_new_task_for_account(event, user_id: int, account_id: str):
             )
         )
         account = account_result.scalar_one_or_none()
-        if not account:
+        if not account or is_reauth_required_account(account):
             await event.answer(get_reauth_required_message(), alert=True)
             return
-        if is_reauth_required_account(account):
-            await event.answer(get_reauth_required_message(), alert=True)
-            return
-    draft_task_id = "__draft_new_task__"
-    set_selector_context(
-        user_id,
-        task_id=draft_task_id,
-        account_id=account_id,
-        page=0,
-        peer_filter="all",
-        search="",
-        draft_mode=True,
-        draft_targets=[],
-    )
 
-    await start_select_task_targets(event, user_id, draft_task_id, page=0)
+    text = (
+        "🧩 **选择任务类型**\n\n"
+        "当前会为这个 Telegram 账号创建任务，请直接选择："
+    )
+    keyboard = _task_create_entry_keyboard(account_id=account_id)
+    if _should_edit_event(event):
+        await event.edit(text, buttons=keyboard, parse_mode="markdown")
+    else:
+        await event.respond(text, buttons=keyboard, parse_mode="markdown")
 
 
 async def toggle_task(event, user_id: int, task_id: str):
@@ -516,6 +565,194 @@ async def open_task_logs_page(event, user_id: int, task_id: str):
     await event.answer(f"📊 请在浏览器打开任务发送记录:\n{url}", alert=True)
 
 
+async def handle_manual_task_shortcut_label_create(event, user_id: int, text: str):
+    """Handle shortcut label input for manual task creation wizard."""
+    value = str(text or "").strip()
+    if not value:
+        await event.respond("❌ 手动任务必须填写按钮名称。")
+        return
+    if len(value) > 20:
+        await event.respond("❌ 按钮名称最长 20 个字符。")
+        return
+
+    draft = dict(fsm_storage.get_data(user_id).get("pending_manual_task_create") or {})
+    if not draft:
+        fsm_storage.reset_state(user_id)
+        await event.respond("⚠️ 当前手动任务创建流程已失效，请重新开始。")
+        return
+
+    draft["shortcut_label"] = value
+    fsm_storage.update_data(user_id, pending_manual_task_create=draft)
+    fsm_storage.set_state(user_id, FSMState.WAIT_MANUAL_TASK_TEXT)
+    await event.respond(
+        "📝 **创建手动任务**\n\n"
+        f"按钮名称：`{_escape_markdown(value)}`\n\n"
+        "下一步：请输入这次点击按钮后要发送的文本内容。\n"
+        "如果想只发按钮或媒体，也可以发送 `skip` 跳过这一步。",
+        parse_mode="markdown",
+    )
+
+
+async def handle_manual_task_text_create(event, user_id: int, text: str):
+    """Handle text input for manual task creation wizard."""
+    value = str(text or "").strip()
+    if value.lower() in {"skip", "跳过"}:
+        value = ""
+    if len(value) > 4096:
+        await event.respond(ERROR_TEXT_TOO_LONG)
+        return
+
+    draft = dict(fsm_storage.get_data(user_id).get("pending_manual_task_create") or {})
+    if not draft:
+        fsm_storage.reset_state(user_id)
+        await event.respond("⚠️ 当前手动任务创建流程已失效，请重新开始。")
+        return
+
+    draft["text"] = value or None
+    fsm_storage.update_data(user_id, pending_manual_task_create=draft)
+    fsm_storage.set_state(user_id, FSMState.WAIT_MANUAL_TASK_BUTTONS)
+    current_text = _escape_markdown(value) if value else "（已跳过）"
+    await event.respond(
+        "🔘 **创建手动任务**\n\n"
+        f"文本内容：{current_text}\n\n"
+        "下一步：请输入按钮内容，格式为 `文字 - 链接`，每行一组；\n"
+        "如果不需要按钮，请发送 `skip`。",
+        parse_mode="markdown",
+    )
+
+
+async def handle_manual_task_buttons_create(event, user_id: int, text: str):
+    """Handle buttons input for manual task creation wizard."""
+    raw = str(text or "").strip()
+    buttons = None
+    if raw.lower() not in {"skip", "跳过"}:
+        try:
+            buttons = parse_buttons(raw)
+        except Exception as exc:
+            await event.respond(f"{ERROR_INVALID_BUTTON_FORMAT}\n错误: {str(exc)}")
+            return
+
+    draft = dict(fsm_storage.get_data(user_id).get("pending_manual_task_create") or {})
+    if not draft:
+        fsm_storage.reset_state(user_id)
+        await event.respond("⚠️ 当前手动任务创建流程已失效，请重新开始。")
+        return
+
+    draft["buttons"] = buttons
+    fsm_storage.update_data(user_id, pending_manual_task_create=draft)
+    fsm_storage.set_state(user_id, FSMState.WAIT_MANUAL_TASK_MEDIA)
+    buttons_preview = _escape_markdown(_format_buttons(buttons) if buttons else "（已跳过）")
+    await event.respond(
+        "🖼️ **创建手动任务**\n\n"
+        f"按钮配置：{buttons_preview}\n\n"
+        "下一步：请发送一张图片、视频或 GIF 作为媒体；\n"
+        "如果不需要媒体，请发送 `skip`。",
+        parse_mode="markdown",
+    )
+
+
+async def handle_manual_task_media_text_input(event, user_id: int, text: str):
+    """Handle textual skip/invalid input during media step."""
+    value = str(text or "").strip().lower()
+    if value in {"skip", "跳过"}:
+        await _finalize_manual_task_create(event, user_id)
+        return
+    await event.respond("❌ 这一步请发送图片、视频、GIF，或者发送 `skip` 跳过。", parse_mode="markdown")
+
+
+async def handle_manual_task_media_create(event, user_id: int, task_id: str, media):
+    """Handle media upload for manual task creation wizard."""
+    del task_id
+    media_type = MediaType.NONE
+    file_id = None
+
+    if isinstance(media, MessageMediaPhoto):
+        media_type = MediaType.PHOTO
+        file_id = media.photo.id
+    elif isinstance(media, MessageMediaDocument):
+        for attr in media.document.attributes:
+            if hasattr(attr, "video"):
+                media_type = MediaType.VIDEO
+            elif hasattr(attr, "animated"):
+                media_type = MediaType.ANIMATION
+        file_id = media.document.id
+
+    if media_type == MediaType.NONE:
+        await event.respond(ERROR_INVALID_MEDIA)
+        return
+
+    draft = dict(fsm_storage.get_data(user_id).get("pending_manual_task_create") or {})
+    if not draft:
+        fsm_storage.reset_state(user_id)
+        await event.respond("⚠️ 当前手动任务创建流程已失效，请重新开始。")
+        return
+
+    draft["media_type"] = media_type.value
+    account_id = str(draft.get("account_id") or "").strip()
+    if not account_id:
+        fsm_storage.reset_state(user_id)
+        await event.respond("⚠️ 未找到执行账号，请重新开始创建手动任务。")
+        return
+    try:
+        draft["media_file_id"] = await store_task_media_from_bot_message(
+            account_id=account_id,
+            event=event,
+            media=media,
+            media_type=media_type,
+        )
+    except HTTPException as exc:
+        await event.respond(f"❌ {exc.detail}")
+        return
+    fsm_storage.update_data(user_id, pending_manual_task_create=draft)
+    await _finalize_manual_task_create(event, user_id)
+
+
+async def _finalize_manual_task_create(event, user_id: int):
+    """Persist pending manual task draft."""
+    draft = dict(fsm_storage.get_data(user_id).get("pending_manual_task_create") or {})
+    if not draft:
+        fsm_storage.reset_state(user_id)
+        await event.respond("⚠️ 当前手动任务创建流程已失效，请重新开始。")
+        return
+
+    text_value = str(draft.get("text") or "").strip() or None
+    buttons = draft.get("buttons")
+    media_type = str(draft.get("media_type") or MediaType.NONE.value)
+    media_file_id = str(draft.get("media_file_id") or "").strip() or None
+
+    payload = {
+        "account_id": draft.get("account_id"),
+        "target_peers": list(draft.get("targets") or []),
+        "title": str(draft.get("shortcut_label") or "手动任务"),
+        "enabled": True,
+        "trigger_mode": TaskTriggerMode.MANUAL_SHORTCUT.value,
+        "shortcut_label": str(draft.get("shortcut_label") or "").strip(),
+        "repeat_interval_min": 60,
+        "text": text_value,
+        "media_type": media_type,
+        "media_file_id": media_file_id,
+        "buttons": buttons,
+        "delete_previous": False,
+    }
+    async with get_async_session() as session:
+        access_ctx = await _resolve_actor_access_context(session, user_id)
+        db_user_id = access_ctx.system_user_id
+    if db_user_id is None:
+        fsm_storage.reset_state(user_id)
+        await event.respond("⚠️ 当前 Telegram 账号还未绑定系统账号，请先发送 /start。")
+        return
+
+    try:
+        created_task_id = await get_task_service().create_task(payload, int(db_user_id))
+    except HTTPException as exc:
+        await event.respond(f"❌ {exc.detail}")
+        return
+
+    fsm_storage.reset_state(user_id)
+    await event.respond("✅ 手动任务已创建，底部按钮已同步。")
+    await show_task_settings(event, user_id, created_task_id)
+
+
 async def trigger_task_once_from_bot(event, user_id: int, task_id: str):
     """从 Bot 立即执行一次任务。"""
     async with get_async_session() as session:
@@ -596,6 +833,6 @@ async def try_handle_manual_shortcut_message(event, user_id: int, text: str) -> 
     except HTTPException as exc:
         await _answer_or_respond(event, str(exc.detail or "执行失败，请稍后重试"), alert=True)
     except Exception as exc:
-        logger.exception("手动快捷任务执行失败: user_id={}, task_id={}, error={!r}", user_id, matched_tasks[0].task_id, exc)
+        logger.exception("手动任务执行失败: user_id={}, task_id={}, error={!r}", user_id, matched_tasks[0].task_id, exc)
         await event.respond("⚠️ 快捷任务执行失败，请稍后重试。")
     return True

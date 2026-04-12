@@ -139,6 +139,10 @@ def validate_task_payload(payload: Dict[str, Any], current_task: Optional[Schedu
 
     if trigger_mode != TaskTriggerMode.MANUAL_SHORTCUT.value and shortcut_slot is not None:
         raise HTTPException(status_code=400, detail="仅手动快捷任务可加入快捷栏")
+    if trigger_mode != TaskTriggerMode.MANUAL_SHORTCUT.value:
+        payload["shortcut_label"] = None
+    elif not payload["shortcut_label"]:
+        raise HTTPException(status_code=400, detail="手动任务必须设置按钮名称")
 
     repeat_value = payload.get("repeat_interval_min")
     if repeat_value is None and current_task is not None:
@@ -170,6 +174,15 @@ def validate_task_payload(payload: Dict[str, Any], current_task: Optional[Schedu
         payload["media_file_id"] = None
     elif not media_file_id:
         raise HTTPException(status_code=400, detail="已选择媒体类型，请先上传媒体文件")
+
+    buttons = payload.get("buttons")
+    if buttons is None and current_task is not None:
+        buttons = current_task.buttons
+    text_value = str(payload.get("text") if payload.get("text") is not None else (current_task.text if current_task is not None else "") or "").strip()
+    has_buttons = bool(buttons)
+    has_media = media_type != MediaType.NONE
+    if trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value and not (text_value or has_buttons or has_media):
+        raise HTTPException(status_code=400, detail="手动任务至少需要填写文本、按钮或上传媒体中的一种内容")
 
 
 def apply_system_strategy_fields(payload: Dict[str, Any], account: Optional[Account]) -> None:

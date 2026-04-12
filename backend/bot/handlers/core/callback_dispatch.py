@@ -58,6 +58,8 @@ from backend.bot.handlers.task.selector_context import (
 from backend.bot.handlers.task.management import (
     confirm_delete_task,
     create_new_task,
+    create_new_manual_task,
+    create_new_scheduled_task,
     create_new_task_for_account,
     delete_task,
     open_h5_webapp,
@@ -175,6 +177,7 @@ async def _handle_pick_page_callback(event, user_id: int, parts: list[str]):
         expect_search=bool(ctx.get("expect_search")),
         draft_mode=bool(ctx.get("draft_mode")),
         draft_targets=list(ctx.get("draft_targets") or []),
+        draft_trigger_mode=ctx.get("draft_trigger_mode"),
     )
     await start_select_task_targets(event, user_id, task_id, page=page)
 
@@ -200,6 +203,7 @@ async def _handle_pick_type_callback(event, user_id: int, parts: list[str]):
         expect_search=False,
         draft_mode=bool(ctx.get("draft_mode")),
         draft_targets=list(ctx.get("draft_targets") or []),
+        draft_trigger_mode=ctx.get("draft_trigger_mode"),
     )
     await start_select_task_targets(event, user_id, task_id, page=0)
 
@@ -222,6 +226,7 @@ async def _handle_pick_search_callback(event, user_id: int, parts: list[str]):
         expect_search=True,
         draft_mode=bool(ctx.get("draft_mode")),
         draft_targets=list(ctx.get("draft_targets") or []),
+        draft_trigger_mode=ctx.get("draft_trigger_mode"),
     )
     fsm_storage.update_data(user_id, task_id=str(ctx["task_id"]))
     await event.respond(
@@ -251,6 +256,7 @@ async def _handle_pick_search_clear_callback(event, user_id: int, parts: list[st
         expect_search=False,
         draft_mode=bool(ctx.get("draft_mode")),
         draft_targets=list(ctx.get("draft_targets") or []),
+        draft_trigger_mode=ctx.get("draft_trigger_mode"),
     )
     await start_select_task_targets(event, user_id, task_id, page=0)
 
@@ -274,6 +280,7 @@ async def _handle_pick_search_cancel_callback(event, user_id: int, parts: list[s
         expect_search=False,
         draft_mode=bool(ctx.get("draft_mode")),
         draft_targets=list(ctx.get("draft_targets") or []),
+        draft_trigger_mode=ctx.get("draft_trigger_mode"),
     )
     await start_select_task_targets(event, user_id, task_id, page=int(ctx.get("page") or 0))
 
@@ -436,6 +443,16 @@ async def _handle_acc_add_task_callback(event, user_id: int, parts: list[str]):
     await create_new_task_for_account(event, user_id, parts[1])
 
 
+async def _handle_add_scheduled_task_callback(event, user_id: int, parts: list[str]):
+    account_id = parts[1] if len(parts) > 1 and parts[1] else None
+    await create_new_scheduled_task(event, user_id, account_id=account_id)
+
+
+async def _handle_add_manual_task_callback(event, user_id: int, parts: list[str]):
+    account_id = parts[1] if len(parts) > 1 and parts[1] else None
+    await create_new_manual_task(event, user_id, account_id=account_id)
+
+
 async def _handle_acc_renew_authorization_callback(event, user_id: int, parts: list[str]):
     if len(parts) < 2:
         await event.answer("参数错误", alert=True)
@@ -531,6 +548,8 @@ _CUSTOM_ACTION_HANDLERS = {
     "acc_unbind": _handle_acc_unbind_callback,
     "acc_unbind_confirm": _handle_acc_unbind_confirm_callback,
     "acc_add_task": _handle_acc_add_task_callback,
+    "add_scheduled_task": _handle_add_scheduled_task_callback,
+    "add_manual_task": _handle_add_manual_task_callback,
     "acc_renew_authorization": _handle_acc_renew_authorization_callback,
     "authorization_renew": _handle_authorization_renew_callback,
     "bot_login_replace_confirm": _handle_bot_login_replace_confirm,

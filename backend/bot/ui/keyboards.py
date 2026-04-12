@@ -50,10 +50,8 @@ def get_task_list_keyboard(
         buttons.append(settings_row)
 
     # 底部按钮
-    buttons.append([
-        Button.inline("➕ 新建任务", data="add_task"),
-        Button.inline("🔄 刷新列表", data="refresh"),
-    ])
+    buttons.append([Button.inline("⏰ 创建定时任务", data="add_scheduled_task")])
+    buttons.append([Button.inline("🖱️ 创建手动任务", data="add_manual_task"), Button.inline("🔄 刷新列表", data="refresh")])
     buttons.append([
         Button.inline("🏠 返回主菜单", data="bot_home"),
     ])
@@ -105,7 +103,7 @@ def get_task_settings_keyboard(task: ScheduledMessageTask) -> list:
 
     buttons.append([
         Button.inline(
-            f"🕹️ 类型: {'手动快捷' if is_manual_shortcut else '定时任务'}",
+            f"🕹️ 类型: {'手动任务' if is_manual_shortcut else '定时任务'}",
             data=f"toggle_trigger_mode:{task.task_id}",
         ),
     ])
@@ -196,16 +194,8 @@ def build_reply_shortcut_keyboard(labels: List[str]) -> list:
     """Build reply keyboard for manual shortcut tasks."""
     rows: list[list[Any]] = []
     if labels:
-        current_row: list[Any] = []
-        for label in labels[:3]:
-            current_row.append(Button.text(label, resize=True))
-            if len(current_row) == 2:
-                rows.append(current_row)
-                current_row = []
-        if current_row:
-            rows.append(current_row)
-    else:
-        rows.append([Button.text("🏠 主菜单", resize=True)])
+        rows.append([Button.text(label, resize=True) for label in labels[:3]])
+    rows.append([Button.text("🏠 主菜单", resize=True)])
     return rows
 
 

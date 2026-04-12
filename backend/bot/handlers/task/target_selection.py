@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from typing import Optional
-import uuid
 
 from loguru import logger
 from telethon import events
@@ -36,7 +35,9 @@ from backend.bot.handlers.task.selector_ui import (
 from backend.database.schema.models import Account, Resource, ScheduledMessageTask
 from backend.database.runtime.session import get_async_session
 from backend.h5_backend.services.licensing.service import require_account_task_permission
+from backend.h5_backend.services.task.service import get_task_service
 from fastapi import HTTPException
+from backend.database.schema.models import TaskTriggerMode
 
 
 def _should_edit_event(event) -> bool:
@@ -45,7 +46,7 @@ def _should_edit_event(event) -> bool:
 
 def _selector_expired_message(draft_mode: Optional[bool]) -> str:
     if draft_mode is True:
-        return "当前创建流程已失效，请重新点击“新建任务”开始。"
+        return "当前创建流程已失效，请重新点击任务创建入口开始。"
     if draft_mode is False:
         return "当前选择流程已失效，请重新进入任务设置后再选择目标聊天。"
     return "当前选择流程已失效，请重新进入后再试。"
@@ -106,6 +107,7 @@ async def start_select_task_account(event, user_id: int, task_id: str):
         search="",
         draft_mode=draft_mode,
         draft_targets=current_targets,
+        draft_trigger_mode=ctx.get("draft_trigger_mode"),
     )
     draft_tip = "任务会在选择目标聊天并点击完成后才真正创建。\n\n" if draft_mode else "\n"
     text = (
@@ -131,6 +133,7 @@ async def start_select_task_targets(event, user_id: int, task_id: str, page: int
     draft_mode = bool(ctx.get("draft_mode"))
     peer_filter = _normalize_target_filter(ctx.get("peer_filter"))
     search_query = str(ctx.get("search") or "").strip()
+    draft_trigger_mode = str(ctx.get("draft_trigger_mode") or TaskTriggerMode.SCHEDULED.value)
 
     async with get_async_session() as session:
         access_ctx = await _resolve_actor_access_context(session, user_id)
@@ -183,7 +186,10 @@ async def start_select_task_targets(event, user_id: int, task_id: str, page: int
         peer_filter=peer_filter,
         search_query=search_query,
         back_callback="back_to_list" if draft_mode else None,
-        done_label=f"✅ 创建任务 ({len(selected_keys)})" if draft_mode else None,
+        done_label=(
+            f"{'✅ 创建手动任务' if draft_trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value else '✅ 创建定时任务'} ({len(selected_keys)})"
+            if draft_mode else None
+        ),
     )
     _set_selector_context(
         user_id,
@@ -194,9 +200,18 @@ async def start_select_task_targets(event, user_id: int, task_id: str, page: int
         search=search_query,
         draft_mode=draft_mode,
         draft_targets=selected_targets,
+        draft_trigger_mode=ctx.get("draft_trigger_mode"),
     )
 
-    next_step_text = "下一步：勾选目标后点击下方「✅ 创建任务」。" if draft_mode else "下一步：勾选目标后点击下方「✅ 完成」。"
+    next_step_text = (
+        "下一步：勾选目标后点击下方「✅ 创建手动任务」。"
+        if draft_mode and draft_trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value
+        else (
+            "下一步：勾选目标后点击下方「✅ 创建定时任务」。"
+            if draft_mode
+            else "下一步：勾选目标后点击下方「✅ 完成」。"
+        )
+    )
     text = (
         "📋 **选择目标聊天（支持多选）**\n\n"
         f"已选择: {len(selected_keys)} 个\n"
@@ -275,6 +290,7 @@ async def _handle_pick_account(event, user_id: int, account_id: str):
         search="",
         draft_mode=draft_mode,
         draft_targets=[] if account_changed else list(ctx.get("draft_targets") or []),
+        draft_trigger_mode=ctx.get("draft_trigger_mode"),
     )
     await start_select_task_targets(event, user_id, task_id, page=0)
 
@@ -342,6 +358,7 @@ async def _handle_pick_resource(event, user_id: int, resource_id: int):
         search=str(ctx.get("search") or ""),
         draft_mode=draft_mode,
         draft_targets=targets,
+        draft_trigger_mode=ctx.get("draft_trigger_mode"),
     )
 
     await start_select_task_targets(event, user_id, task_id, page=page)
@@ -373,6 +390,7 @@ async def _handle_pick_clear(event, user_id: int):
         search=str(ctx.get("search") or ""),
         draft_mode=draft_mode,
         draft_targets=[],
+        draft_trigger_mode=ctx.get("draft_trigger_mode"),
     )
 
     await event.answer("✅ 已清空目标")
@@ -403,6 +421,7 @@ async def _handle_pick_done(event, user_id: int):
     _clear_selector_context(user_id)
     if draft_mode:
         account_id = str(ctx.get("account_id") or "")
+        trigger_mode = str(ctx.get("draft_trigger_mode") or TaskTriggerMode.SCHEDULED.value)
         if not account_id:
             await event.answer("请先选择执行账号", alert=True)
             return
@@ -429,25 +448,38 @@ async def _handle_pick_done(event, user_id: int):
             except HTTPException as exc:
                 await event.answer(str(exc.detail), alert=True)
                 return
-
-            task = ScheduledMessageTask(
-                task_id=str(uuid.uuid4()),
-                user_id=db_user_id,
-                account_id=account_id,
-                chat_id=0,
-                title="未命名任务",
-                repeat_interval_min=60,
-                day_start_hour=0,
-                day_end_hour=24,
-                enabled=False,
-                next_run_at=None,
+        if trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value:
+            fsm_storage.set_state(user_id, FSMState.WAIT_MANUAL_TASK_SHORTCUT_LABEL)
+            fsm_storage.update_data(
+                user_id,
+                pending_manual_task_create={
+                    "account_id": account_id,
+                    "targets": targets,
+                },
             )
-            _apply_task_targets(task, targets)
-            session.add(task)
-            await session.commit()
-            created_task_id = task.task_id
+            await event.respond(
+                "🏷️ **创建手动任务**\n\n"
+                "已完成执行账号和目标聊天选择。\n"
+                "下一步：请输入底部按钮名称（最长 20 个字符）。",
+                parse_mode="markdown",
+            )
+            return
 
-        await event.answer(f"✅ 已创建任务并保存 {len(targets)} 个目标")
+        payload = {
+            "account_id": account_id,
+            "target_peers": targets,
+            "title": "未命名定时任务",
+            "enabled": False,
+            "trigger_mode": TaskTriggerMode.SCHEDULED.value,
+            "repeat_interval_min": 60,
+            "text": None,
+            "media_type": "none",
+            "buttons": None,
+            "delete_previous": False,
+        }
+        created_task_id = await get_task_service().create_task(payload, int(db_user_id))
+
+        await event.answer(f"✅ 已创建定时任务并保存 {len(targets)} 个目标")
         from backend.bot.handlers.task.management import show_task_settings
         await show_task_settings(event, user_id, created_task_id)
         return
@@ -492,7 +524,7 @@ async def handle_target_search_input(event, user_id: int, text: str):
     if not ctx:
         fsm_storage.set_state(user_id, FSMState.NONE)
         logger.warning("selector context missing during search input: user_id={}", user_id)
-        await event.respond("⚠️ 当前选择流程已失效。\n下一步：请重新进入任务设置或重新点击“新建任务”。")
+        await event.respond("⚠️ 当前选择流程已失效。\n下一步：请重新进入任务设置或重新点击任务创建入口。")
         return
 
     keyword = (text or "").strip()
@@ -511,6 +543,7 @@ async def handle_target_search_input(event, user_id: int, text: str):
             expect_search=False,
             draft_mode=bool(ctx.get("draft_mode")),
             draft_targets=list(ctx.get("draft_targets") or []),
+            draft_trigger_mode=ctx.get("draft_trigger_mode"),
         )
         await start_select_task_targets(
             event,
@@ -540,5 +573,6 @@ async def handle_target_search_input(event, user_id: int, text: str):
         search=keyword,
         draft_mode=bool(ctx.get("draft_mode")),
         draft_targets=list(ctx.get("draft_targets") or []),
+        draft_trigger_mode=ctx.get("draft_trigger_mode"),
     )
     await start_select_task_targets(event, user_id, str(ctx["task_id"]), page=0)

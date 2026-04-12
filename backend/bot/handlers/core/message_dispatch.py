@@ -11,6 +11,13 @@ from backend.bot.handlers.task.editing import (
     handle_start_at_input,
     handle_text_input,
 )
+from backend.bot.handlers.task.management import (
+    handle_manual_task_buttons_create,
+    handle_manual_task_media_create,
+    handle_manual_task_media_text_input,
+    handle_manual_task_shortcut_label_create,
+    handle_manual_task_text_create,
+)
 from backend.bot.onboarding import get_onboarding_service
 
 _SENSITIVE_INPUT_STATES = {
@@ -29,6 +36,7 @@ _TEXT_STATE_HANDLERS = {
 
 _MEDIA_STATE_HANDLERS = {
     FSMState.WAIT_MEDIA: handle_media_input,
+    FSMState.WAIT_MANUAL_TASK_MEDIA: handle_manual_task_media_create,
 }
 
 
@@ -58,6 +66,18 @@ async def dispatch_message_by_state(event, user_id: int, state: FSMState, task_i
         return
     if state == FSMState.WAIT_LOGIN_PASSWORD:
         await onboarding_service.handle_login_password(event, user_id, event.message.message or "")
+        return
+    if state == FSMState.WAIT_MANUAL_TASK_SHORTCUT_LABEL:
+        await handle_manual_task_shortcut_label_create(event, user_id, event.message.message or "")
+        return
+    if state == FSMState.WAIT_MANUAL_TASK_TEXT:
+        await handle_manual_task_text_create(event, user_id, event.message.message or "")
+        return
+    if state == FSMState.WAIT_MANUAL_TASK_BUTTONS:
+        await handle_manual_task_buttons_create(event, user_id, event.message.message or "")
+        return
+    if state == FSMState.WAIT_MANUAL_TASK_MEDIA and not getattr(event.message, "media", None) and getattr(event.message, "message", None):
+        await handle_manual_task_media_text_input(event, user_id, event.message.message or "")
         return
 
     text_handler = _TEXT_STATE_HANDLERS.get(state)

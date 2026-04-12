@@ -174,7 +174,8 @@ async def show_accounts_list(event, user_id: int):
             keyboard = [[Button.inline("🔄 同步全部资源", data="sync_all")]]
         else:
             keyboard = [[Button.inline("📱 绑定账号", data="bot_login_account"), Button.inline("🔄 同步全部资源", data="sync_all")]]
-        keyboard.append([Button.inline("🗂️ 查看任务", data="task_list"), Button.inline("➕ 新建任务", data="add_task")])
+        keyboard.append([Button.inline("🗂️ 查看任务", data="task_list")])
+        keyboard.append([Button.inline("⏰ 创建定时任务", data="add_scheduled_task"), Button.inline("🖱️ 创建手动任务", data="add_manual_task")])
 
         for idx, acc in enumerate(accounts[:8], 1):
             display = acc.username or acc.phone or (f"ID:{acc.tg_user_id}" if acc.tg_user_id else acc.account_id[:8])
@@ -353,7 +354,8 @@ async def show_account_menu(event, user_id: int, account_id: str):
     keyboard = [
         [Button.inline("⚙️ 设为当前账号", data=f"acc_set_active:{account_id}")],
         [Button.inline("🔄 同步资源", data=f"acc_sync:{account_id}"), Button.inline("📱 重新绑定", data=f"acc_relogin:{account_id}")],
-        [Button.inline("➕ 新建任务", data=f"acc_add_task:{account_id}"), Button.inline("⏳ 续费卡密", data=f"acc_renew_authorization:{account_id}")],
+        [Button.inline("⏰ 创建定时任务", data=f"add_scheduled_task:{account_id}"), Button.inline("🖱️ 创建手动任务", data=f"add_manual_task:{account_id}")],
+        [Button.inline("⏳ 续费卡密", data=f"acc_renew_authorization:{account_id}")],
         [Button.inline("解绑账号", data=f"acc_unbind:{account_id}")],
         [Button.inline("⬅️ 返回账号页", data="accounts_list"), Button.inline("🏠 返回主菜单", data="bot_home")],
     ]
