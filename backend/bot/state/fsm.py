@@ -17,6 +17,10 @@ class FSMState(str, Enum):
     WAIT_INTERVAL = "wait_interval"  # 等待选择重复间隔
     WAIT_TARGET_SEARCH = "wait_target_search"  # 等待输入目标聊天搜索词
     WAIT_SHORTCUT_LABEL = "wait_shortcut_label"  # 等待输入快捷按钮名称
+    WAIT_MANUAL_TASK_SHORTCUT_LABEL = "wait_manual_task_shortcut_label"  # 等待输入手动任务按钮名称
+    WAIT_MANUAL_TASK_TEXT = "wait_manual_task_text"  # 等待输入手动任务文本内容
+    WAIT_MANUAL_TASK_BUTTONS = "wait_manual_task_buttons"  # 等待输入手动任务按钮
+    WAIT_MANUAL_TASK_MEDIA = "wait_manual_task_media"  # 等待输入手动任务媒体
     WAIT_REGISTER_USERNAME = "wait_register_username"  # 等待输入注册用户名
     WAIT_REGISTER_PASSWORD = "wait_register_password"  # 等待输入注册密码
     WAIT_REGISTER_EMAIL = "wait_register_email"  # 等待输入注册邮箱

@@ -20,6 +20,7 @@ def set_selector_context(
     expect_search: bool = False,
     draft_mode: bool = False,
     draft_targets: Optional[list[dict[str, Any]]] = None,
+    draft_trigger_mode: Optional[str] = None,
 ) -> None:
     """Store selector context in FSM user data."""
     fsm_storage.update_data(
@@ -34,6 +35,7 @@ def set_selector_context(
                 "expect_search": bool(expect_search),
                 "draft_mode": bool(draft_mode),
                 "draft_targets": draft_targets or [],
+                "draft_trigger_mode": draft_trigger_mode,
             }
         }
     )

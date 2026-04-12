@@ -11,9 +11,10 @@ from sqlalchemy import and_, or_, select
 
 from backend.bot.client_runtime.manager import bot_client, ensure_manager_bot_ready
 from backend.database.runtime.session import get_async_session
-from backend.database.schema.models import AppSetting, ScheduledMessageTask, TaskTargetSendIssue
+from backend.database.schema.models import AppSetting, Account, Resource, ScheduledMessageTask, TaskTargetSendIssue
 
 USER_LINK_KEY_PREFIX = "tg_user_link:"
+_REAL_DATETIME = datetime
 
 
 class TaskIssueNotifier:
@@ -54,18 +55,27 @@ class TaskIssueNotifier:
         task_titles = await self._load_task_titles(
             [issue.task_id for issue in active_issues] + [issue.task_id for issue in resolved_issues]
         )
+        all_issues = active_issues + resolved_issues
+        account_labels = await self._load_account_labels(
+            [issue.account_id for issue in all_issues if issue.account_id]
+        )
+        peer_labels = await self._load_peer_labels(all_issues)
 
         sent_count = 0
         sent_count += await self._send_active_issue_notifications(
             issues=active_issues,
             user_links=user_links,
             task_titles=task_titles,
+            account_labels=account_labels,
+            peer_labels=peer_labels,
             now=now,
         )
         sent_count += await self._send_recovery_notifications(
             issues=resolved_issues,
             user_links=user_links,
             task_titles=task_titles,
+            account_labels=account_labels,
+            peer_labels=peer_labels,
             now=now,
         )
         return sent_count
@@ -105,6 +115,56 @@ class TaskIssueNotifier:
             ).all()
 
         return {str(task_id): str(title or "").strip() for task_id, title in rows}
+
+    async def _load_account_labels(self, account_ids: Iterable[str | None]) -> dict[str, str]:
+        normalized_account_ids = sorted({str(account_id) for account_id in account_ids if account_id})
+        if not normalized_account_ids:
+            return {}
+
+        async with get_async_session() as session:
+            rows = (
+                await session.execute(
+                    select(Account.account_id, Account.username, Account.first_name, Account.phone).where(
+                        Account.account_id.in_(normalized_account_ids)
+                    )
+                )
+            ).all()
+
+        labels: dict[str, str] = {}
+        for account_id, username, first_name, phone in rows:
+            label = self._format_account_label(
+                username=str(username or "").strip(),
+                first_name=str(first_name or "").strip(),
+                phone=str(phone or "").strip(),
+            )
+            labels[str(account_id)] = label
+        return labels
+
+    async def _load_peer_labels(self, issues: list[TaskTargetSendIssue]) -> dict[tuple[str, int], str]:
+        account_ids = sorted({str(issue.account_id) for issue in issues if issue.account_id})
+        peer_ids = sorted({int(issue.peer_id) for issue in issues if issue.peer_id is not None})
+        if not account_ids or not peer_ids:
+            return {}
+
+        async with get_async_session() as session:
+            rows = (
+                await session.execute(
+                    select(Resource.account_id, Resource.peer_id, Resource.title, Resource.username).where(
+                        Resource.account_id.in_(account_ids),
+                        Resource.peer_id.in_(peer_ids),
+                    )
+                )
+            ).all()
+
+        labels: dict[tuple[str, int], str] = {}
+        for account_id, peer_id, title, username in rows:
+            label = str(title or "").strip()
+            username_label = str(username or "").strip()
+            if not label and username_label:
+                label = username_label if username_label.startswith("@") else f"@{username_label}"
+            if label:
+                labels[(str(account_id), int(peer_id))] = label
+        return labels
 
     async def _list_pending_active_issues(self, now: datetime) -> list[TaskTargetSendIssue]:
         async with get_async_session() as session:
@@ -165,6 +225,8 @@ class TaskIssueNotifier:
         issues: list[TaskTargetSendIssue],
         user_links: dict[int, int],
         task_titles: dict[str, str],
+        account_labels: dict[str, str],
+        peer_labels: dict[tuple[str, int], str],
         now: datetime,
     ) -> int:
         grouped = self._group_issues(issues)
@@ -185,7 +247,8 @@ class TaskIssueNotifier:
                     tg_user_id,
                     self._build_active_notice_text(
                         task_title=task_titles.get(str(task_id)) or str(task_id),
-                        account_id=account_id,
+                        account_label=self._resolve_account_label(account_id, account_labels),
+                        peer_labels=peer_labels,
                         issues=group_issues,
                     ),
                 )
@@ -207,6 +270,8 @@ class TaskIssueNotifier:
         issues: list[TaskTargetSendIssue],
         user_links: dict[int, int],
         task_titles: dict[str, str],
+        account_labels: dict[str, str],
+        peer_labels: dict[tuple[str, int], str],
         now: datetime,
     ) -> int:
         grouped = self._group_issues(issues)
@@ -222,7 +287,8 @@ class TaskIssueNotifier:
                     tg_user_id,
                     self._build_recovery_notice_text(
                         task_title=task_titles.get(str(task_id)) or str(task_id),
-                        account_id=account_id,
+                        account_label=self._resolve_account_label(account_id, account_labels),
+                        peer_labels=peer_labels,
                         issues=group_issues,
                     ),
                 )
@@ -251,46 +317,120 @@ class TaskIssueNotifier:
         self,
         *,
         task_title: str,
-        account_id: str | None,
+        account_label: str,
+        peer_labels: dict[tuple[str, int], str],
         issues: list[TaskTargetSendIssue],
     ) -> str:
         lines = [
             "任务发送异常提醒",
             "",
             f"任务：{task_title}",
-            f"执行账号：{account_id or '未绑定'}",
-            f"本次新增异常目标：{len(issues)} 个",
+            f"执行账号：{account_label}",
+            f"发现时间：{self._format_issue_time(issues, field_name='last_seen_at')}",
+            f"本次异常目标：{len(issues)} 个",
             "",
         ]
         for issue in issues[:10]:
-            peer_label = str(issue.peer_title or "").strip() or f"{issue.peer_type}:{issue.peer_id}"
+            peer_label = self._resolve_peer_label(issue, peer_labels)
+            reason = self._format_issue_reason(issue)
             suffix = "（系统已暂停该目标）" if issue.auto_suspended else ""
-            lines.append(f"- {peer_label}：{issue.current_error_message}{suffix}")
+            lines.append(f"- {peer_label}：{reason}{suffix}")
         if len(issues) > 10:
             lines.append(f"- 其余 {len(issues) - 10} 个目标请到任务详情查看")
-        lines.extend(["", "同类重复问题 24 小时内静默。"])
+        lines.extend(["", "系统已暂停无权限或无法访问的目标，其他目标会继续发送。", "同类重复问题 24 小时内不重复提醒。"])
         return "\n".join(lines)
 
     def _build_recovery_notice_text(
         self,
         *,
         task_title: str,
-        account_id: str | None,
+        account_label: str,
+        peer_labels: dict[tuple[str, int], str],
         issues: list[TaskTargetSendIssue],
     ) -> str:
         lines = [
             "任务目标已恢复",
             "",
             f"任务：{task_title}",
-            f"执行账号：{account_id or '未绑定'}",
+            f"执行账号：{account_label}",
+            f"恢复时间：{self._format_issue_time(issues, field_name='resolved_at')}",
             "以下目标已恢复发送：",
         ]
         for issue in issues[:10]:
-            peer_label = str(issue.peer_title or "").strip() or f"{issue.peer_type}:{issue.peer_id}"
+            peer_label = self._resolve_peer_label(issue, peer_labels)
             lines.append(f"- {peer_label}")
         if len(issues) > 10:
             lines.append(f"- 其余 {len(issues) - 10} 个目标已恢复")
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_account_label(*, username: str, first_name: str, phone: str) -> str:
+        if username:
+            return username if username.startswith("@") else f"@{username}"
+        if first_name:
+            return first_name
+        if phone:
+            return phone
+        return "未同步名称的执行账号"
+
+    @staticmethod
+    def _resolve_account_label(account_id: str | None, account_labels: dict[str, str]) -> str:
+        if not account_id:
+            return "未绑定执行账号"
+        return account_labels.get(str(account_id)) or "未同步名称的执行账号"
+
+    @staticmethod
+    def _peer_type_label(peer_type: str | None) -> str:
+        normalized = str(peer_type or "").strip().lower()
+        if normalized == "channel":
+            return "频道"
+        if normalized in {"chat", "supergroup"}:
+            return "群聊"
+        if normalized == "user":
+            return "用户"
+        return "目标"
+
+    def _resolve_peer_label(
+        self,
+        issue: TaskTargetSendIssue,
+        peer_labels: dict[tuple[str, int], str],
+    ) -> str:
+        issue_title = str(issue.peer_title or "").strip()
+        if issue_title:
+            return issue_title
+        if issue.account_id:
+            label = peer_labels.get((str(issue.account_id), int(issue.peer_id)))
+            if label:
+                return label
+        return f"未同步名称的{self._peer_type_label(issue.peer_type)}（请到任务详情查看）"
+
+    @staticmethod
+    def _format_issue_time(issues: list[TaskTargetSendIssue], *, field_name: str) -> str:
+        values = [
+            value
+            for value in (getattr(issue, field_name, None) for issue in issues)
+            if isinstance(value, _REAL_DATETIME)
+        ]
+        if not values:
+            return _REAL_DATETIME.now().strftime("%Y-%m-%d %H:%M")
+        return max(values).strftime("%Y-%m-%d %H:%M")
+
+    @staticmethod
+    def _format_issue_reason(issue: TaskTargetSendIssue) -> str:
+        error_type = str(issue.current_error_type or "").strip()
+        if error_type == "UserBannedInChannelError":
+            return "当前账号在这个群聊或频道里没有发送权限，可能被禁言、被移出，或被管理员限制发言。"
+        if error_type == "ChannelPrivateError":
+            return "当前账号无法访问这个群聊或频道，可能频道已设为私有、账号未加入，或已被移出。"
+        message = str(issue.current_error_message or "").strip()
+        for token in (
+            "（UserBannedInChannelError）",
+            "(UserBannedInChannelError)",
+            "（ChannelPrivateError）",
+            "(ChannelPrivateError)",
+        ):
+            message = message.replace(token, "")
+        return message or "发送失败，系统会稍后再试。"
 
     async def _mark_active_notified(self, issues: list[TaskTargetSendIssue], now: datetime) -> None:
         muted_until = now + timedelta(hours=self.MUTE_HOURS)

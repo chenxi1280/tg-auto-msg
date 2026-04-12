@@ -12,8 +12,16 @@
 
     <div v-if="!showEditor" class="toolbar">
       <div class="container toolbar-inner">
-        <el-button type="primary" @click="openCreateForm">
-          新建任务
+        <el-button type="primary" @click="openCreateForm('scheduled')">
+          创建定时任务
+        </el-button>
+        <el-button
+          type="success"
+          plain
+          :disabled="manualTaskCount >= 3"
+          @click="openCreateForm('manual_shortcut')"
+        >
+          创建手动任务
         </el-button>
         <el-button :loading="loadingTasks" @click="loadTasks">
           刷新任务
@@ -25,7 +33,7 @@
     <div class="container main">
       <div v-if="showEditor" class="editor card">
         <div class="editor-header">
-          <h2>{{ editingTaskId ? '编辑任务' : '新建任务' }}</h2>
+          <h2>{{ editingTaskId ? '编辑任务' : (form.triggerMode === 'manual_shortcut' ? '创建手动任务' : '创建定时任务') }}</h2>
           <el-button text @click="closeEditor">返回任务管理</el-button>
         </div>
         <el-form label-position="top">
@@ -33,37 +41,28 @@
             <el-input v-model="form.title" placeholder="例如：午间频道推送" />
           </el-form-item>
 
-          <el-form-item label="任务类型">
+          <el-form-item v-if="editingTaskId" label="任务类型">
             <el-radio-group v-model="form.triggerMode" @change="onTriggerModeChange">
               <el-radio label="scheduled">定时任务</el-radio>
-              <el-radio label="manual_shortcut">手动快捷任务</el-radio>
+              <el-radio label="manual_shortcut">手动任务</el-radio>
             </el-radio-group>
             <div class="hint-text">
-              手动快捷任务不会自动调度，只会在 Bot 底部快捷按钮或“立即执行一次”时触发。
+              手动任务不会自动调度，只会在 Bot 底部快捷按钮或“立即执行一次”时触发。
             </div>
           </el-form-item>
 
           <template v-if="form.triggerMode === 'manual_shortcut'">
-            <div class="grid-two">
-              <el-form-item label="加入快捷栏">
-                <el-switch v-model="form.addToShortcut" />
-              </el-form-item>
-              <el-form-item label="快捷位" v-if="form.addToShortcut">
-                <el-select v-model="form.shortcutSlot" placeholder="请选择 1-3 号位" style="width: 100%">
-                  <el-option label="槽位 1" :value="1" />
-                  <el-option label="槽位 2" :value="2" />
-                  <el-option label="槽位 3" :value="3" />
-                </el-select>
-              </el-form-item>
-            </div>
             <el-form-item label="快捷名称">
               <el-input
                 v-model="form.shortcutLabel"
                 maxlength="20"
                 show-word-limit
-                placeholder="不填则默认使用任务标题"
+                placeholder="例如：开课通知"
               />
             </el-form-item>
+            <div class="hint-text">
+              手动任务创建后会自动占用 1-3 号按钮位中的一个，普通用户最多只能保留 3 个手动任务。
+            </div>
           </template>
 
           <el-form-item label="执行账号">
@@ -164,7 +163,7 @@
             系统会自动生成 30 秒到 5 分钟的随机延迟与抖动参数，不需要手工配置。
           </div>
           <div class="hint-text" v-else>
-            手动快捷任务不参与自动调度，开始/结束时间与下次执行时间不生效。
+            手动任务不参与自动调度，开始/结束时间与下次执行时间不生效。
           </div>
 
           <div v-if="form.triggerMode !== 'manual_shortcut'" class="grid-two">
@@ -187,7 +186,7 @@
 
           <div class="form-actions">
             <el-button type="primary" :loading="submitting" @click="submitTask">
-              {{ editingTaskId ? '保存修改' : '创建任务' }}
+              {{ editingTaskId ? '保存修改' : (form.triggerMode === 'manual_shortcut' ? '创建手动任务' : '创建定时任务') }}
             </el-button>
             <el-button
               v-if="editingTaskId"
@@ -211,7 +210,7 @@
             <el-table-column prop="title" label="任务名" min-width="260" show-overflow-tooltip />
             <el-table-column label="类型/快捷栏" width="150">
               <template #default="{ row }">
-                <div>{{ row.trigger_mode === 'manual_shortcut' ? '手动快捷' : '定时任务' }}</div>
+                <div>{{ row.trigger_mode === 'manual_shortcut' ? '手动任务' : '定时任务' }}</div>
                 <div class="table-subtext">
                   {{ row.shortcut_slot ? `槽位 ${row.shortcut_slot}` : '-' }}
                 </div>
@@ -264,7 +263,7 @@
                 <div class="mobile-data-card__row">
                   <span class="mobile-data-card__label">类型/快捷栏</span>
                   <span class="mobile-data-card__value">
-                    {{ row.trigger_mode === 'manual_shortcut' ? '手动快捷' : '定时任务' }}
+                    {{ row.trigger_mode === 'manual_shortcut' ? '手动任务' : '定时任务' }}
                     <template v-if="row.shortcut_slot"> · 槽位 {{ row.shortcut_slot }}</template>
                   </span>
                 </div>
@@ -332,6 +331,7 @@ const mediaInputRef = ref<HTMLInputElement | null>(null)
 const resourceKeyword = ref('')
 
 const accounts = computed(() => accountStore.accounts)
+const manualTaskCount = computed(() => tasks.value.filter((task) => task.trigger_mode === 'manual_shortcut').length)
 
 const form = reactive({
   title: '',
@@ -339,8 +339,6 @@ const form = reactive({
   targetKeys: [] as string[],
   text: '',
   triggerMode: 'scheduled',
-  addToShortcut: false,
-  shortcutSlot: null as number | null,
   shortcutLabel: '',
   priority: 0,
   repeatIntervalMin: 60,
@@ -570,8 +568,7 @@ const onAccountChange = async () => {
 
 const onTriggerModeChange = () => {
   if (form.triggerMode !== 'manual_shortcut') {
-    form.addToShortcut = false
-    form.shortcutSlot = null
+    form.shortcutLabel = ''
   }
 }
 
@@ -586,8 +583,6 @@ const resetForm = (keepCurrentAccount = true) => {
   form.targetKeys = []
   form.text = ''
   form.triggerMode = 'scheduled'
-  form.addToShortcut = false
-  form.shortcutSlot = null
   form.shortcutLabel = ''
   form.priority = 0
   form.repeatIntervalMin = 60
@@ -610,13 +605,19 @@ const resetForm = (keepCurrentAccount = true) => {
   }
 }
 
-const openCreateForm = async () => {
+const openCreateForm = async (mode: 'scheduled' | 'manual_shortcut') => {
+  if (mode === 'manual_shortcut' && manualTaskCount.value >= 3) {
+    ElMessage.warning('每个用户最多只能创建 3 个手动任务，请先删除一个后再试')
+    return
+  }
+  resetForm(true)
+  form.triggerMode = mode
+  form.enabled = mode === 'manual_shortcut'
   if (!form.accountId && accounts.value.length > 0) {
     form.accountId = accounts.value[0]!.account_id
     await loadResources(true, false)
   }
   showEditor.value = true
-  resetForm(true)
 }
 
 const closeEditor = () => {
@@ -692,8 +693,6 @@ const startEdit = async (task: TaskItem) => {
     form.accountId = detail.account_id || ''
     form.text = detail.text || ''
     form.triggerMode = detail.trigger_mode || 'scheduled'
-    form.addToShortcut = Boolean(detail.shortcut_slot)
-    form.shortcutSlot = detail.shortcut_slot ?? null
     form.shortcutLabel = detail.shortcut_label || ''
     form.priority = detail.priority || 0
     form.repeatIntervalMin = detail.repeat_interval_min
@@ -751,7 +750,6 @@ const buildPayload = (
   title: form.title,
   enabled: form.enabled,
   trigger_mode: form.triggerMode,
-  shortcut_slot: form.triggerMode === 'manual_shortcut' && form.addToShortcut ? form.shortcutSlot : null,
   shortcut_label: form.triggerMode === 'manual_shortcut' ? (form.shortcutLabel.trim() || null) : null,
   priority: form.priority,
   repeat_interval_min: form.repeatIntervalMin,
@@ -777,8 +775,8 @@ const submitTask = async () => {
     ElMessage.warning('请至少选择一个目标聊天')
     return
   }
-  if (form.triggerMode === 'manual_shortcut' && form.addToShortcut && !form.shortcutSlot) {
-    ElMessage.warning('加入快捷栏时请选择快捷位')
+  if (form.triggerMode === 'manual_shortcut' && !form.shortcutLabel.trim()) {
+    ElMessage.warning('请填写手动任务的按钮名称')
     return
   }
 
@@ -810,6 +808,11 @@ const submitTask = async () => {
 
     if (!mediaFileId) {
       mediaType = 'none'
+    }
+
+    if (form.triggerMode === 'manual_shortcut' && !form.text.trim() && mediaType === 'none' && !buttons) {
+      ElMessage.warning('手动任务至少需要填写文本、按钮或上传媒体中的一种内容')
+      return
     }
 
     const targets = form.targetKeys

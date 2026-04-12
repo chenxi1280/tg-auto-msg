@@ -24,6 +24,7 @@ class TaskIssueClassifierTests(unittest.TestCase):
         self.assertEqual(result.issue_category, "permission_denied")
         self.assertTrue(result.should_auto_suspend_target)
         self.assertEqual(result.suspension_reason, "user_banned_in_channel")
+        self.assertNotIn("UserBannedInChannelError", result.user_message)
 
     def test_channel_private_error_is_auto_suspended(self):
         exc = type("ChannelPrivateError", (Exception,), {})()
@@ -32,13 +33,16 @@ class TaskIssueClassifierTests(unittest.TestCase):
         self.assertEqual(result.issue_category, "target_inaccessible")
         self.assertTrue(result.should_auto_suspend_target)
         self.assertEqual(result.suspension_reason, "channel_private")
+        self.assertNotIn("ChannelPrivateError", result.user_message)
 
     def test_other_errors_are_not_auto_suspended(self):
         result = classify_task_send_error(RuntimeError("boom"))
 
         self.assertEqual(result.issue_category, "send_error")
         self.assertFalse(result.should_auto_suspend_target)
-        self.assertIn("RuntimeError", result.user_message)
+        self.assertIn("发送失败", result.user_message)
+        self.assertIn("boom", result.user_message)
+        self.assertNotIn("RuntimeError", result.user_message)
 
 
 class TaskTargetRuntimeMetadataTests(unittest.TestCase):
@@ -207,6 +211,8 @@ class TaskIssueNotifierTests(unittest.IsolatedAsyncioTestCase):
             patch("backend.bot.task_issue_notifier.ensure_manager_bot_ready", AsyncMock(return_value=True)),
             patch.object(notifier, "_load_user_links", AsyncMock(return_value={9: 987654321})),
             patch.object(notifier, "_load_task_titles", AsyncMock(return_value={"task-1": "测试任务"})),
+            patch.object(notifier, "_load_account_labels", AsyncMock(return_value={"acc-1": "@sender"})),
+            patch.object(notifier, "_load_peer_labels", AsyncMock(return_value={("acc-1", 1001): "频道 A", ("acc-1", 1002): "频道 B"})),
             patch.object(notifier, "_mark_active_notified", AsyncMock()) as mark_mock,
             patch("backend.bot.task_issue_notifier.bot_client.send_message", AsyncMock()) as send_mock,
             patch("backend.bot.task_issue_notifier.datetime") as datetime_mock,
@@ -218,9 +224,12 @@ class TaskIssueNotifierTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_awaited_once()
         sent_text = send_mock.await_args.args[1]
         self.assertIn("任务发送异常提醒", sent_text)
+        self.assertIn("执行账号：@sender", sent_text)
         self.assertIn("频道 A", sent_text)
         self.assertIn("系统已暂停该目标", sent_text)
         self.assertIn("频道 B", sent_text)
+        self.assertNotIn("supergroup:", sent_text)
+        self.assertNotIn("ChannelPrivateError", sent_text)
         mark_mock.assert_awaited_once()
 
     async def test_scan_once_sends_recovery_notification_once(self):
@@ -249,6 +258,8 @@ class TaskIssueNotifierTests(unittest.IsolatedAsyncioTestCase):
             patch("backend.bot.task_issue_notifier.ensure_manager_bot_ready", AsyncMock(return_value=True)),
             patch.object(notifier, "_load_user_links", AsyncMock(return_value={9: 987654321})),
             patch.object(notifier, "_load_task_titles", AsyncMock(return_value={"task-2": "恢复任务"})),
+            patch.object(notifier, "_load_account_labels", AsyncMock(return_value={"acc-1": "发送账号"})),
+            patch.object(notifier, "_load_peer_labels", AsyncMock(return_value={("acc-1", 2001): "频道 C"})),
             patch.object(notifier, "_mark_recovery_notified", AsyncMock()) as mark_mock,
             patch("backend.bot.task_issue_notifier.bot_client.send_message", AsyncMock()) as send_mock,
             patch("backend.bot.task_issue_notifier.datetime") as datetime_mock,

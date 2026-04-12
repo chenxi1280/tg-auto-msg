@@ -60,9 +60,47 @@ class TaskExecutionSummary:
     failed_count: int
     error_summary: Optional[str]
     executed_at: str
+    account_display: Optional[str] = None
+    success_targets: Optional[list[str]] = None
+    failed_targets: Optional[list[str]] = None
+    message_preview: Optional[str] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def _truncate_preview(value: str, limit: int = 80) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)] + "…"
+
+
+def _build_task_message_preview(task: ScheduledMessageTask) -> Optional[str]:
+    text = str(task.text or "").strip()
+    if text:
+        return _truncate_preview(text, 80)
+    if task.media_type and str(task.media_type) != "none":
+        return f"{task.media_type.value if hasattr(task.media_type, 'value') else task.media_type} 媒体消息"
+    if task.buttons:
+        return "按钮消息"
+    return None
+
+
+def _account_display_name(account, account_id: Optional[str]) -> str:
+    if account is not None:
+        username = str(getattr(account, "username", "") or "").strip()
+        if username:
+            return username if username.startswith("@") else f"@{username}"
+        first_name = str(getattr(account, "first_name", "") or "").strip()
+        if first_name:
+            return first_name
+        phone = str(getattr(account, "phone", "") or "").strip()
+        if phone:
+            return phone
+    if account_id:
+        return str(account_id)[:8]
+    return "默认账号"
 
 
 def _build_summary(
@@ -74,6 +112,9 @@ def _build_summary(
     success_count: int,
     failed_count: int,
     error_summary: Optional[str] = None,
+    account_display: Optional[str] = None,
+    success_targets: Optional[list[str]] = None,
+    failed_targets: Optional[list[str]] = None,
 ) -> TaskExecutionSummary:
     return TaskExecutionSummary(
         task_id=str(task.task_id),
@@ -86,6 +127,10 @@ def _build_summary(
         failed_count=max(0, int(failed_count)),
         error_summary=str(error_summary).strip() if error_summary else None,
         executed_at=datetime.now().isoformat(),
+        account_display=account_display,
+        success_targets=success_targets or [],
+        failed_targets=failed_targets or [],
+        message_preview=_build_task_message_preview(task),
     )
 
 
@@ -119,6 +164,8 @@ async def execute_task_once(
         if not task.enabled:
             raise HTTPException(status_code=400, detail="任务已禁用，无法执行")
 
+        account = None
+        account_display = _account_display_name(None, task.account_id)
         if task.account_id:
             auth_summary = await get_account_authorization_summary(task.account_id, session=session)
             if not auth_summary.can_create_tasks:
@@ -133,6 +180,7 @@ async def execute_task_once(
 
         if task.account_id:
             account = await account_manager.get_account(task.account_id)
+            account_display = _account_display_name(account, task.account_id)
             if account and is_reauth_required_account(account):
                 raise HTTPException(status_code=400, detail="当前执行账号需要重新绑定后才能发送")
 
@@ -284,6 +332,8 @@ async def execute_task_once(
             send_errors: list[str] = []
             partial_failure_summaries: list[str] = []
             target_message_ids: dict[tuple[str, int], int] = {}
+            success_target_labels: list[str] = []
+            failed_target_labels: list[str] = []
 
             for spec in target_specs:
                 target_peer_id = int(spec["peer_id"])
@@ -328,6 +378,7 @@ async def execute_task_once(
                     partial_failure_summaries.append(
                         f"{target_label}: {classification.user_message}"
                     )
+                    failed_target_labels.append(str(target_label))
                     await record_task_target_send_issue(
                         session=session,
                         task=task,
@@ -368,6 +419,7 @@ async def execute_task_once(
                     )
                     last_message_id = message_id
                     target_message_ids[(normalized_target_peer_type, target_peer_id)] = message_id
+                    success_target_labels.append(str(target_label))
                 else:
                     send_errors.append(f"peer={target_peer_id}: send_message returned empty")
                     empty_result_error = RuntimeError("send_message returned empty")
@@ -375,6 +427,7 @@ async def execute_task_once(
                     partial_failure_summaries.append(
                         f"{target_label}: {classification.user_message}"
                     )
+                    failed_target_labels.append(str(target_label))
                     await record_task_target_send_issue(
                         session=session,
                         task=task,
@@ -429,6 +482,9 @@ async def execute_task_once(
                     success_count=success_count,
                     failed_count=failed_count,
                     error_summary=partial_failure_summary,
+                    account_display=account_display,
+                    success_targets=success_target_labels,
+                    failed_targets=failed_target_labels,
                 )
 
             reason = send_errors[0] if send_errors else "发送失败"
@@ -454,6 +510,12 @@ async def execute_task_once(
                 success_count=0,
                 failed_count=len(target_specs),
                 error_summary=reason,
+                account_display=account_display,
+                success_targets=success_target_labels,
+                failed_targets=failed_target_labels or [
+                    str(spec.get("title") or f"{str(spec.get('peer_type') or 'user')}:{spec.get('peer_id')}")
+                    for spec in target_specs
+                ],
             )
 
         except FloodWaitError as exc:

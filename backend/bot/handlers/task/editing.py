@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from telethon import events
 from telethon.tl.types import MessageMediaDocument, MessageMediaPhoto
 
@@ -19,6 +19,10 @@ from backend.bot.ui.keyboards import (
 from backend.bot.handlers.core.helpers import (
     format_buttons as _format_buttons,
     parse_buttons,
+)
+from backend.bot.handlers.task.manual_helpers import (
+    store_task_media_from_bot_message,
+    task_has_manual_content,
 )
 from backend.bot.handlers.task.queries import get_user_task as _get_user_task
 from backend.bot.ui.messages import *
@@ -40,6 +44,22 @@ async def _notify_event(event, text: str, *, alert: bool = False):
         except TypeError:
             pass
     await event.respond(text)
+
+
+async def _manual_shortcut_label_exists(session, *, user_id: int, label: str, current_task_id: str) -> bool:
+    """Check whether one manual shortcut label is already used by another task."""
+    normalized = str(label or "").strip()
+    if not normalized:
+        return False
+    result = await session.execute(
+        select(ScheduledMessageTask.task_id).where(
+            ScheduledMessageTask.user_id == user_id,
+            ScheduledMessageTask.trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value,
+            ScheduledMessageTask.task_id != current_task_id,
+            func.lower(ScheduledMessageTask.shortcut_label) == normalized.lower(),
+        )
+    )
+    return result.scalar_one_or_none() is not None
 
 
 def _next_midnight(base_dt: datetime) -> datetime:
@@ -113,9 +133,37 @@ async def toggle_trigger_mode(event, user_id: int, task_id: str):
             )
             task.trigger_mode = next_mode
             if next_mode == TaskTriggerMode.MANUAL_SHORTCUT.value:
+                if not task_has_manual_content(task):
+                    task.trigger_mode = current_mode
+                    await _notify_event(event, "请先补充文本、按钮或媒体内容后，再切换为手动任务。", alert=True)
+                    return
+                existing_manual_tasks = (
+                    await session.execute(
+                        select(ScheduledMessageTask).where(
+                            ScheduledMessageTask.user_id == task.user_id,
+                            ScheduledMessageTask.trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value,
+                            ScheduledMessageTask.task_id != task.task_id,
+                        )
+                    )
+                ).scalars().all()
+                if len(existing_manual_tasks) >= 3:
+                    await _notify_event(event, "当前最多只能保留 3 个手动任务，请先删除一个后再试。", alert=True)
+                    return
+                used_slots = {int(item.shortcut_slot) for item in existing_manual_tasks if item.shortcut_slot is not None}
+                task.shortcut_slot = next((slot for slot in (1, 2, 3) if slot not in used_slots), None)
+                task.shortcut_label = str(task.shortcut_label or "").strip() or str(task.title or "手动任务").strip()[:20]
+                if await _manual_shortcut_label_exists(
+                    session,
+                    user_id=task.user_id,
+                    label=task.shortcut_label,
+                    current_task_id=task.task_id,
+                ):
+                    await _notify_event(event, "手动任务按钮名称已存在，请先修改任务名称或快捷名称。", alert=True)
+                    return
                 task.next_run_at = None
             else:
                 task.shortcut_slot = None
+                task.shortcut_label = None
                 if task.enabled and task.next_run_at is None:
                     now_ts = int(datetime.now().timestamp())
                     start_at_ts = int(task.start_at or 0)
@@ -133,7 +181,7 @@ async def show_shortcut_slot_selection(event, user_id: int, task_id: str):
         task = await _get_user_task(session, task_id, user_id)
         current_slot = task.shortcut_slot if task else None
     keyboard = get_shortcut_slot_keyboard(task_id, current_slot)
-    await event.edit("📌 **选择快捷栏位置**\n\n请选择 1-3 号槽位，或将任务移出快捷栏。", buttons=keyboard, parse_mode="markdown")
+    await event.edit("📌 **选择快捷栏位置**\n\n请选择 1-3 号槽位。手动任务会固定显示在底部键盘中。", buttons=keyboard, parse_mode="markdown")
 
 
 async def set_shortcut_slot(event, user_id: int, task_id: str, slot_value: Optional[str]):
@@ -142,14 +190,25 @@ async def set_shortcut_slot(event, user_id: int, task_id: str, slot_value: Optio
         task = await _get_user_task(session, task_id, user_id)
         if not task:
             return
-        task.trigger_mode = TaskTriggerMode.MANUAL_SHORTCUT.value
         if slot_value in {None, "", "clear"}:
-            task.shortcut_slot = None
-            await session.commit()
-            from backend.bot.onboarding import get_onboarding_service
-            await get_onboarding_service().sync_home_reply_keyboard(user_id)
-            await _notify_event(event, SUCCESS_SHORTCUT_REMOVED)
+            await _notify_event(event, "手动任务必须保留在底部键盘中，如不需要请禁用或删除该任务。", alert=True)
+            return
         else:
+            if str(task.trigger_mode or TaskTriggerMode.SCHEDULED.value) != TaskTriggerMode.MANUAL_SHORTCUT.value:
+                if not task_has_manual_content(task):
+                    await _notify_event(event, "请先补充文本、按钮或媒体内容后，再加入手动快捷栏。", alert=True)
+                    return
+                task.trigger_mode = TaskTriggerMode.MANUAL_SHORTCUT.value
+                task.shortcut_label = str(task.shortcut_label or "").strip() or str(task.title or "手动任务").strip()[:20]
+                if await _manual_shortcut_label_exists(
+                    session,
+                    user_id=task.user_id,
+                    label=task.shortcut_label,
+                    current_task_id=task.task_id,
+                ):
+                    await _notify_event(event, "手动任务按钮名称已存在，请先修改任务名称或快捷名称。", alert=True)
+                    return
+                task.next_run_at = None
             slot = int(slot_value)
             exists = await session.execute(
                 select(ScheduledMessageTask.task_id).where(
@@ -192,18 +251,45 @@ async def start_edit_shortcut_label(event, user_id: int, task_id: str):
 async def handle_shortcut_label_input(event, user_id: int, task_id: str, text: str):
     """处理快捷名称输入。"""
     value = (text or "").strip()
+    if not value or value.lower() == "clear":
+        await event.respond("❌ 手动任务必须填写按钮名称。")
+        return
     if len(value) > 20:
         await event.respond("❌ 快捷名称最长 20 个字符。")
         return
-    if value.lower() == "clear":
-        value = ""
 
     async with get_async_session() as session:
         task = await _get_user_task(session, task_id, user_id)
         if task:
-            task.shortcut_label = value or None
+            task.shortcut_label = value
             if str(task.trigger_mode or "") != TaskTriggerMode.MANUAL_SHORTCUT.value:
+                if not task_has_manual_content(task):
+                    await event.respond("❌ 请先补充文本、按钮或媒体内容后，再改成手动任务。")
+                    return
+                existing_manual_tasks = (
+                    await session.execute(
+                        select(ScheduledMessageTask).where(
+                            ScheduledMessageTask.user_id == task.user_id,
+                            ScheduledMessageTask.trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value,
+                            ScheduledMessageTask.task_id != task.task_id,
+                        )
+                    )
+                ).scalars().all()
+                if len(existing_manual_tasks) >= 3:
+                    await event.respond("❌ 当前最多只能保留 3 个手动任务，请先删除一个后再试。")
+                    return
+                used_slots = {int(item.shortcut_slot) for item in existing_manual_tasks if item.shortcut_slot is not None}
                 task.trigger_mode = TaskTriggerMode.MANUAL_SHORTCUT.value
+                task.shortcut_slot = task.shortcut_slot or next((slot for slot in (1, 2, 3) if slot not in used_slots), None)
+                task.next_run_at = None
+            if await _manual_shortcut_label_exists(
+                session,
+                user_id=task.user_id,
+                label=value,
+                current_task_id=task.task_id,
+            ):
+                await event.respond("❌ 手动任务按钮名称已存在，请换一个名称。")
+                return
             await session.commit()
 
     fsm_storage.reset_state(user_id)
@@ -262,18 +348,15 @@ async def start_edit_media(event, user_id: int, task_id: str):
 async def handle_media_input(event, user_id: int, task_id: str, media):
     """处理媒体输入。"""
     media_type = MediaType.NONE
-    file_id = None
 
     if isinstance(media, MessageMediaPhoto):
         media_type = MediaType.PHOTO
-        file_id = media.photo.id
     elif isinstance(media, MessageMediaDocument):
         for attr in media.document.attributes:
             if hasattr(attr, "video"):
                 media_type = MediaType.VIDEO
             elif hasattr(attr, "animated"):
                 media_type = MediaType.ANIMATION
-        file_id = media.document.id
 
     if media_type == MediaType.NONE:
         await event.respond(ERROR_INVALID_MEDIA)
@@ -283,7 +366,16 @@ async def handle_media_input(event, user_id: int, task_id: str, media):
         task = await _get_user_task(session, task_id, user_id)
         if task:
             task.media_type = media_type
-            task.media_file_id = str(file_id)
+            try:
+                task.media_file_id = await store_task_media_from_bot_message(
+                    account_id=str(task.account_id or ""),
+                    event=event,
+                    media=media,
+                    media_type=media_type,
+                )
+            except HTTPException as exc:
+                await event.respond(f"❌ {exc.detail}")
+                return
             await session.commit()
 
     fsm_storage.reset_state(user_id)
