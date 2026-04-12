@@ -139,7 +139,7 @@ async def show_accounts_list(event, user_id: int):
                 current = f"{current}（需要重新绑定）"
             display_name = (
                 f"@{acc.username}" if acc.username
-                else (acc.phone or f"ID:{acc.tg_user_id}" if acc.tg_user_id else acc.account_id[:8])
+                else (acc.phone or "未命名账号")
             )
             authorization_status = _account_authorization_status_label(
                 auth_summary.authorization_status,
@@ -153,7 +153,6 @@ async def show_accounts_list(event, user_id: int):
 
             account_lines.append(
                 f"{i}. {status} {display_name}\n"
-                f"   账号ID: `{acc.account_id}`\n"
                 f"   代理: {proxy}\n"
                 f"   状态: {current} {flooding}\n"
                 f"   自动发送: {'已授权' if auth_summary.can_create_tasks else ('已到期' if auth_summary.authorization_status == 'expired' else '未授权')}\n"
@@ -178,7 +177,7 @@ async def show_accounts_list(event, user_id: int):
         keyboard.append([Button.inline("⏰ 创建定时任务", data="add_scheduled_task"), Button.inline("🖱️ 创建手动任务", data="add_manual_task")])
 
         for idx, acc in enumerate(accounts[:8], 1):
-            display = acc.username or acc.phone or (f"ID:{acc.tg_user_id}" if acc.tg_user_id else acc.account_id[:8])
+            display = acc.username or acc.phone or "未命名账号"
             prefix = "⭐" if str(acc.account_id) == str(active_account_id or "") else "▫️"
             keyboard.append([Button.inline(f"{prefix} 账号{idx}: {display[:22]}", data=f"acc_menu:{acc.account_id}")])
 
@@ -340,15 +339,14 @@ async def show_account_menu(event, user_id: int, account_id: str):
     )
     if is_reauth_required_account(account):
         status_text = f"{status_text}（需要重新绑定）"
-    text = (
+        text = (
         "👤 **账号详情**\n\n"
-        f"显示名：{('@' + account.username) if account.username else (account.phone or str(account.tg_user_id or '-'))}\n"
+        f"显示名：{('@' + account.username) if account.username else (account.phone or '未命名账号')}\n"
         f"状态：{status_text}\n"
         f"当前账号：{'是' if str(active_account_id or '') == str(account.account_id) else '否'}\n"
         f"已发送：{account.messages_sent}\n"
         f"自动发送：{auth_text}\n"
-        f"到期时间：{auth_summary.authorization_end_at.strftime('%Y-%m-%d %H:%M') if auth_summary.authorization_end_at else '-'}\n"
-        f"账号ID：`{account.account_id}`\n\n"
+        f"到期时间：{auth_summary.authorization_end_at.strftime('%Y-%m-%d %H:%M') if auth_summary.authorization_end_at else '-'}\n\n"
         "下一步：请选择下方操作继续管理该账号。"
     )
     keyboard = [
@@ -410,7 +408,7 @@ async def relogin_account(event, user_id: int, account_id: str):
         account_label=(
             f"@{account.username}"
             if account.username
-            else (account.phone or str(account.tg_user_id or account.account_id))
+            else (account.phone or "未命名账号")
         ),
     )
 
@@ -441,8 +439,7 @@ async def confirm_unbind_account(event, user_id: int, account_id: str):
         return
     text = (
         "⚠️ **确认解绑账号**\n\n"
-        f"显示名：{('@' + account.username) if account.username else (account.phone or str(account.tg_user_id or '-'))}\n"
-        f"账号ID：`{account.account_id}`\n\n"
+        f"显示名：{('@' + account.username) if account.username else (account.phone or '未命名账号')}\n"
         "解绑后该账号及相关任务将删除，是否继续？"
     )
     keyboard = [

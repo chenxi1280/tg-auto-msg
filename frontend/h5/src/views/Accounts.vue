@@ -75,7 +75,7 @@
                 {{ account.username ? account.username.charAt(0).toUpperCase() : '?' }}
               </div>
               <div class="account-info">
-                <h3>{{ account.username || account.phone || 'Unknown' }}</h3>
+                <h3>{{ displayAccountName(account) }}</h3>
                 <p>{{ account.first_name || '' }}</p>
               </div>
               <div class="account-status">
@@ -284,6 +284,10 @@ const renewDialog = reactive<{
   loading: false,
 })
 
+const displayAccountName = (account: Pick<Account, 'username' | 'phone' | 'first_name'>) => {
+  return account.username || account.phone || account.first_name || '未命名账号'
+}
+
 const isAccountSyncing = (accountId: string) => syncLoading[accountId] === true
 const canOperateAccount = (account: Account) => account.is_active && account.health_status === 'online'
 const needRelogin = (account: Account) =>
@@ -343,7 +347,7 @@ const refreshAccounts = async () => {
 }
 
 const reloginAccount = (account: Account) => {
-  ElMessage.warning(`账号 ${account.username || account.phone || '未命名账号'} 当前离线，请重新绑定`)
+  ElMessage.warning(`账号 ${displayAccountName(account)} 当前离线，请重新绑定`)
   router.push({
     path: '/bind-tg',
     query: {
@@ -452,7 +456,7 @@ const syncAccount = async (accountId: string) => {
 const confirmDisable = async (account: Account) => {
   try {
     await ElMessageBox.confirm(
-      `确定要禁用账号 ${account.username || account.phone} 吗？`,
+      `确定要禁用账号 ${displayAccountName(account)} 吗？`,
       '确认操作',
       {
         type: 'warning'
@@ -481,7 +485,7 @@ const enableAccount = async (accountId: string) => {
 const confirmDelete = async (account: Account) => {
   try {
     await ElMessageBox.confirm(
-      `确定要解绑账号 ${account.username || account.phone} 吗？此操作不可恢复！\n\n解绑后，当前唯一授权会保留剩余时间，后续可重新绑定到新的 TG 账号。`,
+      `确定要解绑账号 ${displayAccountName(account)} 吗？此操作不可恢复！\n\n解绑后，当前唯一授权会保留剩余时间，后续可重新绑定到新的 TG 账号。`,
       '确认解绑',
       {
         type: 'error',

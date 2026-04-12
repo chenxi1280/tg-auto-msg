@@ -142,9 +142,7 @@ def _account_display_name(account: Optional[Account]) -> Optional[str]:
         return f"@{account.username}"
     if account.phone:
         return account.phone
-    if account.tg_user_id:
-        return str(account.tg_user_id)
-    return None
+    return "未命名账号"
 
 
 def _grant_source_label(grant_source: Optional[str]) -> str:
@@ -1163,6 +1161,7 @@ async def list_due_slot_reminders(
                 "days_before": int(days_before),
                 "end_at": slot.end_at,
                 "account_id": slot.current_account_id,
+                "account_name": _account_display_name(await session.get(Account, str(slot.current_account_id))) if slot.current_account_id else None,
             }
         )
     return items

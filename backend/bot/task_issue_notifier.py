@@ -246,7 +246,7 @@ class TaskIssueNotifier:
                 await bot_client.send_message(
                     tg_user_id,
                     self._build_active_notice_text(
-                        task_title=task_titles.get(str(task_id)) or str(task_id),
+                        task_title=task_titles.get(str(task_id)) or "未命名任务",
                         account_label=self._resolve_account_label(account_id, account_labels),
                         peer_labels=peer_labels,
                         issues=group_issues,
@@ -286,7 +286,7 @@ class TaskIssueNotifier:
                 await bot_client.send_message(
                     tg_user_id,
                     self._build_recovery_notice_text(
-                        task_title=task_titles.get(str(task_id)) or str(task_id),
+                        task_title=task_titles.get(str(task_id)) or "未命名任务",
                         account_label=self._resolve_account_label(account_id, account_labels),
                         peer_labels=peer_labels,
                         issues=group_issues,
@@ -371,13 +371,13 @@ class TaskIssueNotifier:
             return first_name
         if phone:
             return phone
-        return "未同步名称的执行账号"
+        return "当前执行账号"
 
     @staticmethod
     def _resolve_account_label(account_id: str | None, account_labels: dict[str, str]) -> str:
         if not account_id:
-            return "未绑定执行账号"
-        return account_labels.get(str(account_id)) or "未同步名称的执行账号"
+            return "当前执行账号"
+        return account_labels.get(str(account_id)) or "当前执行账号"
 
     @staticmethod
     def _peer_type_label(peer_type: str | None) -> str:
@@ -402,7 +402,7 @@ class TaskIssueNotifier:
             label = peer_labels.get((str(issue.account_id), int(issue.peer_id)))
             if label:
                 return label
-        return f"未同步名称的{self._peer_type_label(issue.peer_type)}（请到任务详情查看）"
+        return f"{self._peer_type_label(issue.peer_type)}目标"
 
     @staticmethod
     def _format_issue_time(issues: list[TaskTargetSendIssue], *, field_name: str) -> str:

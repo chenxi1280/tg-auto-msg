@@ -257,8 +257,7 @@ H5_BASE_URL = (settings.h5_base_url or "http://localhost:8000").rstrip("/")
 
 BIND_SUCCESS = """✅ **账号绑定成功**
 
-👤 账号名称：@{username}
-🆔 账号 ID：`{account_id}`
+👤 账号名称：{account_label}
 
 已完成当前 TG Bot 绑定。
 

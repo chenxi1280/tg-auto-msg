@@ -23,7 +23,7 @@
           <el-option
             v-for="account in accounts"
             :key="account.account_id"
-            :label="account.username || account.phone || 'Unknown'"
+            :label="displayAccountName(account)"
             :value="account.account_id"
           />
         </el-select>
@@ -85,7 +85,7 @@
             <el-table-column prop="title" label="名称" min-width="200">
               <template #default="{ row }">
                 <div class="resource-name">
-                  <span>{{ row.title }}</span>
+                  <span>{{ displayResourceName(row) }}</span>
                   <el-tag v-if="row.is_verified" type="success" size="small">✓</el-tag>
                 </div>
               </template>
@@ -147,8 +147,8 @@
             <div v-for="row in resources" :key="row.resource_id" class="mobile-data-card">
               <div class="mobile-data-card__header">
                 <div>
-                  <div class="mobile-data-card__title">{{ row.title }}</div>
-                  <div class="mobile-data-card__subtitle">{{ row.username ? `@${row.username}` : getPeerTypeName(row.peer_type) }}</div>
+                  <div class="mobile-data-card__title">{{ displayResourceName(row) }}</div>
+                  <div class="mobile-data-card__subtitle">{{ displayResourceSubtitle(row) }}</div>
                 </div>
                 <el-tag :type="getPeerTypeColor(row.peer_type)" size="small">
                   {{ getPeerTypeName(row.peer_type) }}
@@ -196,6 +196,7 @@ import { useAccountStore } from '@/stores/account'
 import { useUserStore } from '@/stores/user'
 import type { Resource } from '@/api/resource'
 import { useResponsive } from '@/composables/useResponsive'
+import type { Account } from '@/api/account'
 
 const accountStore = useAccountStore()
 const userStore = useUserStore()
@@ -213,6 +214,21 @@ const loading = ref(false)
 const currentPage = ref(1)
 const pageSize = ref(50)
 const total = ref(0)
+
+const displayAccountName = (account: Pick<Account, 'username' | 'phone' | 'first_name'>) => {
+  return account.username || account.phone || account.first_name || '未命名账号'
+}
+
+const displayResourceName = (resource: Pick<Resource, 'title' | 'username' | 'peer_type'>) => {
+  const title = (resource.title || '').trim()
+  if (title) return title
+  if (resource.username) return `@${resource.username}`
+  return `未命名${getPeerTypeName(resource.peer_type || '').replace('超级群组', '群组') || '资源'}`
+}
+
+const displayResourceSubtitle = (resource: Pick<Resource, 'username' | 'peer_type'>) => {
+  return resource.username ? `@${resource.username}` : getPeerTypeName(resource.peer_type)
+}
 
 // 加载资源列表
 const loadResources = async () => {
@@ -258,7 +274,7 @@ const syncResources = async () => {
 
 // 查看资源详情
 const viewResource = (resource: Resource) => {
-  ElMessage.info(`资源「${resource.title}」已选中，可直接继续建任务或查看同步状态`)
+  ElMessage.info(`资源「${displayResourceName(resource)}」已选中，可直接继续建任务或查看同步状态`)
 }
 
 const goCreateTask = (resource: Resource) => {

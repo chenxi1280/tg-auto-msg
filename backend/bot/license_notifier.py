@@ -35,6 +35,7 @@ class LicenseReminderItem:
     days_before: int
     end_at: datetime
     account_id: Optional[str]
+    account_name: Optional[str]
 
 
 class LicenseSlotNotifier:
@@ -76,7 +77,7 @@ class LicenseSlotNotifier:
             try:
                 text = (
                     "⏰ **自动发送授权即将到期**\n\n"
-                    f"TG账号：{item.account_id or '未绑定'}\n"
+                    f"TG账号：{item.account_name or '未绑定'}\n"
                     f"剩余天数：{item.days_before}\n"
                     f"到期时间：{item.end_at.strftime('%Y-%m-%d %H:%M')}\n\n"
                     "请提前续费，避免该 TG 账号的自动发送任务中断。"
@@ -141,6 +142,7 @@ class LicenseSlotNotifier:
                         days_before=int(row["days_before"]),
                         end_at=row["end_at"],
                         account_id=row.get("account_id"),
+                        account_name=row.get("account_name"),
                     )
                 )
             return notice_items

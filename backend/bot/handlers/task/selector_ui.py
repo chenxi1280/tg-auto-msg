@@ -88,7 +88,7 @@ def build_target_picker_keyboard(
         icon, _ = peer_meta(resource.peer_type)
         display_name = (
             (resource.title or "").strip()
-            or (f"@{resource.username}" if resource.username else f"ID:{resource.peer_id}")
+            or (f"@{resource.username}" if resource.username else f"未命名{resource.peer_type or '目标'}")
         )
         label = f"{checked} {icon} {truncate_text(display_name, 18)}"
         buttons.append([Button.inline(label, data=f"pick_res:{resource.resource_id}")])

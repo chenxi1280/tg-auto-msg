@@ -4,7 +4,7 @@
       <div class="container">
         <router-link to="/tasks" class="back-link">← 返回任务管理</router-link>
         <h1>任务发送记录</h1>
-        <p class="subtitle">任务ID：{{ taskId }}</p>
+        <p class="subtitle">{{ taskTitle ? `当前任务：${taskTitle}` : '查看任务最近的发送结果与错误信息' }}</p>
       </div>
     </header>
 
@@ -37,16 +37,20 @@
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="message_id" label="消息ID" width="110" />
+          <el-table-column prop="trigger_source" label="触发方式" width="120">
+            <template #default="{ row }">
+              {{ formatTriggerSource(row.trigger_source) }}
+            </template>
+          </el-table-column>
           <el-table-column prop="error_code" label="错误码" width="140" show-overflow-tooltip />
           <el-table-column prop="error_message" label="错误信息" min-width="260" show-overflow-tooltip />
         </el-table>
         <div v-else class="mobile-card-list" v-loading="loading">
-          <div v-for="row in logs" :key="`${row.send_at}-${row.message_id}`" class="mobile-data-card">
+          <div v-for="row in logs" :key="`${row.send_at}-${row.id}`" class="mobile-data-card">
             <div class="mobile-data-card__header">
               <div>
                 <div class="mobile-data-card__title">{{ formatTime(row.send_at) }}</div>
-                <div class="mobile-data-card__subtitle">消息 ID {{ row.message_id || '-' }}</div>
+                <div class="mobile-data-card__subtitle">{{ formatTriggerSource(row.trigger_source) }}</div>
               </div>
               <el-tag :type="row.result === 'success' ? 'success' : 'danger'">
                 {{ row.result === 'success' ? '成功' : '失败' }}
@@ -90,9 +94,21 @@ const formatTime = (iso: string | null) => {
   return new Date(iso).toLocaleString()
 }
 
+const formatTriggerSource = (source: string | null | undefined) => {
+  const normalized = (source || '').toLowerCase()
+  const labels: Record<string, string> = {
+    manual: '手动执行',
+    manual_shortcut: '手动任务',
+    scheduler: '定时调度',
+    scheduled: '定时调度',
+    api: '系统触发'
+  }
+  return labels[normalized] || '系统触发'
+}
+
 const loadData = async () => {
   if (!taskId) {
-    ElMessage.error('任务ID无效')
+    ElMessage.error('任务不存在或参数无效')
     return
   }
   loading.value = true
@@ -101,7 +117,7 @@ const loadData = async () => {
       getTask(taskId),
       getTaskLogs(taskId, 200)
     ])
-    taskTitle.value = taskRes.data?.title || ''
+    taskTitle.value = taskRes.data?.title || '未命名任务'
     logs.value = logsRes.data || []
   } catch (err: any) {
     ElMessage.error(err?.message || '加载任务记录失败')

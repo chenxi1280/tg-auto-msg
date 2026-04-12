@@ -371,7 +371,7 @@ const displayResourceName = (res: ResourceOption): string => {
   const title = (res.title || '').trim()
   if (title) return title
   if (res.username) return `@${res.username}`
-  return '未命名资源'
+  return `未命名${getPeerTypeMeta(res.peer_type).label}`
 }
 
 const resourceLabel = (res: ResourceOption) => {

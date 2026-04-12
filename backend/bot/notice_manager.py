@@ -8,7 +8,13 @@ from typing import Any, Optional
 from loguru import logger
 from sqlalchemy import select
 from telethon import Button
-from telethon.errors import MessageNotModifiedError
+from telethon.errors import (
+    ChatWriteForbiddenError,
+    InputUserDeactivatedError,
+    MessageNotModifiedError,
+    PeerIdInvalidError,
+    UserIsBlockedError,
+)
 
 from backend.bot.client_runtime.manager import bot_client
 from backend.bot.handlers.core.user_link import USER_LINK_KEY_PREFIX
@@ -45,6 +51,16 @@ class BotNoticeManager:
             [Button.inline("📖 帮助", data="bot_help"), Button.inline("📱 绑定账号", data="bot_login_account")],
             [Button.inline("🏠 返回主菜单", data="bot_home")],
         ]
+
+    @staticmethod
+    def _classify_delivery_exception(exc: Exception) -> str:
+        if isinstance(exc, UserIsBlockedError):
+            return "blocked"
+        if isinstance(exc, InputUserDeactivatedError):
+            return "deactivated"
+        if isinstance(exc, (PeerIdInvalidError, ChatWriteForbiddenError)):
+            return "unreachable"
+        return "failed"
 
     async def get_notice_entry(self) -> dict[str, Any]:
         raw = await get_me_service().get_public_notice_entry()
@@ -333,7 +349,7 @@ class BotNoticeManager:
             "pin_succeeded": pin_succeeded,
         }
 
-    async def refresh_all_linked_users(self) -> dict[str, Any]:
+    async def refresh_all_linked_users(self, *, force_repost: bool = True) -> dict[str, Any]:
         async with get_async_session() as session:
             rows = (
                 await session.execute(
@@ -352,13 +368,14 @@ class BotNoticeManager:
             "total_users": len(tg_user_ids),
             "updated": 0,
             "failed": 0,
+            "skipped": 0,
             "pin_attempted_users": 0,
             "pin_failed_users": 0,
             "results": [],
         }
         for tg_user_id in tg_user_ids:
             try:
-                result = await self.ensure_notice_for_user(tg_user_id, force_repost=False)
+                result = await self.ensure_notice_for_user(tg_user_id, force_repost=force_repost)
                 summary["results"].append(result)
                 if result.get("status") != "noop":
                     summary["updated"] += 1
@@ -367,20 +384,34 @@ class BotNoticeManager:
                     if not result.get("pin_succeeded"):
                         summary["pin_failed_users"] += 1
             except Exception as exc:
-                logger.exception("批量刷新公告失败: tg_user_id={}, error={}", tg_user_id, type(exc).__name__)
-                summary["failed"] += 1
-                summary["results"].append(
-                    {
-                        "status": "failed",
-                        "tg_user_id": int(tg_user_id),
-                        "error": type(exc).__name__,
-                    }
-                )
+                error_type = self._classify_delivery_exception(exc)
+                if error_type in {"blocked", "deactivated", "unreachable"}:
+                    logger.warning("批量公告跳过用户: tg_user_id={}, reason={}", tg_user_id, error_type)
+                    summary["skipped"] += 1
+                    summary["results"].append(
+                        {
+                            "status": "skipped",
+                            "tg_user_id": int(tg_user_id),
+                            "error": error_type,
+                        }
+                    )
+                else:
+                    logger.exception("批量公告发送失败: tg_user_id={}, error={}", tg_user_id, type(exc).__name__)
+                    summary["failed"] += 1
+                    summary["results"].append(
+                        {
+                            "status": "failed",
+                            "tg_user_id": int(tg_user_id),
+                            "error": type(exc).__name__,
+                        }
+                    )
         logger.info(
-            "Bot 公告批量刷新完成: total_users={}, updated={}, failed={}",
+            "Bot 公告批量发送完成: total_users={}, updated={}, skipped={}, failed={}, force_repost={}",
             summary["total_users"],
             summary["updated"],
+            summary["skipped"],
             summary["failed"],
+            bool(force_repost),
         )
         return summary
 

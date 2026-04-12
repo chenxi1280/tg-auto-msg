@@ -182,9 +182,7 @@ def _account_display_name(account: Account) -> str:
         return f"@{account.username}"
     if account.phone:
         return account.phone
-    if account.tg_user_id:
-        return f"UID:{account.tg_user_id}"
-    return account.account_id[:8]
+    return "未命名账号"
 
 
 def _friendly_login_error(message: str) -> str:
@@ -1222,7 +1220,6 @@ class BotOnboardingService:
             tg_user_id,
             "✅ **全球通登录并绑定成功**\n\n"
             f"账号：{_account_display_name(account)}\n"
-            f"Telegram UID：`{account.tg_user_id or '-'}`\n"
             f"{trial_text}"
             f"{sync_text}"
             f"剩余天数：{status.get('remain_days') if status.get('remain_days') is not None else '-'}\n"
@@ -1281,7 +1278,7 @@ class BotOnboardingService:
             account = (await session.execute(stmt)).scalar_one_or_none()
             if account is None:
                 return None
-            label = f"@{account.username}" if account.username else (account.phone or str(account.tg_user_id or account.account_id))
+            label = f"@{account.username}" if account.username else (account.phone or "未命名账号")
             return {
                 "account_id": str(account.account_id),
                 "label": label,
@@ -1315,7 +1312,6 @@ class BotOnboardingService:
         text = (
             f"{intro_text}⚠️ **确认更换绑定账号**\n\n"
             f"当前已绑定账号：{label}\n"
-            f"账号ID：`{snapshot['account_id']}`\n\n"
             "继续前需要先解除当前绑定。解除后，该账号及相关任务会被删除，然后立即进入新的手机号绑定流程。\n\n"
             "是否继续？"
         )
