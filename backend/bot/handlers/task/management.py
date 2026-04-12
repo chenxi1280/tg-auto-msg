@@ -35,7 +35,7 @@ from backend.bot.handlers.core.user_link import (
 )
 from backend.bot.handlers.core.helpers import parse_buttons
 from backend.bot.state.fsm import FSMState, fsm_storage
-from backend.bot.handlers.task.manual_helpers import store_task_media_from_bot_message
+from backend.bot.handlers.task.manual_helpers import store_task_media_from_bot_message, task_has_manual_content
 from backend.bot.ui.keyboards import (
     get_confirm_delete_keyboard,
     get_task_list_keyboard,
@@ -508,7 +508,15 @@ async def toggle_task(event, user_id: int, task_id: str):
     async with get_async_session() as session:
         task = await _get_user_task(session, task_id, user_id)
         if task:
-            task.enabled = not task.enabled
+            next_enabled = not task.enabled
+            if (
+                next_enabled
+                and str(task.trigger_mode or TaskTriggerMode.SCHEDULED.value) == TaskTriggerMode.MANUAL_SHORTCUT.value
+                and not task_has_manual_content(task)
+            ):
+                await event.answer("请先补充文本、按钮或媒体内容后，再启用手动任务。", alert=True)
+                return
+            task.enabled = next_enabled
             if (
                 task.enabled
                 and task.next_run_at is None
@@ -551,6 +559,13 @@ async def update_task_enabled(event, user_id: int, task_id: str, enabled: bool):
     async with get_async_session() as session:
         task = await _get_user_task(session, task_id, user_id)
         if task:
+            if (
+                enabled
+                and str(task.trigger_mode or TaskTriggerMode.SCHEDULED.value) == TaskTriggerMode.MANUAL_SHORTCUT.value
+                and not task_has_manual_content(task)
+            ):
+                await event.answer("请先补充文本、按钮或媒体内容后，再启用手动任务。", alert=True)
+                return
             task.enabled = enabled
             if (
                 enabled
@@ -695,18 +710,15 @@ async def handle_manual_task_media_create(event, user_id: int, task_id: str, med
     """Handle media upload for manual task creation wizard."""
     del task_id
     media_type = MediaType.NONE
-    file_id = None
 
     if isinstance(media, MessageMediaPhoto):
         media_type = MediaType.PHOTO
-        file_id = media.photo.id
     elif isinstance(media, MessageMediaDocument):
         for attr in media.document.attributes:
             if hasattr(attr, "video"):
                 media_type = MediaType.VIDEO
             elif hasattr(attr, "animated"):
                 media_type = MediaType.ANIMATION
-        file_id = media.document.id
 
     if media_type == MediaType.NONE:
         await event.respond(ERROR_INVALID_MEDIA)
@@ -807,14 +819,37 @@ async def trigger_task_once_from_bot(event, user_id: int, task_id: str):
         advance_schedule=False,
         respect_schedule_constraints=False,
     )).to_dict()
+    status_map = {
+        "success": "发送成功",
+        "partial_success": "部分成功",
+        "failed": "发送失败",
+        "skipped": "已跳过",
+    }
+    success_targets = [str(item) for item in (summary.get("success_targets") or []) if str(item).strip()]
+    failed_targets = [str(item) for item in (summary.get("failed_targets") or []) if str(item).strip()]
+    target_preview = "、".join(_escape_markdown(item) for item in success_targets[:3])
+    if not target_preview and failed_targets:
+        target_preview = "、".join(_escape_markdown(item) for item in failed_targets[:3])
+    if not target_preview:
+        target_preview = f"{summary.get('total_targets') or 0} 个目标"
+    if len(success_targets) > 3:
+        target_preview += f" 等 {len(success_targets)} 个目标"
+
+    message_preview = str(summary.get("message_preview") or "").strip()
+    if not message_preview:
+        message_preview = "无内容摘要"
     text = (
         "🚀 **任务执行完成**\n\n"
         f"任务：{_escape_markdown(summary['title'])}\n"
-        f"执行账号：`{summary.get('account_id') or 'default'}`\n"
-        f"成功目标：{summary['success_count']}\n"
-        f"失败目标：{summary['failed_count']}\n"
-        f"执行状态：`{summary['status']}`"
+        f"状态：{status_map.get(summary.get('status'), summary.get('status') or '已处理')}\n"
+        f"执行账号：{_escape_markdown(str(summary.get('account_display') or summary.get('account_id') or '默认账号'))}\n"
+        f"发送目标：{target_preview}\n"
+        f"发送内容：{_escape_markdown(_truncate_text(message_preview, 80))}\n"
+        f"结果：成功 {summary['success_count']} / 失败 {summary['failed_count']}"
     )
+    if failed_targets:
+        failed_preview = "、".join(_escape_markdown(item) for item in failed_targets[:2])
+        text += f"\n失败目标：{failed_preview}"
     if summary.get("error_summary"):
         text += f"\n失败摘要：{_escape_markdown(_truncate_text(summary['error_summary'], 80))}"
     await event.respond(text, parse_mode="markdown")

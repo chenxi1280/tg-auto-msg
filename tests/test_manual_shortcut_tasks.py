@@ -74,6 +74,7 @@ class ManualShortcutPayloadTests(unittest.TestCase):
             "media_type": "none",
             "trigger_mode": "manual_shortcut",
             "shortcut_label": "开课通知",
+            "enabled": True,
             "text": "",
             "buttons": None,
         }
@@ -82,6 +83,21 @@ class ManualShortcutPayloadTests(unittest.TestCase):
             validate_task_payload(payload, current_task=None)
 
         self.assertIn("手动任务至少需要填写文本、按钮或上传媒体中的一种内容", str(ctx.exception.detail))
+
+    def test_validate_task_payload_allows_disabled_manual_shortcut_without_content(self):
+        payload = {
+            "repeat_interval_min": 60,
+            "media_type": "none",
+            "trigger_mode": "manual_shortcut",
+            "shortcut_label": "开课通知",
+            "enabled": False,
+            "text": "",
+            "buttons": None,
+        }
+
+        validate_task_payload(payload, current_task=None)
+
+        self.assertEqual(payload["trigger_mode"], TaskTriggerMode.MANUAL_SHORTCUT.value)
 
 
 class ManualShortcutSerializerTests(unittest.TestCase):
@@ -163,12 +179,11 @@ class ManualShortcutBotBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(keyboard), 1)
         self.assertEqual([button.button.text for button in keyboard[0]], ["🏠 主菜单"])
 
-    async def test_reply_shortcut_keyboard_keeps_main_menu_row(self):
+    async def test_reply_shortcut_keyboard_shows_only_shortcut_row_when_present(self):
         keyboard = build_reply_shortcut_keyboard(["快捷1", "快捷2", "快捷3"])
 
-        self.assertEqual(len(keyboard), 2)
+        self.assertEqual(len(keyboard), 1)
         self.assertEqual([button.button.text for button in keyboard[0]], ["快捷1", "快捷2", "快捷3"])
-        self.assertEqual([button.button.text for button in keyboard[1]], ["🏠 主菜单"])
 
     async def test_show_home_syncs_reply_keyboard_on_first_visit(self):
         service = BotOnboardingService()
@@ -273,6 +288,103 @@ class ManualShortcutBotBehaviorTests(unittest.IsolatedAsyncioTestCase):
             await trigger_task_once_from_bot(event, 100, "missing-task")
 
         event.respond.assert_awaited_once()
+
+    async def test_trigger_task_once_from_bot_uses_readable_summary(self):
+        event = SimpleNamespace(respond=AsyncMock())
+        fake_session = SimpleNamespace()
+        task = SimpleNamespace(
+            task_id="task-readable",
+            enabled=True,
+            account_id="acc-1",
+        )
+        summary = SimpleNamespace(
+            to_dict=lambda: {
+                "title": "开课通知",
+                "status": "success",
+                "account_id": "acc-1",
+                "account_display": "@teacher",
+                "total_targets": 1,
+                "success_count": 1,
+                "failed_count": 0,
+                "success_targets": ["课程频道"],
+                "failed_targets": [],
+                "message_preview": "今晚八点准时上课",
+                "error_summary": None,
+            }
+        )
+
+        class _Ctx:
+            async def __aenter__(self):
+                return fake_session
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        with patch(
+            "backend.bot.handlers.task.management.get_async_session",
+            return_value=_Ctx(),
+        ), patch(
+            "backend.bot.handlers.task.management._get_user_task",
+            AsyncMock(return_value=task),
+        ), patch(
+            "backend.bot.handlers.task.management.require_account_task_permission",
+            AsyncMock(),
+        ), patch(
+            "backend.bot.handlers.task.management.execute_task_once",
+            AsyncMock(return_value=summary),
+        ):
+            await trigger_task_once_from_bot(event, 100, "task-readable")
+
+        final_text = event.respond.await_args_list[-1].args[0]
+        self.assertIn("执行账号：@teacher", final_text)
+        self.assertIn("发送目标：课程频道", final_text)
+        self.assertIn("发送内容：今晚八点准时上课", final_text)
+        self.assertNotIn("执行账号：`acc-1`", final_text)
+
+    async def test_update_task_enabled_rejects_empty_manual_task(self):
+        from backend.bot.handlers.task.management import update_task_enabled
+
+        event = SimpleNamespace(answer=AsyncMock())
+        fake_session = SimpleNamespace()
+        task = ScheduledMessageTask(
+            task_id="task-empty-enable",
+            user_id=1,
+            title="空手动任务",
+            repeat_interval_min=60,
+            trigger_mode=TaskTriggerMode.MANUAL_SHORTCUT.value,
+            shortcut_slot=1,
+            shortcut_label="空手动任务",
+            enabled=False,
+            text=None,
+            buttons=None,
+            media_type=MediaType.NONE,
+            media_file_id=None,
+        )
+
+        class _Ctx:
+            async def __aenter__(self):
+                return fake_session
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        with patch(
+            "backend.bot.handlers.task.management.get_async_session",
+            return_value=_Ctx(),
+        ), patch(
+            "backend.bot.handlers.task.management._get_user_task",
+            AsyncMock(return_value=task),
+        ), patch.object(
+            fake_session,
+            "commit",
+            AsyncMock(),
+            create=True,
+        ) as commit:
+            await update_task_enabled(event, 100, "task-empty-enable", True)
+
+        self.assertFalse(task.enabled)
+        commit.assert_not_awaited()
+        event.answer.assert_awaited_once()
 
     async def test_manual_task_media_state_prefers_media_handler_when_caption_present(self):
         from backend.bot.handlers.core.message_dispatch import _MEDIA_STATE_HANDLERS, dispatch_message_by_state

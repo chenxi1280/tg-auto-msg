@@ -181,7 +181,11 @@ def validate_task_payload(payload: Dict[str, Any], current_task: Optional[Schedu
     text_value = str(payload.get("text") if payload.get("text") is not None else (current_task.text if current_task is not None else "") or "").strip()
     has_buttons = bool(buttons)
     has_media = media_type != MediaType.NONE
-    if trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value and not (text_value or has_buttons or has_media):
+    enabled_value = payload.get("enabled")
+    if enabled_value is None and current_task is not None:
+        enabled_value = current_task.enabled
+    enabled_now = bool(enabled_value)
+    if trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value and enabled_now and not (text_value or has_buttons or has_media):
         raise HTTPException(status_code=400, detail="手动任务至少需要填写文本、按钮或上传媒体中的一种内容")
 
 

@@ -24,7 +24,7 @@ def classify_task_send_error(exc: Exception) -> TaskIssueClassification:
         return TaskIssueClassification(
             error_type=error_type,
             issue_category="permission_denied",
-            user_message="当前账号已被该目标限制发送消息（UserBannedInChannelError）",
+            user_message="当前账号在这个群聊或频道里没有发送权限，可能被禁言、被移出，或被管理员限制发言。",
             should_auto_suspend_target=True,
             suspension_reason="user_banned_in_channel",
         )
@@ -33,7 +33,7 @@ def classify_task_send_error(exc: Exception) -> TaskIssueClassification:
         return TaskIssueClassification(
             error_type=error_type,
             issue_category="target_inaccessible",
-            user_message="当前账号无权访问该频道或群组（ChannelPrivateError）",
+            user_message="当前账号无法访问这个群聊或频道，可能频道已设为私有、账号未加入，或已被移出。",
             should_auto_suspend_target=True,
             suspension_reason="channel_private",
         )
@@ -42,9 +42,9 @@ def classify_task_send_error(exc: Exception) -> TaskIssueClassification:
         detail = detail.replace("\n", " ").strip()
         if len(detail) > 120:
             detail = detail[:117] + "..."
-        message = f"发送失败（{error_type}）：{detail}"
+        message = f"发送失败，系统会稍后再试。原因：{detail}"
     else:
-        message = f"发送失败（{error_type}）"
+        message = "发送失败，系统会稍后再试。"
 
     return TaskIssueClassification(
         error_type=error_type,

@@ -191,11 +191,9 @@ def get_shortcut_slot_keyboard(task_id: str, current_slot: Optional[int]) -> lis
 
 def build_reply_shortcut_keyboard(labels: List[str]) -> list:
     """Build reply keyboard for manual shortcut tasks."""
-    rows: list[list[Any]] = []
     if labels:
-        rows.append([Button.text(label, resize=True) for label in labels[:3]])
-    rows.append([Button.text("🏠 主菜单", resize=True)])
-    return rows
+        return [[Button.text(label, resize=True) for label in labels[:3]]]
+    return [[Button.text("🏠 主菜单", resize=True)]]
 
 
 # ============ 时间间隔选择 ============

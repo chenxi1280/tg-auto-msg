@@ -348,18 +348,15 @@ async def start_edit_media(event, user_id: int, task_id: str):
 async def handle_media_input(event, user_id: int, task_id: str, media):
     """处理媒体输入。"""
     media_type = MediaType.NONE
-    file_id = None
 
     if isinstance(media, MessageMediaPhoto):
         media_type = MediaType.PHOTO
-        file_id = media.photo.id
     elif isinstance(media, MessageMediaDocument):
         for attr in media.document.attributes:
             if hasattr(attr, "video"):
                 media_type = MediaType.VIDEO
             elif hasattr(attr, "animated"):
                 media_type = MediaType.ANIMATION
-        file_id = media.document.id
 
     if media_type == MediaType.NONE:
         await event.respond(ERROR_INVALID_MEDIA)

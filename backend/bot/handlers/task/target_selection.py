@@ -58,6 +58,24 @@ def _staged_targets(ctx: Optional[dict], task: Optional[ScheduledMessageTask]) -
     return _normalize_task_targets(task)
 
 
+async def _build_default_manual_task_label(session, db_user_id: int) -> str:
+    """Build a unique default manual task label for quick creation."""
+    rows = (
+        await session.execute(
+            select(ScheduledMessageTask.shortcut_label).where(
+                ScheduledMessageTask.user_id == db_user_id,
+                ScheduledMessageTask.trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value,
+            )
+        )
+    ).scalars().all()
+    used = {str(label or "").strip().lower() for label in rows if str(label or "").strip()}
+    for index in range(1, 4):
+        label = "手动任务" if index == 1 else f"手动任务{index}"
+        if label.lower() not in used:
+            return label
+    return "手动任务"
+
+
 async def start_select_task_account(event, user_id: int, task_id: str):
     ctx = _get_selector_context(user_id) or {}
     draft_mode = bool(ctx.get("draft_mode"))
@@ -448,29 +466,20 @@ async def _handle_pick_done(event, user_id: int):
             except HTTPException as exc:
                 await event.answer(str(exc.detail), alert=True)
                 return
+        title = "未命名定时任务"
+        enabled = False
+        shortcut_label = None
         if trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value:
-            fsm_storage.set_state(user_id, FSMState.WAIT_MANUAL_TASK_SHORTCUT_LABEL)
-            fsm_storage.update_data(
-                user_id,
-                pending_manual_task_create={
-                    "account_id": account_id,
-                    "targets": targets,
-                },
-            )
-            await event.respond(
-                "🏷️ **创建手动任务**\n\n"
-                "已完成执行账号和目标聊天选择。\n"
-                "下一步：请输入底部按钮名称（最长 20 个字符）。",
-                parse_mode="markdown",
-            )
-            return
-
+            async with get_async_session() as session:
+                shortcut_label = await _build_default_manual_task_label(session, int(db_user_id))
+            title = shortcut_label
         payload = {
             "account_id": account_id,
             "target_peers": targets,
-            "title": "未命名定时任务",
-            "enabled": False,
-            "trigger_mode": TaskTriggerMode.SCHEDULED.value,
+            "title": title,
+            "enabled": enabled,
+            "trigger_mode": trigger_mode,
+            "shortcut_label": shortcut_label,
             "repeat_interval_min": 60,
             "text": None,
             "media_type": "none",
@@ -479,7 +488,10 @@ async def _handle_pick_done(event, user_id: int):
         }
         created_task_id = await get_task_service().create_task(payload, int(db_user_id))
 
-        await event.answer(f"✅ 已创建定时任务并保存 {len(targets)} 个目标")
+        if trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value:
+            await event.answer(f"✅ 已创建手动任务并保存 {len(targets)} 个目标，请补充内容后启用")
+        else:
+            await event.answer(f"✅ 已创建定时任务并保存 {len(targets)} 个目标")
         from backend.bot.handlers.task.management import show_task_settings
         await show_task_settings(event, user_id, created_task_id)
         return
