@@ -182,7 +182,6 @@ def get_shortcut_slot_keyboard(task_id: str, current_slot: Optional[int]) -> lis
             Button.inline(f"{'✅ ' if current_slot == 2 else ''}槽位 2", data=f"set_shortcut_slot:{task_id}:2"),
             Button.inline(f"{'✅ ' if current_slot == 3 else ''}槽位 3", data=f"set_shortcut_slot:{task_id}:3"),
         ],
-        [Button.inline("❎ 移出快捷栏", data=f"set_shortcut_slot:{task_id}:clear")],
         [
             Button.inline("⬅️ 返回任务设置", data=f"settings:{task_id}"),
             Button.inline("🏠 返回主菜单", data="bot_home"),

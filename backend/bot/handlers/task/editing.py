@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from telethon import events
 from telethon.tl.types import MessageMediaDocument, MessageMediaPhoto
 
@@ -44,6 +44,22 @@ async def _notify_event(event, text: str, *, alert: bool = False):
         except TypeError:
             pass
     await event.respond(text)
+
+
+async def _manual_shortcut_label_exists(session, *, user_id: int, label: str, current_task_id: str) -> bool:
+    """Check whether one manual shortcut label is already used by another task."""
+    normalized = str(label or "").strip()
+    if not normalized:
+        return False
+    result = await session.execute(
+        select(ScheduledMessageTask.task_id).where(
+            ScheduledMessageTask.user_id == user_id,
+            ScheduledMessageTask.trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value,
+            ScheduledMessageTask.task_id != current_task_id,
+            func.lower(ScheduledMessageTask.shortcut_label) == normalized.lower(),
+        )
+    )
+    return result.scalar_one_or_none() is not None
 
 
 def _next_midnight(base_dt: datetime) -> datetime:
@@ -136,6 +152,14 @@ async def toggle_trigger_mode(event, user_id: int, task_id: str):
                 used_slots = {int(item.shortcut_slot) for item in existing_manual_tasks if item.shortcut_slot is not None}
                 task.shortcut_slot = next((slot for slot in (1, 2, 3) if slot not in used_slots), None)
                 task.shortcut_label = str(task.shortcut_label or "").strip() or str(task.title or "手动任务").strip()[:20]
+                if await _manual_shortcut_label_exists(
+                    session,
+                    user_id=task.user_id,
+                    label=task.shortcut_label,
+                    current_task_id=task.task_id,
+                ):
+                    await _notify_event(event, "手动任务按钮名称已存在，请先修改任务名称或快捷名称。", alert=True)
+                    return
                 task.next_run_at = None
             else:
                 task.shortcut_slot = None
@@ -157,7 +181,7 @@ async def show_shortcut_slot_selection(event, user_id: int, task_id: str):
         task = await _get_user_task(session, task_id, user_id)
         current_slot = task.shortcut_slot if task else None
     keyboard = get_shortcut_slot_keyboard(task_id, current_slot)
-    await event.edit("📌 **选择快捷栏位置**\n\n请选择 1-3 号槽位，或将任务移出快捷栏。", buttons=keyboard, parse_mode="markdown")
+    await event.edit("📌 **选择快捷栏位置**\n\n请选择 1-3 号槽位。手动任务会固定显示在底部键盘中。", buttons=keyboard, parse_mode="markdown")
 
 
 async def set_shortcut_slot(event, user_id: int, task_id: str, slot_value: Optional[str]):
@@ -167,11 +191,8 @@ async def set_shortcut_slot(event, user_id: int, task_id: str, slot_value: Optio
         if not task:
             return
         if slot_value in {None, "", "clear"}:
-            task.shortcut_slot = None
-            await session.commit()
-            from backend.bot.onboarding import get_onboarding_service
-            await get_onboarding_service().sync_home_reply_keyboard(user_id)
-            await _notify_event(event, SUCCESS_SHORTCUT_REMOVED)
+            await _notify_event(event, "手动任务必须保留在底部键盘中，如不需要请禁用或删除该任务。", alert=True)
+            return
         else:
             if str(task.trigger_mode or TaskTriggerMode.SCHEDULED.value) != TaskTriggerMode.MANUAL_SHORTCUT.value:
                 if not task_has_manual_content(task):
@@ -179,6 +200,14 @@ async def set_shortcut_slot(event, user_id: int, task_id: str, slot_value: Optio
                     return
                 task.trigger_mode = TaskTriggerMode.MANUAL_SHORTCUT.value
                 task.shortcut_label = str(task.shortcut_label or "").strip() or str(task.title or "手动任务").strip()[:20]
+                if await _manual_shortcut_label_exists(
+                    session,
+                    user_id=task.user_id,
+                    label=task.shortcut_label,
+                    current_task_id=task.task_id,
+                ):
+                    await _notify_event(event, "手动任务按钮名称已存在，请先修改任务名称或快捷名称。", alert=True)
+                    return
                 task.next_run_at = None
             slot = int(slot_value)
             exists = await session.execute(
@@ -253,6 +282,14 @@ async def handle_shortcut_label_input(event, user_id: int, task_id: str, text: s
                 task.trigger_mode = TaskTriggerMode.MANUAL_SHORTCUT.value
                 task.shortcut_slot = task.shortcut_slot or next((slot for slot in (1, 2, 3) if slot not in used_slots), None)
                 task.next_run_at = None
+            if await _manual_shortcut_label_exists(
+                session,
+                user_id=task.user_id,
+                label=value,
+                current_task_id=task.task_id,
+            ):
+                await event.respond("❌ 手动任务按钮名称已存在，请换一个名称。")
+                return
             await session.commit()
 
     fsm_storage.reset_state(user_id)

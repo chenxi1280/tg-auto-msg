@@ -145,7 +145,7 @@ class ManualShortcutBotBehaviorTests(unittest.IsolatedAsyncioTestCase):
 
         send_message.assert_awaited_once()
 
-    async def test_sync_home_reply_keyboard_clears_keyboard_when_no_shortcuts(self):
+    async def test_sync_home_reply_keyboard_keeps_main_menu_when_no_shortcuts(self):
         service = BotOnboardingService()
 
         with patch.object(
@@ -159,7 +159,9 @@ class ManualShortcutBotBehaviorTests(unittest.IsolatedAsyncioTestCase):
             await service.sync_home_reply_keyboard(100)
 
         self.assertEqual(send_message.await_args.args[1], "\u2063")
-        self.assertEqual(type(send_message.await_args.kwargs["buttons"]).__name__, "ReplyKeyboardHide")
+        keyboard = send_message.await_args.kwargs["buttons"]
+        self.assertEqual(len(keyboard), 1)
+        self.assertEqual([button.button.text for button in keyboard[0]], ["🏠 主菜单"])
 
     async def test_reply_shortcut_keyboard_keeps_main_menu_row(self):
         keyboard = build_reply_shortcut_keyboard(["快捷1", "快捷2", "快捷3"])
@@ -450,6 +452,99 @@ class ManualShortcutBotBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(task.shortcut_slot)
         commit.assert_not_awaited()
         event.respond.assert_awaited()
+
+    async def test_set_shortcut_slot_rejects_clearing_manual_task(self):
+        from backend.bot.handlers.task.editing import set_shortcut_slot
+
+        event = SimpleNamespace(respond=AsyncMock())
+        fake_session = SimpleNamespace()
+        task = ScheduledMessageTask(
+            task_id="task-manual",
+            user_id=1,
+            title="手动任务",
+            repeat_interval_min=60,
+            trigger_mode=TaskTriggerMode.MANUAL_SHORTCUT.value,
+            shortcut_slot=1,
+            shortcut_label="手动任务",
+            enabled=True,
+            text="hello",
+            media_type=MediaType.NONE,
+        )
+
+        class _Ctx:
+            async def __aenter__(self):
+                return fake_session
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        with patch(
+            "backend.bot.handlers.task.editing.get_async_session",
+            return_value=_Ctx(),
+        ), patch(
+            "backend.bot.handlers.task.editing._get_user_task",
+            AsyncMock(return_value=task),
+        ), patch.object(
+            fake_session,
+            "commit",
+            AsyncMock(),
+            create=True,
+        ) as commit:
+            await set_shortcut_slot(event, 100, "task-manual", "clear")
+
+        self.assertEqual(task.shortcut_slot, 1)
+        commit.assert_not_awaited()
+        event.respond.assert_awaited()
+
+    async def test_create_new_manual_task_blocks_when_capacity_full(self):
+        from backend.bot.handlers.task.management import create_new_manual_task
+
+        event = SimpleNamespace(answer=AsyncMock(), respond=AsyncMock())
+
+        with patch(
+            "backend.bot.handlers.task.management._ensure_manual_task_capacity",
+            AsyncMock(return_value=False),
+        ) as ensure_capacity, patch(
+            "backend.bot.handlers.task.management._start_task_creation",
+            AsyncMock(),
+        ) as start_creation:
+            await create_new_manual_task(event, 100)
+
+        ensure_capacity.assert_awaited_once()
+        start_creation.assert_not_awaited()
+
+    async def test_task_service_rejects_duplicate_manual_shortcut_label(self):
+        from backend.h5_backend.services.task.service import TaskService
+
+        service = TaskService()
+        fake_session = SimpleNamespace()
+        fake_session._execute_calls = 0
+
+        class _CountResult:
+            def scalar_one(self):
+                return 0
+
+        class _DuplicateResult:
+            def scalar_one_or_none(self):
+                return "task-existing"
+
+        async def _execute(_stmt):
+            fake_session._execute_calls += 1
+            if fake_session._execute_calls == 1:
+                return _CountResult()
+            return _DuplicateResult()
+
+        fake_session.execute = AsyncMock(side_effect=_execute)
+        payload = {
+            "trigger_mode": TaskTriggerMode.MANUAL_SHORTCUT.value,
+            "shortcut_label": "开课通知",
+            "shortcut_slot": None,
+        }
+
+        with self.assertRaises(HTTPException) as ctx:
+            await service._validate_shortcut_constraints(fake_session, user_id=1, payload=payload)
+
+        self.assertIn("手动任务按钮名称已存在", str(ctx.exception.detail))
 
 
 if __name__ == "__main__":

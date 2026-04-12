@@ -105,6 +105,18 @@ class TaskService:
         if manual_task_count >= 3:
             raise HTTPException(status_code=400, detail="每个用户最多只能配置 3 个快捷任务")
 
+        shortcut_label = str(payload.get("shortcut_label") or "").strip()
+        if shortcut_label:
+            duplicate_label_stmt = select(ScheduledMessageTask.task_id).where(
+                ScheduledMessageTask.user_id == user_id,
+                ScheduledMessageTask.trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value,
+                func.lower(ScheduledMessageTask.shortcut_label) == shortcut_label.lower(),
+            )
+            if current_task_id:
+                duplicate_label_stmt = duplicate_label_stmt.where(ScheduledMessageTask.task_id != current_task_id)
+            if (await session.execute(duplicate_label_stmt)).scalar_one_or_none() is not None:
+                raise HTTPException(status_code=400, detail="手动任务按钮名称已存在，请换一个名称")
+
         occupied_slots_stmt = select(ScheduledMessageTask.shortcut_slot).where(
             ScheduledMessageTask.user_id == user_id,
             ScheduledMessageTask.trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value,

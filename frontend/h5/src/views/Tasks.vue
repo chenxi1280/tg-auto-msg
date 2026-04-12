@@ -15,7 +15,12 @@
         <el-button type="primary" @click="openCreateForm('scheduled')">
           创建定时任务
         </el-button>
-        <el-button type="success" plain @click="openCreateForm('manual_shortcut')">
+        <el-button
+          type="success"
+          plain
+          :disabled="manualTaskCount >= 3"
+          @click="openCreateForm('manual_shortcut')"
+        >
           创建手动任务
         </el-button>
         <el-button :loading="loadingTasks" @click="loadTasks">
@@ -326,6 +331,7 @@ const mediaInputRef = ref<HTMLInputElement | null>(null)
 const resourceKeyword = ref('')
 
 const accounts = computed(() => accountStore.accounts)
+const manualTaskCount = computed(() => tasks.value.filter((task) => task.trigger_mode === 'manual_shortcut').length)
 
 const form = reactive({
   title: '',
@@ -600,6 +606,10 @@ const resetForm = (keepCurrentAccount = true) => {
 }
 
 const openCreateForm = async (mode: 'scheduled' | 'manual_shortcut') => {
+  if (mode === 'manual_shortcut' && manualTaskCount.value >= 3) {
+    ElMessage.warning('每个用户最多只能创建 3 个手动任务，请先删除一个后再试')
+    return
+  }
   resetForm(true)
   form.triggerMode = mode
   form.enabled = mode === 'manual_shortcut'

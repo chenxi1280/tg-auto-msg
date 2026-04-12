@@ -821,7 +821,7 @@ class BotOnboardingService:
             return
 
         _HOME_REPLY_KEYBOARD_SIGNATURES[int(tg_user_id)] = signature
-        keyboard = Button.clear() if not labels else build_reply_shortcut_keyboard(labels)
+        keyboard = build_reply_shortcut_keyboard(labels)
         await bot_client.send_message(tg_user_id, "\u2063", buttons=keyboard)
 
     async def show_home(self, event, tg_user_id: int) -> None:

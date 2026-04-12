@@ -5,7 +5,7 @@ from datetime import datetime
 
 from telethon import Button, events
 from telethon.tl.types import MessageMediaDocument, MessageMediaPhoto
-from sqlalchemy import select
+from sqlalchemy import func, select
 from fastapi import HTTPException
 from loguru import logger
 
@@ -419,7 +419,38 @@ async def create_new_scheduled_task(event, user_id: int, account_id: str | None 
     )
 
 
+async def _ensure_manual_task_capacity(event, user_id: int) -> bool:
+    """Return whether current user can start creating one more manual task."""
+    async with get_async_session() as session:
+        access_ctx = await _resolve_actor_access_context(session, user_id)
+        db_user_id = access_ctx.system_user_id
+        if db_user_id is None:
+            await _answer_or_respond(
+                event,
+                "当前 Telegram 账号还未绑定系统账号，请先发送 /start，或回到 Web 首页点击“系统账号绑定到 TG Bot”。",
+                alert=True,
+            )
+            return False
+        count = int(
+            (
+                await session.execute(
+                    select(func.count()).select_from(ScheduledMessageTask).where(
+                        ScheduledMessageTask.user_id == db_user_id,
+                        ScheduledMessageTask.trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value,
+                    )
+                )
+            ).scalar_one()
+            or 0
+        )
+    if count >= 3:
+        await _answer_or_respond(event, "每个用户最多只能创建 3 个手动任务，请先删除一个后再试。", alert=True)
+        return False
+    return True
+
+
 async def create_new_manual_task(event, user_id: int, account_id: str | None = None):
+    if not await _ensure_manual_task_capacity(event, user_id):
+        return
     await _start_task_creation(
         event,
         user_id,
