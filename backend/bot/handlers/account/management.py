@@ -339,7 +339,7 @@ async def show_account_menu(event, user_id: int, account_id: str):
     )
     if is_reauth_required_account(account):
         status_text = f"{status_text}（需要重新绑定）"
-        text = (
+    text = (
         "👤 **账号详情**\n\n"
         f"显示名：{('@' + account.username) if account.username else (account.phone or '未命名账号')}\n"
         f"状态：{status_text}\n"
