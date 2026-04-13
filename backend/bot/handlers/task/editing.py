@@ -241,6 +241,7 @@ async def start_edit_shortcut_label(event, user_id: int, task_id: str):
     text = (
         "🏷️ **修改快捷名称**\n\n"
         "请输入底部快捷按钮显示名称，最长 20 个字符。\n"
+        "这个名称会直接显示在 Bot 底部按钮中。\n"
         "发送 `clear` 可恢复为默认标题。\n\n"
         f"当前名称：`{current_label}`"
     )

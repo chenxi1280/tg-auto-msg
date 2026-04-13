@@ -38,7 +38,7 @@
         </div>
         <el-form label-position="top">
           <el-form-item label="任务名称">
-            <el-input v-model="form.title" placeholder="例如：午间频道推送" />
+            <el-input v-model="form.title" placeholder="例如：午间频道推送；不填则自动生成未命名任务" />
           </el-form-item>
 
           <el-form-item v-if="editingTaskId" label="任务类型">
@@ -52,13 +52,16 @@
           </el-form-item>
 
           <template v-if="form.triggerMode === 'manual_shortcut'">
-            <el-form-item label="快捷名称">
+            <el-form-item label="Bot 底部按钮名称" :error="shortcutLabelError || undefined">
               <el-input
                 v-model="form.shortcutLabel"
                 maxlength="20"
                 show-word-limit
                 placeholder="例如：开课通知"
               />
+              <div class="hint-text">
+                将出现在 Bot 底部按钮中，建议使用简短、容易识别的名称。
+              </div>
             </el-form-item>
             <div class="hint-text">
               手动任务创建后会自动占用 1-3 号按钮位中的一个，普通用户最多只能保留 3 个手动任务。
@@ -332,6 +335,19 @@ const resourceKeyword = ref('')
 
 const accounts = computed(() => accountStore.accounts)
 const manualTaskCount = computed(() => tasks.value.filter((task) => task.trigger_mode === 'manual_shortcut').length)
+const normalizeShortcutLabel = (value: string | null | undefined) => (value || '').trim().toLocaleLowerCase()
+const shortcutLabelError = computed(() => {
+  if (form.triggerMode !== 'manual_shortcut') return ''
+  const label = form.shortcutLabel.trim()
+  if (!label) return ''
+  const normalized = normalizeShortcutLabel(label)
+  const duplicated = tasks.value.some((task) => {
+    if (task.trigger_mode !== 'manual_shortcut') return false
+    if (editingTaskId.value && task.task_id === editingTaskId.value) return false
+    return normalizeShortcutLabel(task.shortcut_label) === normalized
+  })
+  return duplicated ? '快捷名称已存在，请换一个名称' : ''
+})
 
 const form = reactive({
   title: '',
@@ -763,10 +779,6 @@ const buildPayload = (
 })
 
 const submitTask = async () => {
-  if (!form.title.trim()) {
-    ElMessage.warning('请填写任务名称')
-    return
-  }
   if (!form.accountId) {
     ElMessage.warning('请选择执行账号')
     return
@@ -777,6 +789,10 @@ const submitTask = async () => {
   }
   if (form.triggerMode === 'manual_shortcut' && !form.shortcutLabel.trim()) {
     ElMessage.warning('请填写手动任务的按钮名称')
+    return
+  }
+  if (shortcutLabelError.value) {
+    ElMessage.warning(shortcutLabelError.value)
     return
   }
 

@@ -141,12 +141,48 @@ class ManualShortcutSerializerTests(unittest.TestCase):
         self.assertIsNone(task.next_run_at)
 
 
+class TaskTitleDefaultingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_build_default_task_title_increments_scheduled_names(self):
+        from backend.h5_backend.services.task.service import TaskService
+
+        service = TaskService()
+        fake_session = SimpleNamespace()
+        fake_result = SimpleNamespace(
+            scalars=lambda: SimpleNamespace(all=lambda: ["未命名任务", "未命名任务2", "别的任务"])
+        )
+        fake_session.execute = AsyncMock(return_value=fake_result)
+
+        title = await service._build_default_task_title(
+            fake_session,
+            user_id=1,
+            trigger_mode=TaskTriggerMode.SCHEDULED.value,
+        )
+
+        self.assertEqual(title, "未命名任务3")
+
+    async def test_ensure_task_title_uses_shortcut_label_for_manual_task(self):
+        from backend.h5_backend.services.task.service import TaskService
+
+        service = TaskService()
+        fake_session = SimpleNamespace()
+        payload = {
+            "trigger_mode": TaskTriggerMode.MANUAL_SHORTCUT.value,
+            "title": "   ",
+            "shortcut_label": "开课通知",
+        }
+
+        await service._ensure_task_title(fake_session, user_id=1, payload=payload)
+
+        self.assertEqual(payload["title"], "开课通知")
+
+
 class ManualShortcutBotBehaviorTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         _HOME_REPLY_KEYBOARD_SIGNATURES.clear()
 
     async def test_sync_home_reply_keyboard_skips_duplicate_signatures(self):
         service = BotOnboardingService()
+        sync_message = SimpleNamespace(id=321)
 
         with patch.object(
             service,
@@ -154,15 +190,21 @@ class ManualShortcutBotBehaviorTests(unittest.IsolatedAsyncioTestCase):
             AsyncMock(return_value=["快捷1", "快捷2"]),
         ), patch(
             "backend.bot.onboarding.service.bot_client.send_message",
-            new=AsyncMock(),
+            new=AsyncMock(return_value=sync_message),
         ) as send_message:
-            await service.sync_home_reply_keyboard(100)
-            await service.sync_home_reply_keyboard(100)
+            with patch(
+                "backend.bot.onboarding.service.bot_client.delete_messages",
+                new=AsyncMock(),
+            ) as delete_messages:
+                await service.sync_home_reply_keyboard(100)
+                await service.sync_home_reply_keyboard(100)
 
         send_message.assert_awaited_once()
+        delete_messages.assert_awaited_once_with(100, [321])
 
     async def test_sync_home_reply_keyboard_keeps_main_menu_when_no_shortcuts(self):
         service = BotOnboardingService()
+        sync_message = SimpleNamespace(id=123)
 
         with patch.object(
             service,
@@ -170,14 +212,19 @@ class ManualShortcutBotBehaviorTests(unittest.IsolatedAsyncioTestCase):
             AsyncMock(return_value=[]),
         ), patch(
             "backend.bot.onboarding.service.bot_client.send_message",
-            new=AsyncMock(),
+            new=AsyncMock(return_value=sync_message),
         ) as send_message:
-            await service.sync_home_reply_keyboard(100)
+            with patch(
+                "backend.bot.onboarding.service.bot_client.delete_messages",
+                new=AsyncMock(),
+            ) as delete_messages:
+                await service.sync_home_reply_keyboard(100)
 
         self.assertEqual(send_message.await_args.args[1], "\u2063")
         keyboard = send_message.await_args.kwargs["buttons"]
         self.assertEqual(len(keyboard), 1)
         self.assertEqual([button.button.text for button in keyboard[0]], ["🏠 主菜单"])
+        delete_messages.assert_awaited_once_with(100, [123])
 
     async def test_reply_shortcut_keyboard_shows_only_shortcut_row_when_present(self):
         keyboard = build_reply_shortcut_keyboard(["快捷1", "快捷2", "快捷3"])
@@ -266,6 +313,45 @@ class ManualShortcutBotBehaviorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(handled)
         event.respond.assert_awaited()
+
+    async def test_handle_manual_task_shortcut_label_create_rejects_duplicate_name(self):
+        from backend.bot.handlers.task.management import handle_manual_task_shortcut_label_create
+
+        user_id = 100
+        fsm_storage.update_data(user_id, pending_manual_task_create={"account_id": "acc-1"})
+        event = SimpleNamespace(respond=AsyncMock())
+        fake_session = SimpleNamespace()
+
+        class _Ctx:
+            async def __aenter__(self):
+                return fake_session
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        fake_result = SimpleNamespace(scalar_one_or_none=lambda: "task-existing")
+
+        with patch(
+            "backend.bot.handlers.task.management.get_async_session",
+            return_value=_Ctx(),
+        ), patch(
+            "backend.bot.handlers.task.management._resolve_actor_access_context",
+            AsyncMock(return_value=SimpleNamespace(system_user_id=1)),
+        ), patch.object(
+            fake_session,
+            "execute",
+            AsyncMock(return_value=fake_result),
+            create=True,
+        ):
+            await handle_manual_task_shortcut_label_create(event, user_id, "开课通知")
+
+        event.respond.assert_awaited_once()
+        self.assertIn("按钮名称已存在", event.respond.await_args.args[0])
+        self.assertEqual(
+            fsm_storage.get_data(user_id).get("pending_manual_task_create", {}).get("shortcut_label"),
+            None,
+        )
+        fsm_storage.reset_state(user_id)
 
     async def test_trigger_task_once_from_bot_uses_respond_for_message_events(self):
         event = SimpleNamespace(respond=AsyncMock())
@@ -656,6 +742,40 @@ class ManualShortcutBotBehaviorTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as ctx:
             await service._validate_shortcut_constraints(fake_session, user_id=1, payload=payload)
 
+        self.assertIn("手动任务按钮名称已存在", str(ctx.exception.detail))
+
+    async def test_task_service_rejects_duplicate_manual_shortcut_label_case_insensitive(self):
+        from backend.h5_backend.services.task.service import TaskService
+
+        service = TaskService()
+        fake_session = SimpleNamespace()
+        fake_session._execute_calls = 0
+
+        class _CountResult:
+            def scalar_one(self):
+                return 0
+
+        class _DuplicateResult:
+            def scalar_one_or_none(self):
+                return "task-existing"
+
+        async def _execute(_stmt):
+            fake_session._execute_calls += 1
+            if fake_session._execute_calls == 1:
+                return _CountResult()
+            return _DuplicateResult()
+
+        fake_session.execute = AsyncMock(side_effect=_execute)
+        payload = {
+            "trigger_mode": TaskTriggerMode.MANUAL_SHORTCUT.value,
+            "shortcut_label": "  开课通知  ",
+            "shortcut_slot": None,
+        }
+
+        with self.assertRaises(HTTPException) as ctx:
+            await service._validate_shortcut_constraints(fake_session, user_id=1, payload=payload)
+
+        self.assertEqual(payload["shortcut_label"], "开课通知")
         self.assertIn("手动任务按钮名称已存在", str(ctx.exception.detail))
 
 

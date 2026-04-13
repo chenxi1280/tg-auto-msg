@@ -466,7 +466,7 @@ async def _handle_pick_done(event, user_id: int):
             except HTTPException as exc:
                 await event.answer(str(exc.detail), alert=True)
                 return
-        title = "未命名定时任务"
+        title = None
         enabled = False
         shortcut_label = None
         if trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value:

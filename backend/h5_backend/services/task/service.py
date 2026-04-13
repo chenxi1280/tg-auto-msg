@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import io
+import re
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, UploadFile
@@ -43,6 +44,75 @@ from backend.scheduler.core.task_runner import execute_task_once
 
 class TaskService:
     """Task business service."""
+
+    async def _build_default_task_title(
+        self,
+        session,
+        *,
+        user_id: int,
+        trigger_mode: str,
+        shortcut_label: Optional[str] = None,
+    ) -> str:
+        if trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value:
+            label = str(shortcut_label or "").strip()
+            return label or "手动任务"
+
+        base_title = "未命名任务"
+        rows = (
+            await session.execute(
+                select(ScheduledMessageTask.title).where(
+                    ScheduledMessageTask.user_id == user_id,
+                    ScheduledMessageTask.trigger_mode == TaskTriggerMode.SCHEDULED.value,
+                )
+            )
+        ).scalars().all()
+        pattern = re.compile(rf"^{re.escape(base_title)}(\d+)?$")
+        max_index = 0
+        for raw_title in rows:
+            title = str(raw_title or "").strip()
+            match = pattern.fullmatch(title)
+            if not match:
+                continue
+            suffix = match.group(1)
+            index = int(suffix) if suffix else 1
+            if index > max_index:
+                max_index = index
+        return base_title if max_index == 0 else f"{base_title}{max_index + 1}"
+
+    async def _ensure_task_title(self, session, *, user_id: int, payload: Dict[str, Any]) -> None:
+        title = str(payload.get("title") or "").strip()
+        payload["title"] = title or None
+        if payload["title"]:
+            return
+
+        trigger_mode = str(payload.get("trigger_mode") or TaskTriggerMode.SCHEDULED.value).strip().lower()
+        payload["title"] = await self._build_default_task_title(
+            session,
+            user_id=user_id,
+            trigger_mode=trigger_mode,
+            shortcut_label=payload.get("shortcut_label"),
+        )
+
+    async def _find_duplicate_manual_shortcut_task_id(
+        self,
+        session,
+        *,
+        user_id: int,
+        shortcut_label: str,
+        current_task_id: Optional[str] = None,
+    ) -> Optional[str]:
+        normalized_label = str(shortcut_label or "").strip()
+        if not normalized_label:
+            return None
+
+        duplicate_label_stmt = select(ScheduledMessageTask.task_id).where(
+            ScheduledMessageTask.user_id == user_id,
+            ScheduledMessageTask.trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value,
+            func.lower(ScheduledMessageTask.shortcut_label) == normalized_label.lower(),
+        )
+        if current_task_id:
+            duplicate_label_stmt = duplicate_label_stmt.where(ScheduledMessageTask.task_id != current_task_id)
+        return (await session.execute(duplicate_label_stmt)).scalar_one_or_none()
 
     async def _sync_user_shortcut_keyboards(self, user_id: int) -> None:
         async with get_async_session() as session:
@@ -106,15 +176,14 @@ class TaskService:
             raise HTTPException(status_code=400, detail="每个用户最多只能配置 3 个快捷任务")
 
         shortcut_label = str(payload.get("shortcut_label") or "").strip()
+        payload["shortcut_label"] = shortcut_label or None
         if shortcut_label:
-            duplicate_label_stmt = select(ScheduledMessageTask.task_id).where(
-                ScheduledMessageTask.user_id == user_id,
-                ScheduledMessageTask.trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value,
-                func.lower(ScheduledMessageTask.shortcut_label) == shortcut_label.lower(),
-            )
-            if current_task_id:
-                duplicate_label_stmt = duplicate_label_stmt.where(ScheduledMessageTask.task_id != current_task_id)
-            if (await session.execute(duplicate_label_stmt)).scalar_one_or_none() is not None:
+            if await self._find_duplicate_manual_shortcut_task_id(
+                session,
+                user_id=user_id,
+                shortcut_label=shortcut_label,
+                current_task_id=current_task_id,
+            ) is not None:
                 raise HTTPException(status_code=400, detail="手动任务按钮名称已存在，请换一个名称")
 
         occupied_slots_stmt = select(ScheduledMessageTask.shortcut_slot).where(
@@ -171,6 +240,7 @@ class TaskService:
         ensure_initial_next_run(payload, now_ts, current_task=None)
 
         async with get_async_session() as session:
+            await self._ensure_task_title(session, user_id=user_id, payload=payload)
             await self._validate_shortcut_constraints(
                 session,
                 user_id=user_id,

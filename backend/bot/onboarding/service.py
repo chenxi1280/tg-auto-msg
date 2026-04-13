@@ -872,7 +872,13 @@ class BotOnboardingService:
 
         _HOME_REPLY_KEYBOARD_SIGNATURES[int(tg_user_id)] = signature
         keyboard = build_reply_shortcut_keyboard(labels)
-        await bot_client.send_message(tg_user_id, "\u2063", buttons=keyboard)
+        sync_message = await bot_client.send_message(tg_user_id, "\u2063", buttons=keyboard)
+        if getattr(sync_message, "id", None) is None:
+            return
+        try:
+            await bot_client.delete_messages(tg_user_id, [sync_message.id])
+        except Exception:
+            logger.debug("delete reply keyboard sync message failed", exc_info=True)
 
     async def show_home(self, event, tg_user_id: int) -> None:
         text, buttons = await self.build_home_view(tg_user_id)

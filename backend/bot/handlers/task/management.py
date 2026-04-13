@@ -627,12 +627,37 @@ async def handle_manual_task_shortcut_label_create(event, user_id: int, text: st
         await event.respond("⚠️ 当前手动任务创建流程已失效，请重新开始。")
         return
 
+    account_id = str(draft.get("account_id") or "").strip()
+    if not account_id:
+        fsm_storage.reset_state(user_id)
+        await event.respond("⚠️ 未找到执行账号，请重新开始创建手动任务。")
+        return
+
+    async with get_async_session() as session:
+        access_ctx = await _resolve_actor_access_context(session, user_id)
+        db_user_id = access_ctx.system_user_id
+        if db_user_id is None:
+            fsm_storage.reset_state(user_id)
+            await event.respond("⚠️ 当前 Telegram 账号还未绑定系统账号，请先发送 /start。")
+            return
+        result = await session.execute(
+            select(ScheduledMessageTask.task_id).where(
+                ScheduledMessageTask.user_id == int(db_user_id),
+                ScheduledMessageTask.trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value,
+                func.lower(ScheduledMessageTask.shortcut_label) == value.lower(),
+            )
+        )
+        if result.scalar_one_or_none() is not None:
+            await event.respond("❌ 手动任务按钮名称已存在，请换一个名称。")
+            return
+
     draft["shortcut_label"] = value
     fsm_storage.update_data(user_id, pending_manual_task_create=draft)
     fsm_storage.set_state(user_id, FSMState.WAIT_MANUAL_TASK_TEXT)
     await event.respond(
         "📝 **创建手动任务**\n\n"
         f"按钮名称：`{_escape_markdown(value)}`\n\n"
+        "这个名称会显示在 Bot 底部按钮中。\n\n"
         "下一步：请输入这次点击按钮后要发送的文本内容。\n"
         "如果想只发按钮或媒体，也可以发送 `skip` 跳过这一步。",
         parse_mode="markdown",
