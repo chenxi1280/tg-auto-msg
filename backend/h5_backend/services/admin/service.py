@@ -90,6 +90,7 @@ DEFAULT_PURCHASE_BUTTON_TEXT = "联系 Telegram 购买"
 DEFAULT_BOT_NOTICE_ENTRY_BUTTON_TEXT = "📢 公告栏"
 _NOTICE_URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
 MAX_CARD_EXPORT_ROWS = 5000
+TELEGRAM_PURCHASE_URL_PREFIXES = ("https://t.me/", "https://telegram.me/", "tg://")
 
 
 class AdminLicenseService:
@@ -109,6 +110,10 @@ class AdminLicenseService:
     @staticmethod
     def _to_price_yuan(price_cents: int) -> str:
         return f"{(Decimal(price_cents) / Decimal(100)).quantize(Decimal('0.00'))}"
+
+    @staticmethod
+    def _is_valid_purchase_url(url: str) -> bool:
+        return url.startswith(TELEGRAM_PURCHASE_URL_PREFIXES) or is_valid_button_url(url)
 
     @staticmethod
     def _serialize_plan(plan: PricingPlan) -> Dict[str, Any]:
@@ -492,12 +497,8 @@ class AdminLicenseService:
         button_text = (purchase_button_text or "").strip() or DEFAULT_PURCHASE_BUTTON_TEXT
         if not url:
             raise HTTPException(status_code=400, detail="购买链接不能为空")
-        if not (
-            url.startswith("https://t.me/")
-            or url.startswith("https://telegram.me/")
-            or url.startswith("tg://")
-        ):
-            raise HTTPException(status_code=400, detail="购买链接格式无效，仅支持 Telegram 聊天链接")
+        if not self._is_valid_purchase_url(url):
+            raise HTTPException(status_code=400, detail="购买链接格式无效，仅支持 Telegram 链接或公网 HTTP/HTTPS 商铺链接")
 
         async with get_async_session() as session:
             url_row = await session.get(AppSetting, "purchase_url")

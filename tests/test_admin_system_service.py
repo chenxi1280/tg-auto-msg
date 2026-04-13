@@ -1,8 +1,10 @@
 import unittest
 from contextlib import asynccontextmanager
 from datetime import datetime
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, patch
+
+from fastapi import HTTPException
 
 from backend.database.schema.models import AppSetting
 from backend.h5_backend.services.admin.service import AdminLicenseService
@@ -32,6 +34,13 @@ class _NoticeSession:
 
     async def commit(self):
         self.committed = True
+
+
+def _build_notice_manager_module(refresh_summary):
+    module = ModuleType("backend.bot.notice_manager")
+    manager = SimpleNamespace(refresh_all_linked_users=AsyncMock(return_value=refresh_summary))
+    module.get_bot_notice_manager = lambda: manager
+    return module
 
 
 class AdminSystemServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -76,9 +85,9 @@ class AdminSystemServiceTests(unittest.IsolatedAsyncioTestCase):
             service,
             "_append_audit",
             AsyncMock(),
-        ), patch(
-            "backend.bot.notice_manager.get_bot_notice_manager",
-            return_value=SimpleNamespace(refresh_all_linked_users=AsyncMock(return_value=refresh_summary)),
+        ), patch.dict(
+            "sys.modules",
+            {"backend.bot.notice_manager": _build_notice_manager_module(refresh_summary)},
         ), patch.object(
             service,
             "get_bot_notice_settings",
@@ -116,9 +125,9 @@ class AdminSystemServiceTests(unittest.IsolatedAsyncioTestCase):
             service,
             "_append_audit",
             AsyncMock(),
-        ), patch(
-            "backend.bot.notice_manager.get_bot_notice_manager",
-            return_value=SimpleNamespace(refresh_all_linked_users=AsyncMock(return_value={"updated": 0})),
+        ), patch.dict(
+            "sys.modules",
+            {"backend.bot.notice_manager": _build_notice_manager_module({"updated": 0})},
         ), patch.object(
             service,
             "get_bot_notice_settings",
@@ -143,6 +152,42 @@ class AdminSystemServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(fake_session.committed)
         self.assertEqual(result["target_url"], "")
+
+    async def test_update_purchase_settings_allows_external_shop_url(self):
+        service = AdminLicenseService()
+        fake_session = _NoticeSession()
+
+        @asynccontextmanager
+        async def fake_get_async_session():
+            yield fake_session
+
+        with patch("backend.h5_backend.services.admin.service.get_async_session", new=fake_get_async_session), patch.object(
+            service,
+            "_append_audit",
+            AsyncMock(),
+        ):
+            result = await service.update_purchase_settings(
+                purchase_url="https://shop.example.com/cards?sku=monthly",
+                purchase_button_text="购买卡密",
+                actor="admin#1",
+                ip_address="127.0.0.1",
+            )
+
+        self.assertTrue(fake_session.committed)
+        self.assertEqual(result["purchase_url"], "https://shop.example.com/cards?sku=monthly")
+        self.assertEqual(result["purchase_button_text"], "购买卡密")
+
+    async def test_update_purchase_settings_rejects_local_shop_url(self):
+        service = AdminLicenseService()
+
+        with self.assertRaises(HTTPException) as raised:
+            await service.update_purchase_settings(
+                purchase_url="http://127.0.0.1/cards",
+                purchase_button_text="购买卡密",
+            )
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertEqual(raised.exception.detail, "购买链接格式无效，仅支持 Telegram 链接或公网 HTTP/HTTPS 商铺链接")
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@
         </template>
         <el-form label-position="top">
           <el-form-item label="购买链接">
-            <el-input v-model.trim="purchaseForm.purchase_url" :disabled="!canUpdate" placeholder="https://t.me/your_contact" />
+            <el-input v-model.trim="purchaseForm.purchase_url" :disabled="!canUpdate" placeholder="https://shop.example.com/cards 或 https://t.me/your_contact" />
           </el-form-item>
           <el-form-item label="按钮文案">
             <el-input v-model.trim="purchaseForm.purchase_button_text" :disabled="!canUpdate" maxlength="50" show-word-limit />

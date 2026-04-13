@@ -51,10 +51,10 @@
         <template #header>
           <div class="card-title">购买方式</div>
         </template>
-        <p class="helper-text">点击下方按钮跳转 Telegram 购买全球通卡密。购买后可在“我的”页面输入卡密，为当前唯一授权续费。</p>
+        <p class="helper-text">点击下方按钮购买全球通卡密。购买后可在“我的”页面输入卡密，为当前唯一授权续费。</p>
         <div class="actions">
           <el-button type="primary" size="large" @click="goTelegramPurchase">
-            {{ purchase.button_text || '去 TG 购买' }}
+            {{ purchase.button_text || '去购买卡密' }}
           </el-button>
           <el-button size="large" @click="goMy">去激活卡密</el-button>
         </div>
@@ -76,7 +76,7 @@ const plans = ref<PricingPlan[]>([])
 const licenseStatus = ref<AuthorizationStatus | null>(null)
 const purchase = ref({
   url: '',
-  button_text: '去 TG 购买',
+  button_text: '去购买卡密',
 })
 
 const loadData = async () => {
