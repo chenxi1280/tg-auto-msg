@@ -8,4 +8,5 @@ Type=oneshot
 WorkingDirectory=/data/tgmsg/current
 Environment=TZ=Asia/Shanghai
 Environment=HEALTHCHECK_TIMEZONE=Asia/Shanghai
+TimeoutStartSec=120
 ExecStart=/usr/bin/env bash /data/tgmsg/current/deploy/check-services.sh

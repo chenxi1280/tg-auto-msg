@@ -18,6 +18,7 @@ DAILY_REPORT_HOUR="${DAILY_REPORT_HOUR:-09}"
 TGMSG_LOG_SCAN_WINDOW="${TGMSG_LOG_SCAN_WINDOW:-30m}"
 TGMSG_ERROR_MATCH_LIMIT="${TGMSG_ERROR_MATCH_LIMIT:-6}"
 TGMSG_LOG_TAIL_LINES="${TGMSG_LOG_TAIL_LINES:-400}"
+TGMSG_LOG_SCAN_FILE_LIMIT="${TGMSG_LOG_SCAN_FILE_LIMIT:-3}"
 APP_CONTAINER="${APP_CONTAINER:-tgmsg-app}"
 FRONTEND_CONTAINER="${FRONTEND_CONTAINER:-tgmsg-frontend}"
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-app-infra-postgres}"
@@ -58,24 +59,24 @@ dedupe_lines_by_normalized_content() {
   done
 }
 
-resolve_window_start_label() {
+resolve_window_start_value() {
   local window="$1"
 
   case "$window" in
     '' )
-      date '+%Y-%m-%d %H:%M:%S %Z'
+      date '+%Y-%m-%d %H:%M:%S'
       ;;
     *m )
-      date -d "${window%m} minutes ago" '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S %Z'
+      date -d "${window%m} minutes ago" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S'
       ;;
     *h )
-      date -d "${window%h} hours ago" '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S %Z'
+      date -d "${window%h} hours ago" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S'
       ;;
     *d )
-      date -d "${window%d} days ago" '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S %Z'
+      date -d "${window%d} days ago" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S'
       ;;
     * )
-      date -d "$window ago" '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S %Z'
+      date -d "$window ago" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S'
       ;;
   esac
 }
@@ -150,23 +151,44 @@ tail_container_errors() {
   local container="$1"
 
   docker logs --since "$TGMSG_LOG_SCAN_WINDOW" --tail "$TGMSG_LOG_TAIL_LINES" "$container" 2>&1 \
-    | grep -E '(\| ERROR\s+\||\| CRITICAL\s+\||Traceback|ERROR:|CRITICAL:|FATAL:|PANIC:)' \
+    | grep -E '(\| ERROR\s+\||\| CRITICAL\s+\||ERROR:|CRITICAL:|FATAL:|PANIC:)' \
     | tail -n "$TGMSG_ERROR_MATCH_LIMIT" || true
 }
 
-check_tgmsg_recent_errors() {
-  local matches latest_log log_source
+runtime_log_errors() {
+  local log_files
 
+  log_files="$(find "$APP_RUNTIME_LOG_DIR" -maxdepth 1 -type f -name 'app_*.log' 2>/dev/null \
+    | sort \
+    | tail -n "$TGMSG_LOG_SCAN_FILE_LIMIT")"
+  if [[ -z "$log_files" ]]; then
+    return 0
+  fi
+
+  xargs awk -v start="$LOG_WINDOW_START_VALUE" -v end="$LOG_WINDOW_END_VALUE" '
+    function is_error_line(line) {
+      return line ~ /\| (ERROR|CRITICAL)[[:space:]]+\|/ || line ~ /^(ERROR|CRITICAL|FATAL|PANIC):/
+    }
+
+    /^[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}/ {
+      timestamp = substr($0, 1, 19)
+      gsub(/T/, " ", timestamp)
+      if (timestamp >= start && timestamp <= end && is_error_line($0)) {
+        print
+      }
+    }
+  ' <<<"$log_files" | tail -n "$TGMSG_ERROR_MATCH_LIMIT" || true
+}
+
+check_tgmsg_recent_errors() {
+  local matches log_source
+
+  matches=""
   log_source="容器日志"
   if [[ -d "$APP_RUNTIME_LOG_DIR" ]]; then
-    latest_log="$(find "$APP_RUNTIME_LOG_DIR" -maxdepth 1 -type f -name 'app_*.log' | sort | tail -n 1)"
-    if [[ -n "$latest_log" ]]; then
-      matches="$(tail -n "$TGMSG_LOG_TAIL_LINES" "$latest_log" 2>/dev/null \
-        | grep -E '(\| ERROR\s+\||\| CRITICAL\s+\||Traceback|ERROR:|CRITICAL:|FATAL:|PANIC:)' \
-        | tail -n "$TGMSG_ERROR_MATCH_LIMIT" || true)"
-      if [[ -n "$matches" ]]; then
-        log_source="运行日志文件"
-      fi
+    matches="$(runtime_log_errors)"
+    if [[ -n "$matches" ]]; then
+      log_source="运行日志文件"
     fi
   fi
 
@@ -178,7 +200,7 @@ check_tgmsg_recent_errors() {
   matches="$(printf '%s\n' "$matches" | dedupe_lines_by_normalized_content)"
 
   if [[ -n "$matches" ]]; then
-    issues+=("tgmsg 最近 ${TGMSG_LOG_SCAN_WINDOW} 存在错误日志 (${log_source}，北京时间 ${LOG_WINDOW_START_LABEL} ~ ${LOG_WINDOW_END_LABEL}):")
+    issues+=("tgmsg 最近 ${TGMSG_LOG_SCAN_WINDOW} 存在错误日志 (${log_source}):")
     while IFS= read -r line; do
       [[ -n "$line" ]] && issues+=("  $line")
     done <<<"$matches"
@@ -286,8 +308,8 @@ ensure_runtime_env
 HEALTHCHECK_TIMEZONE="${HEALTHCHECK_TIMEZONE:-${TIMEZONE:-Asia/Shanghai}}"
 export TZ="$HEALTHCHECK_TIMEZONE"
 
-LOG_WINDOW_END_LABEL="$(date '+%Y-%m-%d %H:%M:%S %Z')"
-LOG_WINDOW_START_LABEL="$(resolve_window_start_label "$TGMSG_LOG_SCAN_WINDOW")"
+LOG_WINDOW_END_VALUE="$(date '+%Y-%m-%d %H:%M:%S')"
+LOG_WINDOW_START_VALUE="$(resolve_window_start_value "$TGMSG_LOG_SCAN_WINDOW")"
 
 issues=()
 recovered_services=()
