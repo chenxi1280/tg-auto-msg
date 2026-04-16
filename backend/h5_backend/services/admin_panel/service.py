@@ -40,6 +40,7 @@ ACCOUNT_TYPE_STAFF = "staff"
 ACCOUNT_TYPE_AGENT = "agent"
 BUSINESS_IDENTITY_MASTER_AGENT = "master_agent"
 BUSINESS_IDENTITY_SUB_AGENT = "sub_agent"
+MAX_COPY_CARD_COUNT = 40
 
 
 class AdminPanelService:
@@ -1409,7 +1410,7 @@ class AdminPanelService:
             return {
                 "batch": self._serialize_batch(batch),
                 "cards": [self._serialize_card(card) for card in cards],
-                "copied_text": "\n".join(card.card_code for card in cards[:10]),
+                "copied_text": "\n".join(card.card_code for card in cards[-MAX_COPY_CARD_COUNT:]),
             }
 
     async def list_card_batches(
@@ -2099,8 +2100,8 @@ class AdminPanelService:
         normalized_ids = [int(item) for item in card_ids if int(item) > 0]
         if not normalized_ids:
             raise HTTPException(status_code=400, detail="请选择要复制的卡密")
-        if len(normalized_ids) > 10:
-            raise HTTPException(status_code=400, detail="单次最多复制 10 个卡密，请改用导出 Excel")
+        if len(normalized_ids) > MAX_COPY_CARD_COUNT:
+            raise HTTPException(status_code=400, detail=f"单次最多复制 {MAX_COPY_CARD_COUNT} 个卡密，请改用导出 Excel")
         async with get_async_session() as session:
             visible_ids = set(await self._visible_account_ids(session, current_admin))
             rows = (

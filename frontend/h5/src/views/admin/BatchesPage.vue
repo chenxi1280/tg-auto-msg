@@ -281,7 +281,7 @@
           </div>
         </template>
       </el-alert>
-      <div class="selection-bar">已选择 {{ selectedCards.length }} 条卡密，当前总数 {{ cardTotal }}，单次最多复制 10 条</div>
+      <div class="selection-bar">已选择 {{ selectedCards.length }} 条卡密，当前总数 {{ cardTotal }}，单次最多复制 {{ copyCardLimit }} 条</div>
       <el-table v-if="!isCompact" :data="cardRows" stripe @selection-change="handleSelectionChange">
         <el-table-column type="selection" width="48" />
         <el-table-column prop="card_code" label="卡密" min-width="180" />
@@ -424,8 +424,12 @@
             </div>
           </div>
         </div>
+        <div v-if="resultDrawer.quantity > copyCardLimit" class="copy-limit-tip">
+          本批数量较多，单次最多复制最近创建的 {{ copyCardLimit }} 条，其余卡密可进入明细继续筛选或导出。
+        </div>
         <div class="mobile-action-bar">
           <el-button @click="resultDrawer.visible = false">关闭</el-button>
+          <el-button v-if="canCopyCards" type="primary" plain @click="copyGeneratedCards">复制本次卡密</el-button>
           <el-button type="primary" @click="jumpToGeneratedBatchDetail">查看该批次明细</el-button>
         </div>
       </div>
@@ -438,7 +442,6 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { AgentCard, CardBatch } from '@/api/admin'
 import {
-  adminCopyCards,
   adminExportCardsXlsx,
   adminGenerateCardBatch,
   adminListCardBatches,
@@ -451,6 +454,7 @@ import { useResponsive } from '@/composables/useResponsive'
 
 const store = useAdminConsoleStore()
 const { isCompact } = useResponsive()
+const COPY_CARD_LIMIT = 40
 const canGenerateBatches = computed(() => store.hasPermission('batches.generate'))
 const canExportCards = computed(() => store.hasPermission('batches.export'))
 const canCopyCards = computed(() => store.hasPermission('batches.copy'))
@@ -551,7 +555,11 @@ const resultDrawer = reactive({
   fundingSource: '',
   createdAt: '' as string | null,
   summary: '',
+  generatedCards: [] as AgentCard[],
+  copiedText: '',
 })
+
+const copyCardLimit = COPY_CARD_LIMIT
 
 const initDefaultPlan = () => {
   const firstPlan = activePlans.value[0]
@@ -665,6 +673,75 @@ const planDisplayName = (planCode?: string | null, planDisplayNameValue?: string
 const buildBatchSummary = (row: Pick<CardBatch, 'plan_code' | 'used_count' | 'total_count' | 'quantity' | 'created_at'>) =>
   `${planDisplayName(row.plan_code, (row as CardBatch).plan_display_name)} · 已使用 ${row.used_count || 0} / ${row.total_count || row.quantity} · ${formatDateTime(row.created_at)}`
 
+const cardCreatedTime = (card: AgentCard) => {
+  const timestamp = card.created_at ? new Date(card.created_at).getTime() : 0
+  return Number.isFinite(timestamp) ? timestamp : 0
+}
+
+const latestCardsForCopy = (cards: AgentCard[]) =>
+  [...cards]
+    .sort((left, right) => cardCreatedTime(right) - cardCreatedTime(left) || Number(right.id) - Number(left.id))
+    .slice(0, COPY_CARD_LIMIT)
+    .sort((left, right) => cardCreatedTime(left) - cardCreatedTime(right) || Number(left.id) - Number(right.id))
+
+const copyTextToClipboard = async (text: string) => {
+  if (!text) {
+    throw new Error('复制内容为空')
+  }
+  if (window.isSecureContext && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return
+    } catch {
+      // Fall through to the textarea copy path for mobile WebViews and local HTTP admin pages.
+    }
+  }
+  const textArea = document.createElement('textarea')
+  textArea.value = text
+  textArea.setAttribute('readonly', 'true')
+  textArea.style.position = 'fixed'
+  textArea.style.top = '0'
+  textArea.style.left = '-9999px'
+  textArea.style.width = '1px'
+  textArea.style.height = '1px'
+  textArea.style.opacity = '0'
+  document.body.appendChild(textArea)
+  const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  textArea.focus()
+  textArea.select()
+  textArea.setSelectionRange(0, textArea.value.length)
+  let success = false
+  try {
+    success = document.execCommand('copy')
+  } finally {
+    document.body.removeChild(textArea)
+    activeElement?.focus()
+  }
+  if (!success) {
+    throw new Error('浏览器拒绝复制，请手动长按选择卡密复制')
+  }
+}
+
+const formatCopiedCards = (cards: AgentCard[], withMeta = false) =>
+  cards
+    .map((card) => (withMeta ? `${card.card_code} | ${card.plan_code || '-'} | ${card.batch_id || '-'}` : card.card_code))
+    .join('\n')
+
+const showCopySuccess = (count: number, total: number, withMeta = false) => {
+  const suffix = withMeta ? '（附带元数据）' : ''
+  lastActionMessage.value = `已复制 ${count} 条卡密${suffix}`
+  if (total > count) {
+    ElMessage.warning(`本次共 ${total} 条，已复制最近创建的 ${count} 条`)
+    return
+  }
+  ElMessage.success(`已复制 ${count} 条卡密`)
+}
+
+const showCopyFailure = (error: unknown) => {
+  const message = error instanceof Error ? error.message : '复制失败，请手动长按选择卡密复制'
+  ElMessage.error(message)
+}
+
 const scrollToCardSection = () => {
   requestAnimationFrame(() => {
     cardSectionRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -727,6 +804,8 @@ const submitGenerateBatch = async () => {
     resultDrawer.fundingSource = isPlatformOperator.value ? 'platform' : batchForm.funding_source
     resultDrawer.createdAt = response.data.batch.created_at
     resultDrawer.summary = buildBatchSummary(response.data.batch)
+    resultDrawer.generatedCards = response.data.cards || []
+    resultDrawer.copiedText = response.data.copied_text || ''
     lastActionMessage.value = `新卡密已生成，共 ${response.data.batch.quantity} 张，金额 ¥${centsToYuan(response.data.batch.total_amount_cents)}`
     ElMessage.success('卡密批次已生成')
   } finally {
@@ -762,6 +841,26 @@ const toggleCardSelection = (row: AgentCard) => {
   selectedCards.value = [...selectedCards.value, row]
 }
 
+const copyGeneratedCards = async () => {
+  if (!canCopyCards.value) {
+    ElMessage.warning('当前账号无权复制卡密')
+    return
+  }
+  const cards = latestCardsForCopy(resultDrawer.generatedCards)
+  const copiedText = cards.length ? formatCopiedCards(cards) : resultDrawer.copiedText
+  const copiedCount = cards.length || copiedText.split('\n').filter(Boolean).length
+  if (!copiedText) {
+    ElMessage.warning('本次生成结果中没有可复制的卡密，请进入明细后再复制')
+    return
+  }
+  try {
+    await copyTextToClipboard(copiedText)
+    showCopySuccess(copiedCount, resultDrawer.quantity || copiedCount)
+  } catch (error) {
+    showCopyFailure(error)
+  }
+}
+
 const copySelectedCards = async (withMeta: boolean) => {
   if (!canCopyCards.value) {
     ElMessage.warning('当前账号无权复制卡密')
@@ -771,13 +870,14 @@ const copySelectedCards = async (withMeta: boolean) => {
     ElMessage.warning('请先选择卡密')
     return
   }
-  const response = await adminCopyCards({
-    card_ids: selectedCards.value.map((item) => item.id),
-    with_meta: withMeta,
-  })
-  await navigator.clipboard.writeText(response.data.copied_text)
-  lastActionMessage.value = `已复制 ${response.data.count} 条卡密${withMeta ? '（附带元数据）' : ''}`
-  ElMessage.success(`已复制 ${response.data.count} 条卡密`)
+  const cardsToCopy = latestCardsForCopy(selectedCards.value)
+  const copiedText = formatCopiedCards(cardsToCopy, withMeta)
+  try {
+    await copyTextToClipboard(copiedText)
+    showCopySuccess(cardsToCopy.length, selectedCards.value.length, withMeta)
+  } catch (error) {
+    showCopyFailure(error)
+  }
 }
 
 const exportExcel = async () => {
@@ -860,6 +960,12 @@ onMounted(async () => {
 
 .warning-tip {
   margin: 4px 0 16px;
+  color: #b45309;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.copy-limit-tip {
   color: #b45309;
   font-size: 13px;
   line-height: 1.6;

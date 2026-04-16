@@ -14,6 +14,7 @@ from backend.h5_backend.dependencies import (
     require_admin_permissions,
 )
 from backend.h5_backend.services.admin_panel.service import (
+    MAX_COPY_CARD_COUNT,
     get_admin_panel_service,
 )
 
@@ -66,7 +67,7 @@ class GenerateCardBatchRequest(BaseModel):
 
 
 class CopyCardsRequest(BaseModel):
-    card_ids: List[int] = Field(..., min_length=1, max_length=10)
+    card_ids: List[int] = Field(..., min_length=1, max_length=MAX_COPY_CARD_COUNT)
     with_meta: bool = False
 
 
