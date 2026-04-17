@@ -139,7 +139,7 @@ bash scripts/start.sh
 
 - 📝 查看日志文件：`logs/app_YYYY-MM-DD.log`
 - 💬 提交 Issue：https://github.com/your-repo/issues
-- 📚 阅读文档：https://docs.your-domain.com
+- 📚 阅读文档：https://robot.telema.cn
 
 ---
 

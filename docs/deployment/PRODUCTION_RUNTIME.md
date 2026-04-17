@@ -84,6 +84,9 @@
 DATABASE_URL=postgresql+asyncpg://<db_user>:<db_password>@postgres:5432/tgmsg
 REDIS_URL=redis://:<redis_password>@redis:6379/0
 INFRA_NETWORK_NAME=infra_default
+TGMSG_FRONTEND_BIND_HOST=127.0.0.1
+TGMSG_FRONTEND_HOST_PORT=18080
+H5_BASE_URL=https://msg.telema.cn
 PROVINCE_CODE=<province_code>
 ADMIN_BOOTSTRAP_USERNAME=admin
 ADMIN_BOOTSTRAP_PASSWORD=<strong_password>
@@ -95,6 +98,8 @@ ADMIN_BOOTSTRAP_DISPLAY_NAME=超级管理员
 - `DATABASE_URL` 指向 `infra-compose` 中的 `postgres`
 - `REDIS_URL` 指向 `infra-compose` 中的 `redis`
 - `INFRA_NETWORK_NAME` 用于把业务容器接入公共网络
+- `TGMSG_FRONTEND_*` 让前端 Nginx 只监听本机端口，由宿主机 Nginx 按 `msg.telema.cn` 反代
+- `H5_BASE_URL` 应使用公网子域名
 - `PROVINCE_CODE` 表示当前这套服务所属省份，超管账号按省份隔离初始化
 - `ADMIN_BOOTSTRAP_*` 用于首次启动时自动创建当前省份的首个 `super_admin`
 
@@ -114,11 +119,13 @@ ADMIN_BOOTSTRAP_DISPLAY_NAME=超级管理员
 
 当前仍保留的兼容点主要是 `tgmsg` 自己的日志、上传和 Nginx 日志目录仍位于 `/data/tgmsg/*`。
 
+公共入口由基础设施服务器宿主机 Nginx 提供，`tgmsg-frontend` 不再直接占用公网 `80`，默认仅暴露 `127.0.0.1:18080`。
+
 ## 6. 发布后验收清单
 
 ```bash
 docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-curl -fsS http://127.0.0.1/ >/dev/null && echo ok
+curl -fsS http://127.0.0.1:${TGMSG_FRONTEND_HOST_PORT:-18080}/
 docker logs --tail 50 tgmsg-app
 docker inspect tgmsg-app --format '{{json .Mounts}}'
 docker inspect tgmsg-frontend --format '{{json .Mounts}}'
@@ -128,7 +135,7 @@ readlink -f /data/tgmsg/current
 通过标准：
 
 - `tgmsg-app` 与 `tgmsg-frontend` 都是 `Up`
-- 首页 `http://127.0.0.1/` 可访问
+- 首页 `http://127.0.0.1:${TGMSG_FRONTEND_HOST_PORT:-18080}/` 可访问
 - `tgmsg-app` 日志中没有持续重启或连接失败
 - `current` 指向最新 release
 

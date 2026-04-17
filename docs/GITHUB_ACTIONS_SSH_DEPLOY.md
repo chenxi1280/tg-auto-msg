@@ -194,7 +194,7 @@ Actions -> Deploy Production -> Run workflow
 readlink -f /data/tgmsg/current
 cd /data/tgmsg/current
 docker compose --env-file /data/tgmsg/shared/.env ps
-curl -fsS http://127.0.0.1/ >/dev/null && echo ok
+curl -fsS http://127.0.0.1:${TGMSG_FRONTEND_HOST_PORT:-18080}/ >/dev/null && echo ok
 docker logs --tail 100 tgmsg-app
 systemctl list-timers | grep tgmsg
 ```

@@ -149,6 +149,8 @@ bash deploy/release.sh --host production-server --base-dir /data/tgmsg
 - `tgmsg-app`
 - `tgmsg-frontend`
 
+`tgmsg-frontend` 只绑定本机端口，默认 `127.0.0.1:18080`。公网 `80/443` 由基础设施服务器宿主机 Nginx 按 `msg.telema.cn` 转发。
+
 中间件不由本仓库发版：
 
 - PostgreSQL：独立 `infra-compose`
@@ -211,7 +213,7 @@ Actions -> Deploy Production -> Run workflow
 readlink -f /data/tgmsg/current
 cd /data/tgmsg/current
 docker compose --env-file /data/tgmsg/shared/.env ps
-curl -fsS http://127.0.0.1/ >/dev/null && echo ok
+curl -fsS http://127.0.0.1:${TGMSG_FRONTEND_HOST_PORT:-18080}/ >/dev/null && echo ok
 docker logs --tail 100 tgmsg-app
 docker logs --tail 100 tgmsg-frontend
 systemctl list-timers | grep tgmsg

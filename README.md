@@ -181,7 +181,7 @@ python main.py
 ### 7. 配置 H5 域名
 在 `.env` 中设置：
 ```env
-H5_BASE_URL=https://your-domain.com
+H5_BASE_URL=https://msg.telema.cn
 ```
 
 构建前端（生产环境）：
