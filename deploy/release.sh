@@ -13,7 +13,14 @@ CONFIRM_PRODUCTION_DEPLOY="${CONFIRM_PRODUCTION_DEPLOY:-0}"
 IMAGE_NAMESPACE="${IMAGE_NAMESPACE:-ghcr.io/chenxi1280}"
 STATIC_KEEP_RELEASES="${STATIC_KEEP_RELEASES:-5}"
 TGMSG_FRONTEND_STATIC_BASE_DIR="${TGMSG_FRONTEND_STATIC_BASE_DIR:-/data/infra/www/msg.telema.cn}"
-SSH_OPTS=()
+RELEASE_SSH_ATTEMPTS="${RELEASE_SSH_ATTEMPTS:-3}"
+RELEASE_SSH_RETRY_DELAY="${RELEASE_SSH_RETRY_DELAY:-10}"
+SSH_OPTS=(
+  -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT:-20}"
+  -o "ServerAliveInterval=${SSH_SERVER_ALIVE_INTERVAL:-30}"
+  -o "ServerAliveCountMax=${SSH_SERVER_ALIVE_COUNT_MAX:-10}"
+  -o "TCPKeepAlive=yes"
+)
 
 usage() {
   cat <<'EOF'
@@ -92,6 +99,41 @@ require_command() {
   fi
 }
 
+require_positive_integer() {
+  local name="$1"
+  local value="$2"
+  if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+    echo "${name} must be a positive integer, got: ${value}" >&2
+    exit 1
+  fi
+}
+
+run_with_retries() {
+  local label="$1"
+  shift
+
+  local attempt status
+  for ((attempt = 1; attempt <= RELEASE_SSH_ATTEMPTS; attempt++)); do
+    if ((RELEASE_SSH_ATTEMPTS > 1)); then
+      echo "==> ${label} (attempt ${attempt}/${RELEASE_SSH_ATTEMPTS})"
+    fi
+
+    if "$@"; then
+      return 0
+    else
+      status=$?
+    fi
+
+    if ((attempt == RELEASE_SSH_ATTEMPTS)); then
+      echo "${label} failed after ${RELEASE_SSH_ATTEMPTS} attempt(s)" >&2
+      return "$status"
+    fi
+
+    echo "${label} failed with exit code ${status}; retrying in ${RELEASE_SSH_RETRY_DELAY}s" >&2
+    sleep "$RELEASE_SSH_RETRY_DELAY"
+  done
+}
+
 if [[ -z "$HOST" ]]; then
   usage >&2
   exit 1
@@ -101,6 +143,8 @@ require_command git
 require_command ssh
 require_command scp
 require_command mktemp
+require_positive_integer RELEASE_SSH_ATTEMPTS "$RELEASE_SSH_ATTEMPTS"
+require_positive_integer RELEASE_SSH_RETRY_DELAY "$RELEASE_SSH_RETRY_DELAY"
 
 is_production_target() {
   case "$HOST" in
@@ -206,12 +250,16 @@ echo "==> Creating release archive for ${REF_NAME} (${short_sha})"
 git archive --format=tar.gz --output "$archive_path" "$REF_NAME"
 
 echo "==> Uploading release archive to ${USER_NAME}@${HOST}:${remote_archive}"
-ssh "${SSH_OPTS[@]}" "${USER_NAME}@${HOST}" "mkdir -p '${BASE_DIR}/incoming' '${BASE_DIR}/releases'"
-scp "${SSH_OPTS[@]}" "$archive_path" "${USER_NAME}@${HOST}:${remote_archive}"
-scp "${SSH_OPTS[@]}" "$image_env_path" "${USER_NAME}@${HOST}:${remote_image_env}"
+run_with_retries "Preparing remote release directories" \
+  ssh "${SSH_OPTS[@]}" "${USER_NAME}@${HOST}" "mkdir -p '${BASE_DIR}/incoming' '${BASE_DIR}/releases'"
+run_with_retries "Uploading release archive" \
+  scp "${SSH_OPTS[@]}" "$archive_path" "${USER_NAME}@${HOST}:${remote_archive}"
+run_with_retries "Uploading image env" \
+  scp "${SSH_OPTS[@]}" "$image_env_path" "${USER_NAME}@${HOST}:${remote_image_env}"
 
 echo "==> Installing release ${release_id} on ${HOST}"
-ssh "${SSH_OPTS[@]}" "${USER_NAME}@${HOST}" "\
+run_with_retries "Installing remote release" \
+  ssh "${SSH_OPTS[@]}" "${USER_NAME}@${HOST}" "\
 set -euo pipefail && \
 rm -rf '${remote_release_dir}' && \
 mkdir -p '${remote_release_dir}' && \
