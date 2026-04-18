@@ -10,6 +10,9 @@ ALLOW_DIRTY="${ALLOW_DIRTY:-0}"
 KEEP_ARCHIVE="${KEEP_ARCHIVE:-0}"
 EXPECTED_BRANCHES="${EXPECTED_BRANCHES:-release main master}"
 CONFIRM_PRODUCTION_DEPLOY="${CONFIRM_PRODUCTION_DEPLOY:-0}"
+IMAGE_NAMESPACE="${IMAGE_NAMESPACE:-ghcr.io/chenxi1280}"
+STATIC_KEEP_RELEASES="${STATIC_KEEP_RELEASES:-5}"
+TGMSG_FRONTEND_STATIC_BASE_DIR="${TGMSG_FRONTEND_STATIC_BASE_DIR:-/data/infra/www/msg.telema.cn}"
 SSH_OPTS=()
 
 usage() {
@@ -166,12 +169,38 @@ if [[ "$ALLOW_DIRTY" != "1" ]] && [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 short_sha="$(git rev-parse --short "$REF_NAME")"
+full_sha="$(git rev-parse "$REF_NAME")"
+image_tag="${IMAGE_TAG:-$full_sha}"
+TGMSG_APP_IMAGE="${TGMSG_APP_IMAGE:-${IMAGE_NAMESPACE}/tg-auto-msg-app:${image_tag}}"
+TGMSG_FRONTEND_IMAGE="${TGMSG_FRONTEND_IMAGE:-${IMAGE_NAMESPACE}/tg-auto-msg-frontend:${image_tag}}"
 release_id="$(date '+%Y%m%d%H%M%S')_${short_sha}"
 archive_path="$(mktemp "/tmp/tgmsg-release-${release_id}.XXXXXX.tar.gz")"
+image_env_path="$(mktemp "/tmp/tgmsg-image-env-${release_id}.XXXXXX.env")"
 remote_archive="${BASE_DIR}/incoming/${release_id}.tar.gz"
+remote_image_env="${BASE_DIR}/incoming/${release_id}.image.env"
 remote_release_dir="${BASE_DIR}/releases/${release_id}"
 
-trap '[[ "$KEEP_ARCHIVE" == "1" ]] || rm -f "$archive_path"' EXIT
+trap '[[ "$KEEP_ARCHIVE" == "1" ]] || rm -f "$archive_path" "$image_env_path"' EXIT
+
+cat >"$image_env_path" <<EOF
+TGMSG_APP_IMAGE=${TGMSG_APP_IMAGE}
+TGMSG_FRONTEND_IMAGE=${TGMSG_FRONTEND_IMAGE}
+STATIC_RELEASE_ID=${release_id}
+STATIC_KEEP_RELEASES=${STATIC_KEEP_RELEASES}
+TGMSG_FRONTEND_STATIC_BASE_DIR=${TGMSG_FRONTEND_STATIC_BASE_DIR}
+EOF
+
+shell_quote() {
+  printf '%q' "$1"
+}
+
+remote_env_prefix=""
+if [[ -n "${GHCR_USERNAME:-}" ]]; then
+  remote_env_prefix+=" GHCR_USERNAME=$(shell_quote "$GHCR_USERNAME")"
+fi
+if [[ -n "${GHCR_TOKEN:-}" ]]; then
+  remote_env_prefix+=" GHCR_TOKEN=$(shell_quote "$GHCR_TOKEN")"
+fi
 
 echo "==> Creating release archive for ${REF_NAME} (${short_sha})"
 git archive --format=tar.gz --output "$archive_path" "$REF_NAME"
@@ -179,6 +208,7 @@ git archive --format=tar.gz --output "$archive_path" "$REF_NAME"
 echo "==> Uploading release archive to ${USER_NAME}@${HOST}:${remote_archive}"
 ssh "${SSH_OPTS[@]}" "${USER_NAME}@${HOST}" "mkdir -p '${BASE_DIR}/incoming' '${BASE_DIR}/releases'"
 scp "${SSH_OPTS[@]}" "$archive_path" "${USER_NAME}@${HOST}:${remote_archive}"
+scp "${SSH_OPTS[@]}" "$image_env_path" "${USER_NAME}@${HOST}:${remote_image_env}"
 
 echo "==> Installing release ${release_id} on ${HOST}"
 ssh "${SSH_OPTS[@]}" "${USER_NAME}@${HOST}" "\
@@ -186,10 +216,11 @@ set -euo pipefail && \
 rm -rf '${remote_release_dir}' && \
 mkdir -p '${remote_release_dir}' && \
 tar -xzf '${remote_archive}' -C '${remote_release_dir}' && \
-bash '${remote_release_dir}/deploy/server-install-release.sh' \
+mv -f '${remote_image_env}' '${remote_release_dir}/.image.env' && \
+${remote_env_prefix} bash '${remote_release_dir}/deploy/server-install-release.sh' \
   --base-dir '${BASE_DIR}' \
   --release-dir '${remote_release_dir}' \
   --release-id '${release_id}' && \
-rm -f '${remote_archive}'"
+rm -f '${remote_archive}' '${remote_image_env}'"
 
 echo "✅ Release ${release_id} completed"

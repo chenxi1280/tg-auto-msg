@@ -100,8 +100,8 @@ GitHub Actions 约定：
 1. 功能代码合入 `main`，由 `Python Checks` 做静态检查与单测
 2. 需要上线时，推送 `release`，或手动触发 `Deploy Production`
 3. `Deploy Production` 在 GitHub Actions 中再次执行 `ruff`、`pylint`、`unittest`
-4. 检查通过后，通过 SSH 调用 `deploy/release.sh`
-5. 服务器侧完成 release 解包、数据库迁移、容器更新与 `current` 软链切换
+4. 检查通过后，GitHub Actions 构建并推送后端/前端 GHCR 镜像
+5. 服务器侧完成 release 解包、拉取指定镜像、数据库迁移、释放前端静态文件、容器更新与 `current` 软链切换
 
 更细的线上发布说明见：
 - `docs/GITHUB_ACTIONS_SSH_DEPLOY.md`
@@ -184,7 +184,7 @@ python main.py
 H5_BASE_URL=https://msg.telema.cn
 ```
 
-构建前端（生产环境）：
+本地构建前端（仅开发或手动验证）：
 ```bash
 cd frontend/h5
 npm install
@@ -206,7 +206,7 @@ python main.py
 2. `release` 分支触发 `Deploy Production`
 3. `Deploy Production` 先跑检查，再通过 SSH 调用 `deploy/release.sh`
 4. 服务器执行 `deploy/server-install-release.sh`
-5. 发布脚本完成数据库迁移、启动 `tgmsg-app` / `tgmsg-frontend`、切换 `/data/tgmsg/current`
+5. 发布脚本完成镜像拉取、数据库迁移、释放 H5 静态文件、启动 `tgmsg-app`、切换 `/data/tgmsg/current`
 
 标准目录与入口：
 ```bash
@@ -216,8 +216,9 @@ vi /data/tgmsg/shared/.env
 ```
 
 关键说明：
-- `frontend` 是独立 Nginx 容器，负责静态资源与 SPA 路由，并反代 `/api`
-- `app` 是 FastAPI 容器，只在 Docker 内网暴露 `8000`
+- 前端镜像只作为静态产物载体，服务器释放到 `/data/infra/www/msg.telema.cn/current`
+- `app` 是 FastAPI 容器，只绑定本机端口 `127.0.0.1:18000`
+- 宿主机 Nginx 负责静态页面、SPA 路由，并把 `/api` 反代到 `app`
 - `postgres` / `redis` 由独立的 `infra-compose` 项目维护，通过 `infra_default` 网络接入
 - 当前线上真实目录、挂载与验收方法，以 `docs/deployment/PRODUCTION_RUNTIME.md` 为准
 

@@ -4,7 +4,7 @@
 
 这份文档只描述当前 `tgmsg` 的标准线上发布方式：
 
-- GitHub Actions 负责检查与触发发布
+- GitHub Actions 负责检查、构建 GHCR 镜像与触发发布
 - SSH 负责把 release 包送到生产机
 - 生产机使用 `deploy/release.sh` 和 `deploy/server-install-release.sh` 完成上线
 
@@ -19,8 +19,9 @@
    - `ruff`
    - `pylint`
    - `python -m unittest discover -s tests -t .`
-5. 检查通过后，workflow 通过 SSH 调用 `deploy/release.sh`
-6. 生产机收到 release 包并完成容器更新
+5. 检查通过后，workflow 构建并推送后端/前端 GHCR 镜像
+6. workflow 通过 SSH 调用 `deploy/release.sh`
+7. 生产机收到 release 包，拉取指定镜像并完成更新
 
 重要结论：
 
@@ -41,10 +42,12 @@ Settings -> Secrets and variables -> Actions
 - `PRODUCTION_SSH_PRIVATE_KEY`
 - `PRODUCTION_HOST`
 - `PRODUCTION_USER`
+- `GHCR_TOKEN`
 
 ### 可选 Secret
 
 - `PRODUCTION_PORT`
+- `GHCR_USERNAME`
 
 ### 可选 Variables
 
@@ -158,17 +161,16 @@ bash deploy/release.sh --host production-server --base-dir "${PRODUCTION_BASE_DI
 2. 准备 `/data/tgmsg/shared/.env`
 3. 调用 `deploy/compose-up.sh`
 4. 确保业务数据库存在
-5. 构建 `app` 和 `frontend`
+5. 拉取 Actions 推送的指定 GHCR 镜像
 6. 执行数据库迁移
-7. 启动 `tgmsg-app`
-8. 启动 `tgmsg-frontend`
+7. 释放前端静态文件到 `/data/infra/www/msg.telema.cn`
+8. 启动 `tgmsg-app`
 9. 更新 `/data/tgmsg/current`
 10. 安装并启用巡检 timer
 
 当前 `docker-compose.yml` 只更新业务容器：
 
 - `tgmsg-app`
-- `tgmsg-frontend`
 
 ## 6. 如何触发
 
@@ -194,7 +196,9 @@ Actions -> Deploy Production -> Run workflow
 readlink -f /data/tgmsg/current
 cd /data/tgmsg/current
 docker compose --env-file /data/tgmsg/shared/.env ps
-curl -fsS http://127.0.0.1:${TGMSG_FRONTEND_HOST_PORT:-18080}/ >/dev/null && echo ok
+test -f /data/infra/www/msg.telema.cn/current/index.html
+curl -fsS http://127.0.0.1:${TGMSG_APP_HOST_PORT:-18000}/openapi.json >/dev/null && echo ok
+curl -fsS -H 'Host: msg.telema.cn' http://127.0.0.1/ >/dev/null && echo ok
 docker logs --tail 100 tgmsg-app
 systemctl list-timers | grep tgmsg
 ```

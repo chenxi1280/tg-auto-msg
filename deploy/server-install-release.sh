@@ -74,14 +74,14 @@ install_systemd_units() {
     return 0
   fi
 
+  systemctl disable --now tgmsg-frontend-watchdog.timer tgmsg-frontend-watchdog.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/tgmsg-frontend-watchdog.service /etc/systemd/system/tgmsg-frontend-watchdog.timer
+
   cp "${RELEASE_DIR}/deploy/systemd/tgmsg-healthcheck.service" /etc/systemd/system/
   cp "${RELEASE_DIR}/deploy/systemd/tgmsg-healthcheck.timer" /etc/systemd/system/
-  cp "${RELEASE_DIR}/deploy/systemd/tgmsg-frontend-watchdog.service" /etc/systemd/system/
-  cp "${RELEASE_DIR}/deploy/systemd/tgmsg-frontend-watchdog.timer" /etc/systemd/system/
 
   systemctl daemon-reload
   systemctl enable --now tgmsg-healthcheck.timer
-  systemctl enable --now tgmsg-frontend-watchdog.timer
 }
 
 prepare_shared_layout() {

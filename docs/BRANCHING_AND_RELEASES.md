@@ -91,7 +91,7 @@ bash deploy/release.sh --host 47.250.167.174 --confirm-production-deploy
 - `current` 指向当前正在运行的版本
 - `incoming/` 保存上传的 release 包
 - `shared/.env` 保存线上环境变量
-- `logs/uploads/nginx-logs` 保存运行期持久化数据
+- `logs/uploads` 保存运行期持久化数据，前端静态文件由 `/data/infra/www/msg.telema.cn` 托管
 
 ## 5. 当前发布脚本行为
 
@@ -100,7 +100,7 @@ bash deploy/release.sh --host 47.250.167.174 --confirm-production-deploy
 1. GitHub Actions 调用 `deploy/release.sh`
 2. `deploy/release.sh` 生成 release 包并上传服务器
 3. 服务器执行 `deploy/server-install-release.sh`
-4. 更新 `tgmsg-app` / `tgmsg-frontend`
+4. 拉取指定 GHCR 镜像，更新 `tgmsg-app`，并释放前端静态文件
 5. 成功后切换 `current`
 
 数据库和 Redis 不跟随本仓库发版：

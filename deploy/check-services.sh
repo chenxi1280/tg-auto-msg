@@ -20,7 +20,6 @@ TGMSG_ERROR_MATCH_LIMIT="${TGMSG_ERROR_MATCH_LIMIT:-6}"
 TGMSG_LOG_TAIL_LINES="${TGMSG_LOG_TAIL_LINES:-400}"
 TGMSG_LOG_SCAN_FILE_LIMIT="${TGMSG_LOG_SCAN_FILE_LIMIT:-3}"
 APP_CONTAINER="${APP_CONTAINER:-tgmsg-app}"
-FRONTEND_CONTAINER="${FRONTEND_CONTAINER:-tgmsg-frontend}"
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-app-infra-postgres}"
 REDIS_CONTAINER="${REDIS_CONTAINER:-app-infra-redis}"
 APP_RUNTIME_LOG_DIR="${APP_RUNTIME_LOG_DIR:-/data/tgmsg/logs}"
@@ -306,6 +305,9 @@ attempt_service_recovery() {
 
 ensure_runtime_env
 HEALTHCHECK_TIMEZONE="${HEALTHCHECK_TIMEZONE:-${TIMEZONE:-Asia/Shanghai}}"
+TGMSG_APP_HEALTH_URL="${TGMSG_APP_HEALTH_URL:-http://127.0.0.1:${TGMSG_APP_HOST_PORT:-18000}/openapi.json}"
+TGMSG_FRONTEND_HEALTH_URL="${TGMSG_FRONTEND_HEALTH_URL:-http://127.0.0.1/}"
+TGMSG_FRONTEND_HEALTH_HOST="${TGMSG_FRONTEND_HEALTH_HOST:-msg.telema.cn}"
 export TZ="$HEALTHCHECK_TIMEZONE"
 
 LOG_WINDOW_END_VALUE="$(date '+%Y-%m-%d %H:%M:%S')"
@@ -313,7 +315,7 @@ LOG_WINDOW_START_VALUE="$(resolve_window_start_value "$TGMSG_LOG_SCAN_WINDOW")"
 
 issues=()
 recovered_services=()
-services=("$APP_CONTAINER" "$FRONTEND_CONTAINER")
+services=("$APP_CONTAINER")
 
 for service in "${services[@]}"; do
   status="$(service_status "$service")"
@@ -336,12 +338,12 @@ done
 check_postgres_middleware
 check_redis_middleware
 
-if ! curl -fsS --max-time 8 http://127.0.0.1/ >/dev/null; then
-  issues+=("HTTP 首页异常: http://127.0.0.1/")
+if ! curl -fsS --max-time 8 -H "Host: ${TGMSG_FRONTEND_HEALTH_HOST}" "$TGMSG_FRONTEND_HEALTH_URL" >/dev/null; then
+  issues+=("HTTP 首页异常: ${TGMSG_FRONTEND_HEALTH_HOST} -> ${TGMSG_FRONTEND_HEALTH_URL}")
 fi
 
-if ! curl -fsS --max-time 8 http://127.0.0.1/openapi.json >/dev/null; then
-  issues+=("HTTP OpenAPI 异常: http://127.0.0.1/openapi.json")
+if ! curl -fsS --max-time 8 "$TGMSG_APP_HEALTH_URL" >/dev/null; then
+  issues+=("HTTP OpenAPI 异常: ${TGMSG_APP_HEALTH_URL}")
 fi
 
 available_mb="$(awk '/MemAvailable:/ {print int($2/1024)}' /proc/meminfo)"

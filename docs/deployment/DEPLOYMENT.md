@@ -7,7 +7,7 @@
 - GitHub Actions
 - SSH 发布到服务器
 - `release` 目录 + `current` 软链
-- Docker Compose 更新 `tgmsg-app` 与 `tgmsg-frontend`
+- Docker Compose 更新 `tgmsg-app`，前端镜像释放为宿主机静态文件
 
 如果你要看服务器真实目录、挂载和运行状态，请同时参考：
 
@@ -27,7 +27,7 @@
    - `python -m unittest discover -s tests -t .`
 5. 检查通过后，workflow 通过 SSH 调用 `deploy/release.sh`
 6. 服务器接收 release 包，执行 `deploy/server-install-release.sh`
-7. 服务器完成数据库迁移、更新容器、切换 `/data/tgmsg/current`
+7. 服务器拉取指定 GHCR 镜像，完成数据库迁移、释放前端静态文件、更新容器、切换 `/data/tgmsg/current`
 
 当前 CI、容器和推荐本地环境统一使用 `Python 3.11`。
 
@@ -59,10 +59,12 @@
 - `PRODUCTION_SSH_PRIVATE_KEY`
 - `PRODUCTION_HOST`
 - `PRODUCTION_USER`
+- `GHCR_TOKEN`
 
 可选 Secret：
 
 - `PRODUCTION_PORT`
+- `GHCR_USERNAME`
 
 可选 Variables：
 
@@ -77,7 +79,7 @@
 
 ```bash
 mkdir -p /data/tgmsg/{releases,shared,incoming,backups}
-mkdir -p /data/tgmsg/{logs,uploads,nginx-logs}
+mkdir -p /data/tgmsg/{logs,uploads}
 ```
 
 线上环境变量文件位于：
@@ -137,19 +139,18 @@ bash deploy/release.sh --host production-server --base-dir /data/tgmsg
 2. 准备 `/data/tgmsg/shared/.env`
 3. 执行 `deploy/compose-up.sh`
 4. 确保业务数据库存在
-5. 构建 `app` / `frontend` 镜像
+5. 拉取 Actions 推送的指定 GHCR 镜像
 6. 执行数据库迁移
-7. 启动 `tgmsg-app`
-8. 启动 `tgmsg-frontend`
+7. 释放前端静态文件到 `/data/infra/www/msg.telema.cn`
+8. 启动 `tgmsg-app`
 9. 切换 `/data/tgmsg/current`
 10. 安装并启用巡检相关 systemd timer
 
 当前 `docker-compose.yml` 只负责业务容器：
 
 - `tgmsg-app`
-- `tgmsg-frontend`
 
-`tgmsg-frontend` 只绑定本机端口，默认 `127.0.0.1:18080`。公网 `80/443` 由基础设施服务器宿主机 Nginx 按 `msg.telema.cn` 转发。
+前端镜像不作为长期运行容器；公网 `80/443` 由基础设施服务器宿主机 Nginx 托管静态文件，并按 `msg.telema.cn` 转发 `/api/`。
 
 中间件不由本仓库发版：
 
@@ -166,7 +167,6 @@ bash deploy/release.sh --host production-server --base-dir /data/tgmsg
 ├── current -> /data/tgmsg/releases/<release_id>
 ├── incoming/
 ├── logs/
-├── nginx-logs/
 ├── releases/
 ├── shared/
 │   └── .env
@@ -177,7 +177,6 @@ bash deploy/release.sh --host production-server --base-dir /data/tgmsg
 
 - `tgmsg-app:/app/logs` -> `/data/tgmsg/logs`
 - `tgmsg-app:/app/uploads` -> `/data/tgmsg/uploads`
-- `tgmsg-frontend:/var/log/nginx` -> `/data/tgmsg/nginx-logs`
 
 如果文档与服务器不一致，以：
 
@@ -213,16 +212,17 @@ Actions -> Deploy Production -> Run workflow
 readlink -f /data/tgmsg/current
 cd /data/tgmsg/current
 docker compose --env-file /data/tgmsg/shared/.env ps
-curl -fsS http://127.0.0.1:${TGMSG_FRONTEND_HOST_PORT:-18080}/ >/dev/null && echo ok
+test -f /data/infra/www/msg.telema.cn/current/index.html
+curl -fsS http://127.0.0.1:${TGMSG_APP_HOST_PORT:-18000}/openapi.json >/dev/null && echo ok
+curl -fsS -H 'Host: msg.telema.cn' http://127.0.0.1/ >/dev/null && echo ok
 docker logs --tail 100 tgmsg-app
-docker logs --tail 100 tgmsg-frontend
 systemctl list-timers | grep tgmsg
 ```
 
 通过标准：
 
-- `tgmsg-app` / `tgmsg-frontend` 都是 `running`
-- 首页可访问
+- `tgmsg-app` 是 `running`
+- 静态首页与 OpenAPI 可访问
 - 后端日志没有持续报错或循环重启
 - `current` 已指向新 release
 

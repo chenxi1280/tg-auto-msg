@@ -17,9 +17,9 @@
 - `docker-env.sh`
   - 生成或校验 Docker 所需环境变量。
 - `check-services.sh`
-  - 后端与前端服务健康检查、自愈和告警。
+  - 后端容器、宿主机前端入口、基础设施健康检查、自愈和告警。
 - `check-frontend.sh`
-  - 前端可用性巡检。
+  - 宿主机 Nginx 前端入口可用性巡检。
 - `nginx/`
   - Nginx 配置。
 - `systemd/`
@@ -29,4 +29,6 @@
 
 1. 部署脚本尽量保持无状态，可重复执行。
 2. 环境变量示例统一写入 `.env.docker.example` 或部署文档，不在脚本里硬编码业务密钥。
-3. 新增运维脚本时，优先补充到 `docs/deployment/DEPLOYMENT.md`，并在本文件登记用途。
+3. 生产部署不在服务器构建镜像，只拉取 GitHub Actions 推送到 GHCR 的指定 tag。
+4. 前端镜像只作为静态产物载体，服务器释放到 `/data/infra/www/msg.telema.cn`，由宿主机 Nginx 托管。
+5. 新增运维脚本时，优先补充到 `docs/deployment/DEPLOYMENT.md`，并在本文件登记用途。

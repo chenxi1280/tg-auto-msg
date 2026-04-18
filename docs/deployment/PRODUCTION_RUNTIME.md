@@ -11,7 +11,7 @@
 - GitHub Actions
 - SSH 发布到服务器
 - release 目录 + `current` 软链
-- `docker compose up -d --build --remove-orphans`
+- GitHub Actions 构建 Docker Image，服务器只 pull 指定镜像并 `docker compose up -d --no-build`
 
 发布链路：
 
@@ -20,7 +20,7 @@
 3. 解压到 `/data/tgmsg/releases/<release_id>`
 4. 调用 `deploy/server-install-release.sh`
 5. 切换 `/data/tgmsg/current`
-6. 启动 `tgmsg-app` 与 `tgmsg-frontend`
+6. 拉取 `tgmsg-app` 镜像、执行迁移、释放前端静态文件并启动 `tgmsg-app`
 
 中间件不由本项目维护：
 
@@ -43,7 +43,6 @@
 ├── current -> /data/tgmsg/releases/<release_id>
 ├── incoming/
 ├── logs/
-├── nginx-logs/
 ├── postgres/
 ├── redis/
 ├── releases/
@@ -67,11 +66,9 @@
 |------|------------|------------|------|
 | `tgmsg-app` | `/app/logs` | `/data/tgmsg/logs` | 后端日志 |
 | `tgmsg-app` | `/app/uploads` | `/data/tgmsg/uploads` | 上传目录 |
-| `tgmsg-frontend` | `/var/log/nginx` | `/data/tgmsg/nginx-logs` | 前端 Nginx 日志 |
-
 注意：
 
-- 线上当前真实挂载目录是 `/data/tgmsg/logs`、`/data/tgmsg/uploads`、`/data/tgmsg/nginx-logs`
+- 线上当前真实挂载目录是 `/data/tgmsg/logs`、`/data/tgmsg/uploads`
 - 这和一些较早文档里提到的 `/data/tgmsg/shared/logs` 并不一致
 - 本文档与当前线上实际保持一致
 - 后端镜像当前不会自动复制仓库根目录下的 `scripts/` 到容器内；一次性脚本不会因为发布而自动进入运行时镜像
@@ -84,9 +81,12 @@
 DATABASE_URL=postgresql+asyncpg://<db_user>:<db_password>@postgres:5432/tgmsg
 REDIS_URL=redis://:<redis_password>@redis:6379/0
 INFRA_NETWORK_NAME=infra_default
-TGMSG_FRONTEND_BIND_HOST=127.0.0.1
-TGMSG_FRONTEND_HOST_PORT=18080
+TGMSG_APP_BIND_HOST=127.0.0.1
+TGMSG_APP_HOST_PORT=18000
+TGMSG_FRONTEND_STATIC_BASE_DIR=/data/infra/www/msg.telema.cn
 H5_BASE_URL=https://msg.telema.cn
+GHCR_USERNAME=<github_user>
+GHCR_TOKEN=<github_pat_with_read_packages>
 PROVINCE_CODE=<province_code>
 ADMIN_BOOTSTRAP_USERNAME=admin
 ADMIN_BOOTSTRAP_PASSWORD=<strong_password>
@@ -98,7 +98,8 @@ ADMIN_BOOTSTRAP_DISPLAY_NAME=超级管理员
 - `DATABASE_URL` 指向 `infra-compose` 中的 `postgres`
 - `REDIS_URL` 指向 `infra-compose` 中的 `redis`
 - `INFRA_NETWORK_NAME` 用于把业务容器接入公共网络
-- `TGMSG_FRONTEND_*` 让前端 Nginx 只监听本机端口，由宿主机 Nginx 按 `msg.telema.cn` 反代
+- `TGMSG_APP_*` 让后端只监听本机端口，由宿主机 Nginx 将 `/api/` 反代过来
+- `TGMSG_FRONTEND_STATIC_BASE_DIR` 是 H5 静态 release 目录
 - `H5_BASE_URL` 应使用公网子域名
 - `PROVINCE_CODE` 表示当前这套服务所属省份，超管账号按省份隔离初始化
 - `ADMIN_BOOTSTRAP_*` 用于首次启动时自动创建当前省份的首个 `super_admin`
@@ -117,25 +118,26 @@ ADMIN_BOOTSTRAP_DISPLAY_NAME=超级管理员
 - PostgreSQL 与 Redis 数据目录已经迁移到 `/data/infra/postgres` 和 `/data/infra/redis`
 - `/data/tgmsg/postgres` 与 `/data/tgmsg/redis` 仍保留为回退副本
 
-当前仍保留的兼容点主要是 `tgmsg` 自己的日志、上传和 Nginx 日志目录仍位于 `/data/tgmsg/*`。
+当前仍保留的兼容点主要是 `tgmsg` 自己的日志和上传目录仍位于 `/data/tgmsg/*`。
 
-公共入口由基础设施服务器宿主机 Nginx 提供，`tgmsg-frontend` 不再直接占用公网 `80`，默认仅暴露 `127.0.0.1:18080`。
+公共入口由基础设施服务器宿主机 Nginx 提供，H5 静态文件由 `/data/infra/www/msg.telema.cn/current` 托管，`/api/` 反代到 `127.0.0.1:18000`。
 
 ## 6. 发布后验收清单
 
 ```bash
 docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-curl -fsS http://127.0.0.1:${TGMSG_FRONTEND_HOST_PORT:-18080}/
+test -f /data/infra/www/msg.telema.cn/current/index.html
+curl -fsS http://127.0.0.1:${TGMSG_APP_HOST_PORT:-18000}/openapi.json
+curl -fsS -H 'Host: msg.telema.cn' http://127.0.0.1/ >/dev/null
 docker logs --tail 50 tgmsg-app
 docker inspect tgmsg-app --format '{{json .Mounts}}'
-docker inspect tgmsg-frontend --format '{{json .Mounts}}'
 readlink -f /data/tgmsg/current
 ```
 
 通过标准：
 
-- `tgmsg-app` 与 `tgmsg-frontend` 都是 `Up`
-- 首页 `http://127.0.0.1:${TGMSG_FRONTEND_HOST_PORT:-18080}/` 可访问
+- `tgmsg-app` 是 `Up`
+- H5 静态首页与 OpenAPI 均可访问
 - `tgmsg-app` 日志中没有持续重启或连接失败
 - `current` 指向最新 release
 
