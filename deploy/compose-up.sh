@@ -102,11 +102,11 @@ require_image TGMSG_APP_IMAGE
 require_image TGMSG_FRONTEND_IMAGE
 docker_login_ghcr
 
-echo "==> 确保业务数据库存在"
-bash "$SCRIPT_DIR/ensure-database.sh"
-
 echo "==> 拉取后端镜像"
 compose pull app
+
+echo "==> 确保业务数据库存在"
+bash "$SCRIPT_DIR/ensure-database.sh"
 
 echo "==> 拉取前端静态产物镜像"
 docker pull "$TGMSG_FRONTEND_IMAGE"
