@@ -215,6 +215,7 @@ docker compose --env-file /data/tgmsg/shared/.env ps
 test -f /data/infra/www/msg.telema.cn/current/index.html
 curl -fsS http://127.0.0.1:${TGMSG_APP_HOST_PORT:-18000}/openapi.json >/dev/null && echo ok
 curl -fsS -H 'Host: msg.telema.cn' http://127.0.0.1/ >/dev/null && echo ok
+test "$(curl -k -s -o /dev/null -w '%{http_code}' -H 'Host: msg.telema.cn' https://127.0.0.1/api/admin-auth/me)" = "401" && echo api-ok
 docker logs --tail 100 tgmsg-app
 systemctl list-timers | grep tgmsg
 ```
@@ -222,7 +223,7 @@ systemctl list-timers | grep tgmsg
 通过标准：
 
 - `tgmsg-app` 是 `running`
-- 静态首页与 OpenAPI 可访问
+- 静态首页、OpenAPI 与宿主机 `/api` 反代可访问
 - 后端日志没有持续报错或循环重启
 - `current` 已指向新 release
 

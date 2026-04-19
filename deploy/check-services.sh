@@ -14,12 +14,14 @@ HEALTHCHECK_TIMEZONE="${HEALTHCHECK_TIMEZONE:-${TIMEZONE:-Asia/Shanghai}}"
 MEM_AVAILABLE_THRESHOLD_MB="${MEM_AVAILABLE_THRESHOLD_MB:-128}"
 DISK_USAGE_THRESHOLD_PERCENT="${DISK_USAGE_THRESHOLD_PERCENT:-90}"
 RECOVERY_WAIT_SECONDS="${RECOVERY_WAIT_SECONDS:-8}"
+RECOVERY_TIMEOUT_SECONDS="${RECOVERY_TIMEOUT_SECONDS:-75}"
 DAILY_REPORT_HOUR="${DAILY_REPORT_HOUR:-09}"
 TGMSG_LOG_SCAN_WINDOW="${TGMSG_LOG_SCAN_WINDOW:-30m}"
 TGMSG_ERROR_MATCH_LIMIT="${TGMSG_ERROR_MATCH_LIMIT:-6}"
 TGMSG_LOG_TAIL_LINES="${TGMSG_LOG_TAIL_LINES:-400}"
 TGMSG_LOG_SCAN_FILE_LIMIT="${TGMSG_LOG_SCAN_FILE_LIMIT:-3}"
 APP_CONTAINER="${APP_CONTAINER:-tgmsg-app}"
+LEGACY_FRONTEND_CONTAINER="${LEGACY_FRONTEND_CONTAINER:-tgmsg-frontend}"
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-app-infra-postgres}"
 REDIS_CONTAINER="${REDIS_CONTAINER:-app-infra-redis}"
 APP_RUNTIME_LOG_DIR="${APP_RUNTIME_LOG_DIR:-/data/tgmsg/logs}"
@@ -120,12 +122,17 @@ hash_text() {
 
 service_status() {
   local service="$1"
-  docker inspect "$service" --format '{{.State.Status}}' 2>/dev/null || true
+  docker container inspect "$service" --format '{{.State.Status}}' 2>/dev/null || true
 }
 
 service_health() {
   local service="$1"
-  docker inspect "$service" --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' 2>/dev/null || true
+  docker container inspect "$service" --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' 2>/dev/null || true
+}
+
+container_exists() {
+  local service="$1"
+  docker container inspect "$service" >/dev/null 2>&1
 }
 
 service_ok() {
@@ -144,6 +151,49 @@ service_ok() {
   fi
 
   return 0
+}
+
+wait_for_service_ok() {
+  local service="$1"
+  local timeout_seconds="${2:-$RECOVERY_TIMEOUT_SECONDS}"
+  local started_at now elapsed status health
+
+  started_at="$(date +%s)"
+  while true; do
+    if service_ok "$service"; then
+      return 0
+    fi
+
+    status="$(service_status "$service")"
+    health="$(service_health "$service")"
+    if [[ -z "$status" || "$status" == "exited" || "$status" == "dead" || "$health" == "unhealthy" ]]; then
+      return 1
+    fi
+
+    now="$(date +%s)"
+    elapsed=$((now - started_at))
+    if (( elapsed >= timeout_seconds )); then
+      return 1
+    fi
+
+    sleep 2
+  done
+}
+
+expected_app_binding() {
+  printf '%s:%s' "${TGMSG_APP_BIND_HOST:-127.0.0.1}" "${TGMSG_APP_HOST_PORT:-18000}"
+}
+
+current_app_binding() {
+  docker port "$APP_CONTAINER" 8000/tcp 2>/dev/null | awk 'NR == 1 {print $1}'
+}
+
+app_binding_ok() {
+  [[ "$(current_app_binding)" == "$(expected_app_binding)" ]]
+}
+
+legacy_frontend_present() {
+  container_exists "$LEGACY_FRONTEND_CONTAINER"
 }
 
 tail_container_errors() {
@@ -280,23 +330,34 @@ attempt_service_recovery() {
   log "⚠️ 检测到 ${service} 异常，开始自愈 (reason=${reason})"
 
   if docker start "$service" >>"$LOG_FILE" 2>&1; then
-    sleep "$RECOVERY_WAIT_SECONDS"
+    if wait_for_service_ok "$service"; then
+      recovered_services+=("${service}:docker-start")
+      log "✅ ${service} 通过 docker start 恢复成功"
+      return 0
+    fi
   else
     log "⚠️ docker start ${service} 失败，回退到 docker compose up -d ${compose_name}"
   fi
 
-  if service_ok "$service"; then
-    recovered_services+=("${service}:docker-start")
-    log "✅ ${service} 通过 docker start 恢复成功"
+  compose up -d --no-build "$compose_name" >>"$LOG_FILE" 2>&1
+  if wait_for_service_ok "$service"; then
+    recovered_services+=("${service}:compose-up")
+    log "✅ ${service} 通过 docker compose up -d ${compose_name} 恢复成功"
     return 0
   fi
 
-  compose up -d "$compose_name" >>"$LOG_FILE" 2>&1
-  sleep "$RECOVERY_WAIT_SECONDS"
+  return 1
+}
 
-  if service_ok "$service"; then
-    recovered_services+=("${service}:compose-up")
-    log "✅ ${service} 通过 docker compose up -d ${compose_name} 恢复成功"
+attempt_app_alignment_recovery() {
+  local reason="$1"
+
+  log "⚠️ 检测到 tgmsg 发布漂移，开始按当前 compose 对齐 (reason=${reason})"
+  compose up -d --force-recreate --no-build --remove-orphans app >>"$LOG_FILE" 2>&1
+
+  if wait_for_service_ok "$APP_CONTAINER" && app_binding_ok && ! legacy_frontend_present; then
+    recovered_services+=("${APP_CONTAINER}:compose-align")
+    log "✅ tgmsg 发布漂移已自动修复"
     return 0
   fi
 
@@ -308,6 +369,8 @@ HEALTHCHECK_TIMEZONE="${HEALTHCHECK_TIMEZONE:-${TIMEZONE:-Asia/Shanghai}}"
 TGMSG_APP_HEALTH_URL="${TGMSG_APP_HEALTH_URL:-http://127.0.0.1:${TGMSG_APP_HOST_PORT:-18000}/openapi.json}"
 TGMSG_FRONTEND_HEALTH_URL="${TGMSG_FRONTEND_HEALTH_URL:-http://127.0.0.1/}"
 TGMSG_FRONTEND_HEALTH_HOST="${TGMSG_FRONTEND_HEALTH_HOST:-msg.telema.cn}"
+TGMSG_PUBLIC_API_HEALTH_URL="${TGMSG_PUBLIC_API_HEALTH_URL:-https://127.0.0.1/api/admin-auth/me}"
+TGMSG_PUBLIC_API_HEALTH_HOST="${TGMSG_PUBLIC_API_HEALTH_HOST:-msg.telema.cn}"
 export TZ="$HEALTHCHECK_TIMEZONE"
 
 LOG_WINDOW_END_VALUE="$(date '+%Y-%m-%d %H:%M:%S')"
@@ -338,6 +401,29 @@ done
 check_postgres_middleware
 check_redis_middleware
 
+alignment_reasons=()
+current_binding="$(current_app_binding)"
+if ! app_binding_ok; then
+  alignment_reasons+=(
+    "tgmsg-app 宿主机端口映射异常: expected=$(expected_app_binding), actual=${current_binding:-missing}"
+  )
+fi
+if legacy_frontend_present; then
+  alignment_reasons+=(
+    "检测到遗留容器: ${LEGACY_FRONTEND_CONTAINER} (status=$(service_status "$LEGACY_FRONTEND_CONTAINER"))"
+  )
+fi
+
+if (( ${#alignment_reasons[@]} > 0 )); then
+  alignment_reason_text="$(printf '%s; ' "${alignment_reasons[@]}")"
+  if ! attempt_app_alignment_recovery "$alignment_reason_text"; then
+    for reason in "${alignment_reasons[@]}"; do
+      issues+=("$reason")
+    done
+    issues+=("tgmsg 发布漂移自动修复失败")
+  fi
+fi
+
 if ! curl -fsS --max-time 8 -H "Host: ${TGMSG_FRONTEND_HEALTH_HOST}" "$TGMSG_FRONTEND_HEALTH_URL" >/dev/null; then
   issues+=("HTTP 首页异常: ${TGMSG_FRONTEND_HEALTH_HOST} -> ${TGMSG_FRONTEND_HEALTH_URL}")
 fi
@@ -345,6 +431,19 @@ fi
 if ! curl -fsS --max-time 8 "$TGMSG_APP_HEALTH_URL" >/dev/null; then
   issues+=("HTTP OpenAPI 异常: ${TGMSG_APP_HEALTH_URL}")
 fi
+
+public_api_status="$(curl -k -sS -o /dev/null -w '%{http_code}' --max-time 8 \
+  -H "Host: ${TGMSG_PUBLIC_API_HEALTH_HOST}" \
+  "$TGMSG_PUBLIC_API_HEALTH_URL" || true)"
+case "$public_api_status" in
+  200|401|403)
+    ;;
+  *)
+    issues+=(
+      "宿主机 API 反代异常: ${TGMSG_PUBLIC_API_HEALTH_HOST} -> ${TGMSG_PUBLIC_API_HEALTH_URL} (status=${public_api_status:-curl-failed})"
+    )
+    ;;
+esac
 
 available_mb="$(awk '/MemAvailable:/ {print int($2/1024)}' /proc/meminfo)"
 if (( available_mb < MEM_AVAILABLE_THRESHOLD_MB )); then

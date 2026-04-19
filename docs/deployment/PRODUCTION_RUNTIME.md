@@ -129,6 +129,7 @@ docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 test -f /data/infra/www/msg.telema.cn/current/index.html
 curl -fsS http://127.0.0.1:${TGMSG_APP_HOST_PORT:-18000}/openapi.json
 curl -fsS -H 'Host: msg.telema.cn' http://127.0.0.1/ >/dev/null
+test "$(curl -k -s -o /dev/null -w '%{http_code}' -H 'Host: msg.telema.cn' https://127.0.0.1/api/admin-auth/me)" = "401"
 docker logs --tail 50 tgmsg-app
 docker inspect tgmsg-app --format '{{json .Mounts}}'
 readlink -f /data/tgmsg/current
@@ -137,7 +138,7 @@ readlink -f /data/tgmsg/current
 通过标准：
 
 - `tgmsg-app` 是 `Up`
-- H5 静态首页与 OpenAPI 均可访问
+- H5 静态首页、OpenAPI 与宿主机 `/api` 反代均可访问
 - `tgmsg-app` 日志中没有持续重启或连接失败
 - `current` 指向最新 release
 
