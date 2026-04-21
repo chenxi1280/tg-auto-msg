@@ -3,26 +3,29 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 
 from loguru import logger
-from sqlalchemy import and_, select
 from telethon import Button
+from telethon.errors import (
+    ChatWriteForbiddenError,
+    InputUserDeactivatedError,
+    PeerIdInvalidError,
+    UserIsBlockedError,
+)
 
 from backend.bot.client_runtime.manager import bot_client, ensure_manager_bot_ready
+from backend.bot.handlers.core.user_link import load_latest_linked_tg_user_ids
 from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import (
-    AppSetting,
     AuthorizationNoticeLog,
-    UserAuthorization,
 )
 from backend.h5_backend.services.licensing.service import list_due_slot_reminders
 from backend.h5_backend.services.me.service import get_me_service
 from backend.utils.url_validation import is_valid_button_url
 
 NOTICE_DAYS = (7, 3, 1)
-USER_LINK_KEY_PREFIX = "tg_user_link:"
 
 
 @dataclass
@@ -45,6 +48,16 @@ class LicenseSlotNotifier:
 
     def __init__(self) -> None:
         self.running = False
+
+    @staticmethod
+    def _classify_delivery_exception(exc: Exception) -> str:
+        if isinstance(exc, UserIsBlockedError):
+            return "blocked"
+        if isinstance(exc, InputUserDeactivatedError):
+            return "deactivated"
+        if isinstance(exc, (PeerIdInvalidError, ChatWriteForbiddenError)):
+            return "unreachable"
+        return "failed"
 
     async def start(self) -> None:
         self.running = True
@@ -96,13 +109,24 @@ class LicenseSlotNotifier:
                 await self._record_notice(item)
                 sent_count += 1
             except Exception as exc:
-                logger.error(
-                    "发送授权到期提醒失败: user_id={}, tg_user_id={}, days_before={}, error={}",
-                    item.user_id,
-                    item.tg_user_id,
-                    item.days_before,
-                    exc,
-                )
+                error_type = self._classify_delivery_exception(exc)
+                if error_type in {"blocked", "deactivated", "unreachable"}:
+                    logger.warning(
+                        "授权到期提醒跳过用户: user_id={}, tg_user_id={}, days_before={}, reason={}, error={}",
+                        item.user_id,
+                        item.tg_user_id,
+                        item.days_before,
+                        error_type,
+                        exc,
+                    )
+                else:
+                    logger.error(
+                        "发送授权到期提醒失败: user_id={}, tg_user_id={}, days_before={}, error={}",
+                        item.user_id,
+                        item.tg_user_id,
+                        item.days_before,
+                        exc,
+                    )
 
         if sent_count:
             logger.info("授权到期提醒发送完成: {} 条", sent_count)
@@ -110,19 +134,7 @@ class LicenseSlotNotifier:
 
     async def _collect_due_reminders(self, now: datetime) -> list[LicenseReminderItem]:
         async with get_async_session() as session:
-            user_link_rows = (
-                await session.execute(
-                    select(AppSetting.key, AppSetting.value).where(AppSetting.key.like(f"{USER_LINK_KEY_PREFIX}%"))
-                )
-            ).all()
-            user_to_tg: dict[int, int] = {}
-            for key, value in user_link_rows:
-                try:
-                    tg_user_id = int(str(key).split(USER_LINK_KEY_PREFIX, 1)[1])
-                    user_id = int(str(value).strip())
-                except Exception:
-                    continue
-                user_to_tg[user_id] = tg_user_id
+            user_to_tg = await load_latest_linked_tg_user_ids(session)
 
             if not user_to_tg:
                 return []
@@ -135,7 +147,7 @@ class LicenseSlotNotifier:
             )
             for row in rows:
                 notice_items.append(
-                LicenseReminderItem(
+                    LicenseReminderItem(
                         authorization_id=str(row["authorization_id"]),
                         user_id=int(row["user_id"]),
                         tg_user_id=int(row["tg_user_id"]),

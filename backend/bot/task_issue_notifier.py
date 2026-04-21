@@ -8,12 +8,18 @@ from typing import Iterable
 
 from loguru import logger
 from sqlalchemy import and_, or_, select
+from telethon.errors import (
+    ChatWriteForbiddenError,
+    InputUserDeactivatedError,
+    PeerIdInvalidError,
+    UserIsBlockedError,
+)
 
 from backend.bot.client_runtime.manager import bot_client, ensure_manager_bot_ready
+from backend.bot.handlers.core.user_link import load_latest_linked_tg_user_ids
 from backend.database.runtime.session import get_async_session
-from backend.database.schema.models import AppSetting, Account, Resource, ScheduledMessageTask, TaskTargetSendIssue
+from backend.database.schema.models import Account, Resource, ScheduledMessageTask, TaskTargetSendIssue
 
-USER_LINK_KEY_PREFIX = "tg_user_link:"
 _REAL_DATETIME = datetime
 
 
@@ -82,23 +88,17 @@ class TaskIssueNotifier:
 
     async def _load_user_links(self) -> dict[int, int]:
         async with get_async_session() as session:
-            rows = (
-                await session.execute(
-                    select(AppSetting.key, AppSetting.value).where(
-                        AppSetting.key.like(f"{USER_LINK_KEY_PREFIX}%")
-                    )
-                )
-            ).all()
+            return await load_latest_linked_tg_user_ids(session)
 
-        user_links: dict[int, int] = {}
-        for key, value in rows:
-            try:
-                tg_user_id = int(str(key).split(USER_LINK_KEY_PREFIX, 1)[1])
-                user_id = int(str(value).strip())
-            except Exception:
-                continue
-            user_links[user_id] = tg_user_id
-        return user_links
+    @staticmethod
+    def _classify_delivery_exception(exc: Exception) -> str:
+        if isinstance(exc, UserIsBlockedError):
+            return "blocked"
+        if isinstance(exc, InputUserDeactivatedError):
+            return "deactivated"
+        if isinstance(exc, (PeerIdInvalidError, ChatWriteForbiddenError)):
+            return "unreachable"
+        return "failed"
 
     async def _load_task_titles(self, task_ids: Iterable[str]) -> dict[str, str]:
         normalized_task_ids = sorted({str(task_id) for task_id in task_ids if task_id})
@@ -255,13 +255,24 @@ class TaskIssueNotifier:
                 await self._mark_active_notified(group_issues, now)
                 sent += 1
             except Exception as exc:
-                logger.error(
-                    "发送任务发送异常提醒失败: user_id={}, tg_user_id={}, task_id={}, error={}",
-                    user_id,
-                    tg_user_id,
-                    task_id,
-                    exc,
-                )
+                error_type = self._classify_delivery_exception(exc)
+                if error_type in {"blocked", "deactivated", "unreachable"}:
+                    logger.warning(
+                        "任务异常提醒跳过用户: user_id={}, tg_user_id={}, task_id={}, reason={}, error={}",
+                        user_id,
+                        tg_user_id,
+                        task_id,
+                        error_type,
+                        exc,
+                    )
+                else:
+                    logger.error(
+                        "发送任务发送异常提醒失败: user_id={}, tg_user_id={}, task_id={}, error={}",
+                        user_id,
+                        tg_user_id,
+                        task_id,
+                        exc,
+                    )
         return sent
 
     async def _send_recovery_notifications(
@@ -295,13 +306,24 @@ class TaskIssueNotifier:
                 await self._mark_recovery_notified(group_issues, now)
                 sent += 1
             except Exception as exc:
-                logger.error(
-                    "发送任务恢复提醒失败: user_id={}, tg_user_id={}, task_id={}, error={}",
-                    user_id,
-                    tg_user_id,
-                    task_id,
-                    exc,
-                )
+                error_type = self._classify_delivery_exception(exc)
+                if error_type in {"blocked", "deactivated", "unreachable"}:
+                    logger.warning(
+                        "任务恢复提醒跳过用户: user_id={}, tg_user_id={}, task_id={}, reason={}, error={}",
+                        user_id,
+                        tg_user_id,
+                        task_id,
+                        error_type,
+                        exc,
+                    )
+                else:
+                    logger.error(
+                        "发送任务恢复提醒失败: user_id={}, tg_user_id={}, task_id={}, error={}",
+                        user_id,
+                        tg_user_id,
+                        task_id,
+                        exc,
+                    )
         return sent
 
     def _group_issues(

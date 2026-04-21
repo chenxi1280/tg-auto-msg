@@ -3,6 +3,8 @@ from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from telethon.errors import UserIsBlockedError
+
 from backend.bot.task_issue_notifier import TaskIssueNotifier
 from backend.database.schema.models import TaskTargetSendIssue
 from backend.scheduler.core.task_execution import collect_task_targets, count_configured_task_targets
@@ -306,6 +308,46 @@ class TaskIssueNotifierTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(sent, 0)
         send_mock.assert_not_awaited()
+
+    async def test_scan_once_warns_when_user_blocked(self):
+        notifier = TaskIssueNotifier()
+        now = datetime(2026, 4, 11, 12, 0, 0)
+        issues = [
+            TaskTargetSendIssue(
+                id=5,
+                user_id=9,
+                task_id="task-blocked",
+                account_id="acc-1",
+                peer_id=3001,
+                peer_type="channel",
+                peer_title="频道 D",
+                current_error_type="RuntimeError",
+                current_error_message="发送失败（RuntimeError）：boom",
+                issue_category="send_error",
+                status="active",
+                auto_suspended=False,
+            )
+        ]
+
+        with (
+            patch.object(notifier, "_list_pending_active_issues", AsyncMock(return_value=issues)),
+            patch.object(notifier, "_list_pending_recovery_issues", AsyncMock(return_value=[])),
+            patch("backend.bot.task_issue_notifier.ensure_manager_bot_ready", AsyncMock(return_value=True)),
+            patch.object(notifier, "_load_user_links", AsyncMock(return_value={9: 987654321})),
+            patch.object(notifier, "_load_task_titles", AsyncMock(return_value={"task-blocked": "测试任务"})),
+            patch.object(notifier, "_load_account_labels", AsyncMock(return_value={"acc-1": "@sender"})),
+            patch.object(notifier, "_load_peer_labels", AsyncMock(return_value={("acc-1", 3001): "频道 D"})),
+            patch("backend.bot.task_issue_notifier.bot_client.send_message", AsyncMock(side_effect=UserIsBlockedError(request=None))),
+            patch("backend.bot.task_issue_notifier.logger.warning") as warning_mock,
+            patch("backend.bot.task_issue_notifier.logger.error") as error_mock,
+            patch("backend.bot.task_issue_notifier.datetime") as datetime_mock,
+        ):
+            datetime_mock.now.return_value = now
+            sent = await notifier.scan_once()
+
+        self.assertEqual(sent, 0)
+        warning_mock.assert_called_once()
+        error_mock.assert_not_called()
 
     async def test_old_unnotified_active_issue_is_not_backfilled(self):
         notifier = TaskIssueNotifier()
