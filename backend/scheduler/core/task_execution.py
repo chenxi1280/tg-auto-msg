@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Optional
 
 from loguru import logger
+from telethon import helpers
+from telethon.extensions import html as telethon_html
+from telethon.tl import types
 
 from backend.bot.circuit.breaker import get_circuit_breaker
 from backend.bot.ui.keyboards import build_inline_buttons
@@ -12,6 +16,10 @@ from backend.bot.safety.rate_limiter import get_rate_limiter
 from backend.database.schema.models import MediaType, ScheduledMessageTask
 
 TARGET_DELIVERY_SUSPENDED = "suspended"
+TELEGRAM_USERNAME_PATTERN = re.compile(r"@[A-Za-z0-9_]{5,32}")
+TELEGRAM_URL_PATTERN = re.compile(
+    r"(?:https?://|tg://)[^\s<]+|(?<![\w/])t\.me/[A-Za-z0-9_/?=&%+.-]+"
+)
 
 
 def count_configured_task_targets(task: ScheduledMessageTask) -> int:
@@ -243,6 +251,53 @@ async def resolve_task_media(
     return stored_msg.media
 
 
+def _entity_bounds(entity) -> tuple[int, int]:
+    start = int(getattr(entity, "offset", 0) or 0)
+    return start, start + int(getattr(entity, "length", 0) or 0)
+
+
+def _entity_overlaps(entity, start: int, end: int) -> bool:
+    entity_start, entity_end = _entity_bounds(entity)
+    return start < entity_end and end > entity_start
+
+
+def _has_existing_link_entity(entities: list, start: int, end: int) -> bool:
+    link_entity_types = (
+        types.MessageEntityMention,
+        types.MessageEntityTextUrl,
+        types.MessageEntityUrl,
+    )
+    return any(
+        isinstance(entity, link_entity_types) and _entity_overlaps(entity, start, end)
+        for entity in entities
+    )
+
+
+def build_telegram_text_and_entities(text: Optional[str]) -> tuple[Optional[str], Optional[list]]:
+    """Parse configured HTML text and add explicit entities for raw usernames/URLs."""
+    if not text:
+        return text, None
+
+    parsed_text, entities = telethon_html.parse(text)
+    entities = list(entities or [])
+    surrogate_text = helpers.add_surrogate(parsed_text)
+
+    for match in TELEGRAM_USERNAME_PATTERN.finditer(surrogate_text):
+        start, end = match.span()
+        if _has_existing_link_entity(entities, start, end):
+            continue
+        entities.append(types.MessageEntityMention(offset=start, length=end - start))
+
+    for match in TELEGRAM_URL_PATTERN.finditer(surrogate_text):
+        start, end = match.span()
+        if _has_existing_link_entity(entities, start, end):
+            continue
+        entities.append(types.MessageEntityUrl(offset=start, length=end - start))
+
+    entities.sort(key=lambda entity: (int(getattr(entity, "offset", 0) or 0), -int(getattr(entity, "length", 0) or 0)))
+    return parsed_text, entities or None
+
+
 async def do_send_message(
     *,
     client,
@@ -256,6 +311,7 @@ async def do_send_message(
     if text:
         rate_limiter = get_rate_limiter()
         text = rate_limiter.add_invisible_variation(text)
+    send_text, formatting_entities = build_telegram_text_and_entities(text)
 
     buttons = build_inline_buttons(task.buttons)
 
@@ -291,9 +347,10 @@ async def do_send_message(
                 return await client.send_file(
                     send_target,
                     file=send_media,
-                    caption=text,
+                    caption=send_text,
                     buttons=send_buttons,
-                    parse_mode="html",
+                    parse_mode=None,
+                    formatting_entities=formatting_entities,
                 )
             if task.media_type == MediaType.STICKER:
                 return await client.send_file(send_target, file=send_media, buttons=send_buttons)
@@ -302,9 +359,10 @@ async def do_send_message(
 
         return await client.send_message(
             send_target,
-            text,
+            send_text,
             buttons=send_buttons,
-            parse_mode="html",
+            parse_mode=None,
+            formatting_entities=formatting_entities,
         )
 
     if task.delete_previous and previous_message_id:
