@@ -8,6 +8,7 @@
 """
 import asyncio
 import random
+import re
 import time
 from typing import Optional
 from loguru import logger
@@ -38,6 +39,14 @@ class RateLimiter:
 
     # 零宽字符列表（用于去重）
     ZERO_WIDTH_CHARS = ['\u200B', '\u200C', '\u200D', '\uFEFF']
+    PROTECTED_TEXT_PATTERNS = (
+        re.compile(r"@[A-Za-z0-9_]{5,32}"),
+        re.compile(r"https?://[^\s<]+"),
+        re.compile(r"tg://[^\s<]+"),
+        re.compile(r"t\.me/[A-Za-z0-9_/?=&%+.-]+"),
+        re.compile(r"<[^>]*>"),
+        re.compile(r"&[A-Za-z0-9#]+;"),
+    )
 
     def __init__(self, redis_url: str | None = None):
         """
@@ -215,6 +224,21 @@ class RateLimiter:
 
         return result
 
+    def _safe_invisible_insert_positions(self, text: str) -> list[int]:
+        protected_ranges: list[tuple[int, int]] = []
+        for pattern in self.PROTECTED_TEXT_PATTERNS:
+            protected_ranges.extend(match.span() for match in pattern.finditer(text))
+
+        if not protected_ranges:
+            return list(range(len(text)))
+
+        safe_positions: list[int] = []
+        for pos in range(len(text)):
+            if any(start < pos < end for start, end in protected_ranges):
+                continue
+            safe_positions.append(pos)
+        return safe_positions
+
     def add_invisible_variation(self, text: str) -> str:
         """
         添加不可见变体（更高级的去重）
@@ -233,10 +257,10 @@ class RateLimiter:
 
         # 方案2：在随机位置插入零宽字符
         chars = list(result)
-        insert_positions = random.sample(
-            range(len(chars)),
-            min(2, len(chars))
-        )
+        insert_candidates = self._safe_invisible_insert_positions(result)
+        if not insert_candidates:
+            return result
+        insert_positions = random.sample(insert_candidates, min(2, len(insert_candidates)))
         zero_width = random.choice(self.ZERO_WIDTH_CHARS)
         for pos in sorted(insert_positions, reverse=True):
             chars.insert(pos, zero_width)
