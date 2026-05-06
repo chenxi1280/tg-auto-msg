@@ -15,8 +15,8 @@ from backend.database.schema.models import HealthStatus
 
 def start_recovery_task(breaker, account_id: str, delay_seconds: int) -> None:
     """Start/replace delayed recovery task for account."""
-    if account_id in breaker._health_check_tasks:
-        breaker._health_check_tasks[account_id].cancel()
+    if account_id in breaker._recovery_tasks:
+        breaker._recovery_tasks[account_id].cancel()
 
     async def recovery_task():
         try:
@@ -26,14 +26,42 @@ def start_recovery_task(breaker, account_id: str, delay_seconds: int) -> None:
             pass
         except Exception as e:
             logger.error(f"恢复任务失败: {e}")
+        finally:
+            breaker._recovery_tasks.pop(account_id, None)
 
-    breaker._health_check_tasks[account_id] = asyncio.create_task(recovery_task())
+    breaker._recovery_tasks[account_id] = asyncio.create_task(recovery_task())
+
+
+async def reconcile_account_flood_state(breaker, account_id: str):
+    """Normalize temporary flood/ban state and auto-clear expired windows."""
+    account = await breaker._account_manager.get_account(account_id)
+    if not account:
+        return None
+
+    if not (account.is_flooding or account.is_banned):
+        return account
+
+    if account.flood_until is None:
+        return account
+
+    now = datetime.now()
+    if now < account.flood_until:
+        return account
+
+    logger.info(f"账号 {account_id} Flood/BAN 状态已过期，准备自动清理")
+    await breaker._account_manager.update_account(
+        account_id,
+        is_banned=False,
+        is_flooding=False,
+        flood_until=None,
+    )
+    return await breaker._account_manager.get_account(account_id)
 
 
 async def recover_account(breaker, account_id: str) -> None:
     """Recover account after flood wait window expires."""
     logger.info(f"尝试恢复账号: {account_id}")
-    account = await breaker._account_manager.get_account(account_id)
+    account = await reconcile_account_flood_state(breaker, account_id)
     if not account:
         return
 
@@ -46,6 +74,7 @@ async def recover_account(breaker, account_id: str) -> None:
 
     await breaker._account_manager.update_account(
         account_id,
+        is_banned=False,
         is_flooding=False,
         flood_until=None,
     )
@@ -92,6 +121,7 @@ async def start_health_check(breaker, account_id: str) -> None:
     async def health_check_loop():
         while True:
             try:
+                await reconcile_account_flood_state(breaker, account_id)
                 await check_session_health(breaker, account_id)
                 await asyncio.sleep(breaker.HEALTH_CHECK_INTERVAL)
             except asyncio.CancelledError:

@@ -18,6 +18,14 @@ import redis.asyncio as redis
 from backend.config.core.settings import settings
 
 
+class RateLimiterTimeoutError(TimeoutError):
+    """Raised when one target cannot obtain a send slot in time."""
+
+
+class RateLimiterBackendUnavailableError(RuntimeError):
+    """Raised when Redis-backed rate limiting is unavailable after retry."""
+
+
 class RateLimiter:
     """
     多级速率限制器
@@ -82,6 +90,22 @@ class RateLimiter:
             await self._redis_client.ping()
         return self._redis_client
 
+    async def _run_redis_op(self, operation_name: str, func):
+        """Run one Redis operation with a single reconnect retry."""
+        try:
+            return await func(await self._get_redis())
+        except RateLimiterBackendUnavailableError:
+            raise
+        except Exception as first_error:
+            logger.warning(f"速率限制器 Redis 操作失败，准备重试: op={operation_name}, error={first_error}")
+            try:
+                self._redis_client = None
+                return await func(await self._get_redis())
+            except Exception as retry_error:
+                raise RateLimiterBackendUnavailableError(
+                    f"rate limiter backend unavailable during {operation_name}: {retry_error}"
+                ) from retry_error
+
     # ==================== 锁机制 ====================
 
     async def acquire_account_lock(self, account_id: str) -> bool:
@@ -94,11 +118,13 @@ class RateLimiter:
         Returns:
             是否获取成功
         """
-        r = await self._get_redis()
         key = self.ACCOUNT_LOCK_PREFIX + account_id
 
         # 尝试设置锁（NX：不存在时才设置）
-        lock_acquired = await r.set(key, "1", nx=True, ex=self.ACCOUNT_LOCK_TTL)
+        lock_acquired = await self._run_redis_op(
+            "acquire_account_lock",
+            lambda r: r.set(key, "1", nx=True, ex=self.ACCOUNT_LOCK_TTL),
+        )
 
         if lock_acquired:
             logger.debug(f"获取账号锁: {account_id}")
@@ -117,11 +143,13 @@ class RateLimiter:
         Returns:
             是否获取成功
         """
-        r = await self._get_redis()
         key = self.PEER_LOCK_PREFIX + str(peer_id)
 
         # 尝试设置锁
-        lock_acquired = await r.set(key, "1", nx=True, ex=self.PEER_LOCK_TTL)
+        lock_acquired = await self._run_redis_op(
+            "acquire_peer_lock",
+            lambda r: r.set(key, "1", nx=True, ex=self.PEER_LOCK_TTL),
+        )
 
         if lock_acquired:
             logger.debug(f"获取群组锁: {peer_id}")
@@ -137,9 +165,11 @@ class RateLimiter:
         Args:
             account_id: 账号 ID
         """
-        r = await self._get_redis()
         key = self.ACCOUNT_LOCK_PREFIX + account_id
-        await r.delete(key)
+        await self._run_redis_op(
+            "release_account_lock",
+            lambda r: r.delete(key),
+        )
 
     async def release_peer_lock(self, peer_id: int):
         """
@@ -148,9 +178,11 @@ class RateLimiter:
         Args:
             peer_id: Peer ID
         """
-        r = await self._get_redis()
         key = self.PEER_LOCK_PREFIX + str(peer_id)
-        await r.delete(key)
+        await self._run_redis_op(
+            "release_peer_lock",
+            lambda r: r.delete(key),
+        )
 
     # ==================== 等待时间槽 ====================
 
@@ -197,7 +229,7 @@ class RateLimiter:
 
         # 超时后抛错，调用方必须显式处理，避免继续发送导致破限
         logger.warning(f"等待时间槽超时: account={account_id}, peer={peer_id}")
-        raise TimeoutError(f"等待发送时间槽超时: account={account_id}, peer={peer_id}")
+        raise RateLimiterTimeoutError(f"等待发送时间槽超时: account={account_id}, peer={peer_id}")
 
     # ==================== 零宽字符去重 ====================
 

@@ -295,41 +295,6 @@ class AgentCreditLimit(Base):
     )
 
 
-class AgentPlanPrice(Base):
-    """代理上下级计划价格。"""
-    __tablename__ = "agent_plan_prices"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    parent_account_id: Mapped[int] = mapped_column(
-        Integer,
-        ForeignKey("admin_accounts.id", ondelete="CASCADE"),
-        nullable=False,
-        comment="直接上级账号 ID",
-    )
-    child_account_id: Mapped[int] = mapped_column(
-        Integer,
-        ForeignKey("admin_accounts.id", ondelete="CASCADE"),
-        nullable=False,
-        comment="直接下级账号 ID",
-    )
-    plan_code: Mapped[str] = mapped_column(
-        String(32),
-        ForeignKey("pricing_plans.plan_code", ondelete="CASCADE"),
-        nullable=False,
-        comment="规格编码",
-    )
-    settlement_price_cents: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False, comment="结算价")
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, comment="是否有效")
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
-
-    __table_args__ = (
-        UniqueConstraint("parent_account_id", "child_account_id", "plan_code", name="uq_agent_plan_prices_parent_child_plan"),
-        Index("idx_agent_plan_prices_parent", "parent_account_id"),
-        Index("idx_agent_plan_prices_child", "child_account_id"),
-    )
-
-
 class CardBatch(Base):
     """卡密批次。"""
     __tablename__ = "card_batches"
@@ -401,32 +366,6 @@ class AgentFundLedger(Base):
         Index("idx_agent_fund_ledgers_scope", "ledger_scope"),
         Index("idx_agent_fund_ledgers_batch", "related_batch_id"),
         Index("idx_agent_fund_ledgers_created_at", "created_at"),
-    )
-
-
-class ApprovalRequest(Base):
-    """审批请求。"""
-    __tablename__ = "approval_requests"
-
-    request_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    province_code: Mapped[str] = mapped_column(String(32), nullable=False, comment="省份编码")
-    request_type: Mapped[str] = mapped_column(String(32), nullable=False, comment="审批类型")
-    requester_account_id: Mapped[int] = mapped_column(Integer, ForeignKey("admin_accounts.id", ondelete="CASCADE"), nullable=False)
-    subject_account_id: Mapped[int] = mapped_column(Integer, ForeignKey("admin_accounts.id", ondelete="CASCADE"), nullable=False)
-    approver_account_id: Mapped[int] = mapped_column(Integer, ForeignKey("admin_accounts.id", ondelete="CASCADE"), nullable=False)
-    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False, comment="审批状态")
-    amount_cents: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, comment="金额")
-    credit_delta_cents: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, comment="额度变更")
-    payload_json: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True, comment="扩展负载")
-    approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="审批时间")
-    rejected_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="驳回时间")
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
-
-    __table_args__ = (
-        Index("idx_approval_requests_subject", "subject_account_id"),
-        Index("idx_approval_requests_approver", "approver_account_id", "status"),
-        Index("idx_approval_requests_created_at", "created_at"),
     )
 
 
@@ -922,6 +861,7 @@ class TaskTargetSendIssue(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False, comment="最近出现时间")
     last_notified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="最近提醒时间")
     muted_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="静默到期时间")
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0, nullable=False, comment="连续失败次数")
     auto_suspended: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, comment="是否自动暂停目标")
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="恢复时间")
     recovered_notified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="恢复提醒时间")

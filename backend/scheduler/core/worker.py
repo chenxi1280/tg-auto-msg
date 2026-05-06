@@ -1,5 +1,6 @@
 """调度器 Worker：编排扫描、入队、执行与任务状态流转。"""
 import asyncio
+import uuid
 from datetime import datetime
 from typing import Optional
 
@@ -42,6 +43,12 @@ class TaskScheduler:
     JITTER_RANGE = 300  # 最大抖动 5 分钟（300秒）
     URGENT_PRIORITY_THRESHOLD = 100
     TELEGRAM_MEDIA_REF_PREFIX = "tgmsg://"
+    RELEASE_PROCESSING_LOCK_SCRIPT = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
 
     def __init__(self):
         self.redis_client: Optional[redis.Redis] = None
@@ -215,16 +222,17 @@ class TaskScheduler:
         """
         task_id = task.task_id
 
-        # 检查任务是否已在处理中
         processing_key = f"{self.PROCESSING_QUEUE_KEY}:{task_id}"
-        is_processing = await self.redis_client.exists(processing_key)
-
-        if is_processing:
+        processing_token = str(uuid.uuid4())
+        lock_acquired = await self.redis_client.set(
+            processing_key,
+            processing_token,
+            nx=True,
+            ex=self.PROCESSING_TTL,
+        )
+        if not lock_acquired:
             logger.debug(f"任务 {task_id} 正在处理中，跳过")
             return
-
-        # 标记为处理中
-        await self.redis_client.set(processing_key, "1", ex=self.PROCESSING_TTL)
 
         try:
             async with get_async_session() as session:
@@ -263,8 +271,12 @@ class TaskScheduler:
                 logger.warning("任务 {} 执行失败: {}", task_id, summary.error_summary or "未知错误")
 
         finally:
-            # 清除处理标记
-            await self.redis_client.delete(processing_key)
+            await self.redis_client.eval(
+                self.RELEASE_PROCESSING_LOCK_SCRIPT,
+                1,
+                processing_key,
+                processing_token,
+            )
 
 # 全局调度器实例
 scheduler = TaskScheduler()

@@ -26,6 +26,7 @@ from backend.bot.circuit.notify import (
 )
 from backend.bot.circuit.recovery import (
     check_session_health,
+    reconcile_account_flood_state,
     recover_account,
     start_health_check,
     start_recovery_task,
@@ -61,6 +62,7 @@ class CircuitBreaker:
     def __init__(self):
         self._account_manager = get_account_manager()
         self._health_check_tasks: dict[str, asyncio.Task] = {}
+        self._recovery_tasks: dict[str, asyncio.Task] = {}
 
     # ==================== FloodWait 处理 ====================
 
@@ -94,6 +96,7 @@ class CircuitBreaker:
             await self._account_manager.update_account(
                 account_id,
                 is_banned=True,
+                is_flooding=True,
                 flood_until=flood_until
             )
 
@@ -104,6 +107,9 @@ class CircuitBreaker:
 
             # 通知用户
             await self._notify_flood_wait(account_id, seconds, is_banned=True)
+
+            # 启动恢复任务
+            self._start_recovery_task(account_id, seconds)
 
             return FloodWaitAction.BAN
 
@@ -259,13 +265,9 @@ class CircuitBreaker:
             Exception: 如果无法恢复的错误
         """
         # 检查账号状态
-        account = await self._account_manager.get_account(account_id)
+        account = await reconcile_account_flood_state(self, account_id)
         if not account:
             raise ValueError(f"账号不存在: {account_id}")
-
-        # 检查是否被禁用
-        if account.is_banned:
-            raise ValueError(f"账号已被封禁: {account_id}")
 
         # 检查是否在 FloodWait 中
         if account.is_flooding and account.flood_until:
@@ -280,6 +282,13 @@ class CircuitBreaker:
             else:
                 # FloodWait 已过，尝试恢复
                 await self.recover_account(account_id)
+                account = await self._account_manager.get_account(account_id)
+                if not account:
+                    raise ValueError(f"账号不存在: {account_id}")
+
+        # 检查是否被禁用
+        if account.is_banned:
+            raise ValueError(f"账号已被封禁: {account_id}")
 
         try:
             # 执行函数

@@ -379,7 +379,7 @@ async def execute_task_once(
                         f"{target_label}: {classification.user_message}"
                     )
                     failed_target_labels.append(str(target_label))
-                    await record_task_target_send_issue(
+                    issue = await record_task_target_send_issue(
                         session=session,
                         task=task,
                         peer_id=target_peer_id,
@@ -394,7 +394,7 @@ async def execute_task_once(
                         peer_title=str(target_title).strip() if target_title else None,
                         error_type=classification.error_type,
                         error_message=classification.user_message,
-                        suspension_reason=classification.suspension_reason,
+                        suspension_reason=classification.suspension_reason if issue.auto_suspended else None,
                     )
                     logger.warning(
                         "任务 {} 发送目标失败: peer={}, error={}: {}",
@@ -428,7 +428,7 @@ async def execute_task_once(
                         f"{target_label}: {classification.user_message}"
                     )
                     failed_target_labels.append(str(target_label))
-                    await record_task_target_send_issue(
+                    issue = await record_task_target_send_issue(
                         session=session,
                         task=task,
                         peer_id=target_peer_id,
@@ -443,7 +443,7 @@ async def execute_task_once(
                         peer_title=str(target_title).strip() if target_title else None,
                         error_type=classification.error_type,
                         error_message=classification.user_message,
-                        suspension_reason=classification.suspension_reason,
+                        suspension_reason=classification.suspension_reason if issue.auto_suspended else None,
                     )
 
             success_count = len(target_message_ids)

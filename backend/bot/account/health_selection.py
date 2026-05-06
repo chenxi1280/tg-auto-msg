@@ -9,8 +9,38 @@ from loguru import logger
 from sqlalchemy import select
 
 from backend.bot.session.redis_login_manager import get_redis_login_manager
-from backend.database.schema.models import Account, HealthStatus
+from backend.database.schema.models import Account, HealthStatus, Resource
 from backend.database.runtime.session import get_async_session
+
+
+def _select_from_candidates(manager, accounts, *, user_id: int, strategy):
+    if not accounts:
+        return None
+
+    if strategy.value == "weight":
+        weights = [acc.weight for acc in accounts]
+        total_weight = sum(weights)
+        if total_weight == 0:
+            return accounts[0]
+
+        rand = random.randint(0, total_weight - 1)
+        current = 0
+        for acc in accounts:
+            current += acc.weight
+            if rand < current:
+                return acc
+
+    if strategy.value == "least_used":
+        return min(accounts, key=lambda acc: acc.messages_sent)
+
+    if strategy.value == "round_robin":
+        if user_id not in manager._round_robin_counter:
+            manager._round_robin_counter[user_id] = 0
+        index = manager._round_robin_counter[user_id] % len(accounts)
+        manager._round_robin_counter[user_id] += 1
+        return accounts[index]
+
+    return accounts[0]
 
 
 async def select_account(
@@ -35,33 +65,37 @@ async def select_account(
         return None
 
     if peer_id:
-        # TODO: peer-aware anti-repeat strategy
-        pass
+        candidate_ids = {str(acc.account_id) for acc in healthy_accounts}
+        async with get_async_session() as session:
+            rows = (
+                await session.execute(
+                    select(Resource.account_id).where(
+                        Resource.peer_id == int(peer_id),
+                        Resource.account_id.in_(candidate_ids),
+                        Resource.is_active == True,
+                    )
+                )
+            ).scalars().all()
+        preferred_ids = {str(account_id) for account_id in rows}
+        if preferred_ids:
+            preferred_accounts = [
+                acc for acc in healthy_accounts if str(acc.account_id) in preferred_ids
+            ]
+            selected = _select_from_candidates(
+                manager,
+                preferred_accounts,
+                user_id=user_id,
+                strategy=strategy,
+            )
+            if selected:
+                return selected
 
-    if strategy.value == "weight":
-        weights = [acc.weight for acc in healthy_accounts]
-        total_weight = sum(weights)
-        if total_weight == 0:
-            return healthy_accounts[0]
-
-        rand = random.randint(0, total_weight - 1)
-        current = 0
-        for acc in healthy_accounts:
-            current += acc.weight
-            if rand < current:
-                return acc
-
-    if strategy.value == "least_used":
-        return min(healthy_accounts, key=lambda acc: acc.messages_sent)
-
-    if strategy.value == "round_robin":
-        if user_id not in manager._round_robin_counter:
-            manager._round_robin_counter[user_id] = 0
-        index = manager._round_robin_counter[user_id] % len(healthy_accounts)
-        manager._round_robin_counter[user_id] += 1
-        return healthy_accounts[index]
-
-    return healthy_accounts[0]
+    return _select_from_candidates(
+        manager,
+        healthy_accounts,
+        user_id=user_id,
+        strategy=strategy,
+    )
 
 
 async def health_check(manager, account_id: str) -> HealthStatus:

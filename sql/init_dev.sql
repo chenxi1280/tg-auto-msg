@@ -245,18 +245,6 @@ CREATE TABLE IF NOT EXISTS agent_credit_limits (
     CONSTRAINT uq_agent_credit_limits_parent_child UNIQUE (parent_account_id, child_account_id)
 );
 
-CREATE TABLE IF NOT EXISTS agent_plan_prices (
-    id SERIAL PRIMARY KEY,
-    parent_account_id INTEGER NOT NULL REFERENCES admin_accounts(id) ON DELETE CASCADE,
-    child_account_id INTEGER NOT NULL REFERENCES admin_accounts(id) ON DELETE CASCADE,
-    plan_code VARCHAR(32) NOT NULL REFERENCES pricing_plans(plan_code) ON DELETE CASCADE,
-    settlement_price_cents BIGINT DEFAULT 0 NOT NULL,
-    is_active BOOLEAN DEFAULT TRUE NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT uq_agent_plan_prices_parent_child_plan UNIQUE (parent_account_id, child_account_id, plan_code)
-);
-
 CREATE TABLE IF NOT EXISTS card_batches (
     batch_id VARCHAR(36) PRIMARY KEY,
     province_code VARCHAR(32) NOT NULL,
@@ -297,23 +285,6 @@ CREATE TABLE IF NOT EXISTS agent_fund_ledgers (
     remark TEXT,
     operator_account_id INTEGER REFERENCES admin_accounts(id) ON DELETE SET NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS approval_requests (
-    request_id VARCHAR(36) PRIMARY KEY,
-    province_code VARCHAR(32) NOT NULL,
-    request_type VARCHAR(32) NOT NULL,
-    requester_account_id INTEGER NOT NULL REFERENCES admin_accounts(id) ON DELETE CASCADE,
-    subject_account_id INTEGER NOT NULL REFERENCES admin_accounts(id) ON DELETE CASCADE,
-    approver_account_id INTEGER NOT NULL REFERENCES admin_accounts(id) ON DELETE CASCADE,
-    status VARCHAR(20) DEFAULT 'pending' NOT NULL,
-    amount_cents BIGINT,
-    credit_delta_cents BIGINT,
-    payload_json JSONB,
-    approved_at TIMESTAMP,
-    rejected_at TIMESTAMP,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
 ALTER TABLE activation_cards
@@ -850,6 +821,7 @@ CREATE TABLE IF NOT EXISTS task_target_send_issues (
     last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     last_notified_at TIMESTAMP,
     muted_until TIMESTAMP,
+    consecutive_failures INTEGER DEFAULT 0 NOT NULL,
     auto_suspended BOOLEAN DEFAULT FALSE NOT NULL,
     resolved_at TIMESTAMP,
     recovered_notified_at TIMESTAMP,

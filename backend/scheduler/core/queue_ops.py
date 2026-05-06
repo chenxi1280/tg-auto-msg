@@ -9,6 +9,20 @@ from sqlalchemy import select
 from backend.database.schema.models import ScheduledMessageTask, TaskTriggerMode
 from backend.database.runtime.session import get_async_session
 
+CLAIM_DUE_TASKS_SCRIPT = """
+local queue_key = KEYS[1]
+local max_score = tonumber(ARGV[1])
+local batch_size = tonumber(ARGV[2])
+
+local task_ids = redis.call('ZRANGEBYSCORE', queue_key, 0, max_score, 'LIMIT', 0, batch_size)
+if #task_ids == 0 then
+    return task_ids
+end
+
+redis.call('ZREM', queue_key, unpack(task_ids))
+return task_ids
+"""
+
 
 async def enqueue_due_tasks(
     *,
@@ -76,17 +90,15 @@ async def get_pending_tasks(
     batch_size: int = 50,
 ) -> list[ScheduledMessageTask]:
     """Fetch due tasks from Redis queue and load active task records from DB."""
-    task_ids = await redis_client.zrangebyscore(
+    task_ids = await redis_client.eval(
+        CLAIM_DUE_TASKS_SCRIPT,
+        1,
         queue_key,
-        min=0,
-        max=now,
-        start=0,
-        num=batch_size,
+        int(now),
+        int(batch_size),
     )
     if not task_ids:
         return []
-
-    await redis_client.zrem(queue_key, *task_ids)
 
     tasks: list[ScheduledMessageTask] = []
     async with get_async_session() as session:

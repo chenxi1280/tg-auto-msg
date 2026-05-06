@@ -219,6 +219,11 @@ async def record_task_target_send_issue(
     ).scalar_one_or_none()
 
     if issue is None:
+        consecutive_failures = 1
+        auto_suspended = bool(classification.should_auto_suspend_target)
+        threshold = classification.auto_suspend_after_failures
+        if threshold is not None:
+            auto_suspended = consecutive_failures >= int(threshold)
         issue = TaskTargetSendIssue(
             task_id=str(task.task_id),
             user_id=int(task.user_id),
@@ -234,20 +239,26 @@ async def record_task_target_send_issue(
             last_seen_at=now,
             last_notified_at=None,
             muted_until=None,
-            auto_suspended=bool(classification.should_auto_suspend_target),
+            consecutive_failures=consecutive_failures,
+            auto_suspended=auto_suspended,
             resolved_at=None,
             recovered_notified_at=None,
         )
         session.add(issue)
         return issue
 
+    prior_failures = int(issue.consecutive_failures or 0)
     issue_changed = (
         str(issue.status) != "active"
         or str(issue.current_error_type or "") != str(classification.error_type)
         or str(issue.current_error_message or "") != str(classification.user_message)
         or str(issue.issue_category or "") != str(classification.issue_category)
-        or bool(issue.auto_suspended) != bool(classification.should_auto_suspend_target)
     )
+    consecutive_failures = 1 if issue_changed else prior_failures + 1
+    auto_suspended = bool(classification.should_auto_suspend_target)
+    threshold = classification.auto_suspend_after_failures
+    if threshold is not None:
+        auto_suspended = consecutive_failures >= int(threshold)
 
     issue.account_id = str(task.account_id) if task.account_id else None
     issue.user_id = int(task.user_id)
@@ -257,7 +268,8 @@ async def record_task_target_send_issue(
     issue.issue_category = classification.issue_category
     issue.status = "active"
     issue.last_seen_at = now
-    issue.auto_suspended = bool(classification.should_auto_suspend_target)
+    issue.consecutive_failures = consecutive_failures
+    issue.auto_suspended = auto_suspended
     issue.resolved_at = None
     issue.recovered_notified_at = None
 
@@ -292,6 +304,8 @@ async def resolve_task_target_send_issue(
         return None
 
     issue.status = "resolved"
+    issue.consecutive_failures = 0
+    issue.auto_suspended = False
     issue.resolved_at = datetime.now()
     issue.recovered_notified_at = None
     return issue

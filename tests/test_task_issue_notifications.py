@@ -6,6 +6,10 @@ from unittest.mock import AsyncMock, patch
 from telethon.errors import UserIsBlockedError
 
 from backend.bot.task_issue_notifier import TaskIssueNotifier
+from backend.bot.safety.rate_limiter import (
+    RateLimiterBackendUnavailableError,
+    RateLimiterTimeoutError,
+)
 from backend.database.schema.models import TaskTargetSendIssue
 from backend.scheduler.core.task_execution import collect_task_targets, count_configured_task_targets
 from backend.scheduler.core.task_issue_classifier import classify_task_send_error
@@ -13,9 +17,30 @@ from backend.scheduler.core.task_issue_state import (
     TARGET_DELIVERY_SUSPENDED,
     has_target_collection_changed,
     merge_target_runtime_metadata,
+    record_task_target_send_issue,
+    resolve_task_target_send_issue,
     update_task_target_failure_metadata,
     update_task_target_success_metadata,
 )
+
+
+class _FakeIssueScalarResult:
+    def __init__(self, issue):
+        self._issue = issue
+
+    def scalar_one_or_none(self):
+        return self._issue
+
+
+class _FakeIssueSession:
+    def __init__(self):
+        self.issue = None
+
+    async def execute(self, _statement):
+        return _FakeIssueScalarResult(self.issue)
+
+    def add(self, issue):
+        self.issue = issue
 
 
 class TaskIssueClassifierTests(unittest.TestCase):
@@ -45,6 +70,28 @@ class TaskIssueClassifierTests(unittest.TestCase):
         self.assertIn("发送失败", result.user_message)
         self.assertIn("boom", result.user_message)
         self.assertNotIn("RuntimeError", result.user_message)
+
+    def test_empty_result_error_uses_specialized_classification(self):
+        result = classify_task_send_error(RuntimeError("send_message returned empty"))
+
+        self.assertEqual(result.error_type, "EmptyMessageResultError")
+        self.assertEqual(result.issue_category, "empty_result")
+        self.assertEqual(result.auto_suspend_after_failures, 3)
+        self.assertFalse(result.should_auto_suspend_target)
+
+    def test_rate_limiter_timeout_uses_specialized_classification(self):
+        result = classify_task_send_error(RateLimiterTimeoutError("slot timeout"))
+
+        self.assertEqual(result.issue_category, "rate_limit_timeout")
+        self.assertFalse(result.should_auto_suspend_target)
+
+    def test_rate_limiter_backend_error_uses_specialized_classification(self):
+        result = classify_task_send_error(
+            RateLimiterBackendUnavailableError("backend unavailable")
+        )
+
+        self.assertEqual(result.issue_category, "rate_limit_backend_unavailable")
+        self.assertFalse(result.should_auto_suspend_target)
 
 
 class TaskTargetRuntimeMetadataTests(unittest.TestCase):
@@ -170,6 +217,60 @@ class TaskTargetRuntimeMetadataTests(unittest.TestCase):
         self.assertEqual(task.target_peers[0]["delivery_status"], "active")
         self.assertIsNone(task.target_peers[0]["last_error_type"])
         self.assertIsNone(task.target_peers[0]["suspended_reason"])
+
+
+class TaskTargetIssueStateTests(unittest.IsolatedAsyncioTestCase):
+    async def test_empty_result_issue_auto_suspends_after_three_failures(self):
+        session = _FakeIssueSession()
+        task = SimpleNamespace(task_id="task-1", user_id=7, account_id="acc-1")
+        classification = classify_task_send_error(
+            RuntimeError("send_message returned empty")
+        )
+
+        issue = await record_task_target_send_issue(
+            session=session,
+            task=task,
+            peer_id=2001,
+            peer_type="channel",
+            peer_title="目标频道",
+            classification=classification,
+        )
+        self.assertEqual(issue.consecutive_failures, 1)
+        self.assertFalse(issue.auto_suspended)
+
+        issue = await record_task_target_send_issue(
+            session=session,
+            task=task,
+            peer_id=2001,
+            peer_type="channel",
+            peer_title="目标频道",
+            classification=classification,
+        )
+        self.assertEqual(issue.consecutive_failures, 2)
+        self.assertFalse(issue.auto_suspended)
+
+        issue = await record_task_target_send_issue(
+            session=session,
+            task=task,
+            peer_id=2001,
+            peer_type="channel",
+            peer_title="目标频道",
+            classification=classification,
+        )
+        self.assertEqual(issue.consecutive_failures, 3)
+        self.assertTrue(issue.auto_suspended)
+        self.assertEqual(issue.current_error_type, "EmptyMessageResultError")
+
+        resolved = await resolve_task_target_send_issue(
+            session=session,
+            task=task,
+            peer_id=2001,
+            peer_type="channel",
+        )
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved.status, "resolved")
+        self.assertEqual(resolved.consecutive_failures, 0)
+        self.assertFalse(resolved.auto_suspended)
 
 
 class TaskIssueNotifierTests(unittest.IsolatedAsyncioTestCase):
