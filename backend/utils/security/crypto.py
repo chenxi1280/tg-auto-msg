@@ -234,8 +234,8 @@ def generate_bind_code() -> str:
     Returns:
         6 位数字字符串（如 "882299"）
     """
-    import random
-    return f"{random.randint(100000, 999999)}"
+    import secrets
+    return f"{secrets.randbelow(900000) + 100000}"
 
 
 def validate_bind_code(code: str) -> bool:

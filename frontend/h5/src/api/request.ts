@@ -5,7 +5,7 @@ import axios, { type AxiosInstance, type AxiosError, type InternalAxiosRequestCo
 import { ElMessage } from 'element-plus'
 
 // 请求响应接口
-export interface ApiResponse<T = any> {
+export interface ApiResponse<T = unknown> {
   success: boolean
   data: T
   message?: string
@@ -41,8 +41,10 @@ api.interceptors.request.use(
 )
 
 // 响应拦截器
+// 注意：拦截器将 AxiosResponse<ApiResponse<T>> 解包为 ApiResponse<T>，
+// 调用方直接拿到 ApiResponse 而非 AxiosResponse。
 api.interceptors.response.use(
-  (response: AxiosResponse<ApiResponse>): AxiosResponse<ApiResponse> | Promise<never> => {
+  (response: AxiosResponse<ApiResponse>) => {
     const { data } = response
 
     // 检查业务状态码
@@ -52,14 +54,14 @@ api.interceptors.response.use(
     }
 
     // 返回 response.data，这样调用方可以直接获取 data 字段
-    return response.data as any
+    return data as unknown as AxiosResponse
   },
   (error: AxiosError<ApiResponse>) => {
     const { response } = error
 
     if (response) {
       const { status, data } = response
-      const reqUrl = String((error.config as any)?.url || '')
+      const reqUrl = error.config?.url || ''
       const isAuthLogin = reqUrl.includes('/auth/login')
 
       switch (status) {

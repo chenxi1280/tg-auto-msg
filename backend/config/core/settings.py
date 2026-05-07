@@ -3,7 +3,10 @@
 """
 from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import Field, model_validator
+
+_VALID_SCHEDULER_MODES = {"all", "producer", "consumer"}
+_DEFAULT_JWT_SECRET = "your-secret-key-change-in-production"
 
 
 class Settings(BaseSettings):
@@ -26,7 +29,7 @@ class Settings(BaseSettings):
 
     # 安全配置
     encryption_key: Optional[str] = Field(None, alias="ENCRYPTION_KEY", description="数据加密密钥（Base64 编码）")
-    jwt_secret_key: str = Field(default="your-secret-key-change-in-production", alias="JWT_SECRET_KEY", description="JWT 签名密钥")
+    jwt_secret_key: str = Field(default=_DEFAULT_JWT_SECRET, alias="JWT_SECRET_KEY", description="JWT 签名密钥")
     admin_api_token: str = Field(default="", alias="ADMIN_API_TOKEN", description="管理员后台 API 令牌")
     admin_bootstrap_username: str = Field(default="", alias="ADMIN_BOOTSTRAP_USERNAME", description="启动时自动初始化的超管账号")
     admin_bootstrap_password: str = Field(default="", alias="ADMIN_BOOTSTRAP_PASSWORD", description="启动时自动初始化的超管密码")
@@ -38,6 +41,7 @@ class Settings(BaseSettings):
         return self.jwt_secret_key
 
     # 应用配置
+    app_env: str = Field(default="development", alias="APP_ENV", description="运行环境: development/staging/production")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL", description="日志级别")
     timezone: str = Field(default="Asia/Shanghai", alias="TIMEZONE", description="时区")
     province_code: str = Field(default="default", alias="PROVINCE_CODE", description="当前部署省份编码")
@@ -89,6 +93,27 @@ class Settings(BaseSettings):
         populate_by_name=True,
         extra="ignore"
     )
+
+    @model_validator(mode="after")
+    def _validate_settings(self):
+        app_env = str(self.app_env or "").strip().lower()
+        if app_env in {"prod", "production"} and self.jwt_secret_key == _DEFAULT_JWT_SECRET:
+            raise ValueError(
+                "JWT_SECRET_KEY 使用了默认值，生产环境必须设置自定义密钥。"
+                "请在 .env 中配置 JWT_SECRET_KEY=<随机字符串>"
+            )
+        scheduler_mode = str(self.scheduler_mode or "").strip().lower()
+        if scheduler_mode not in _VALID_SCHEDULER_MODES:
+            raise ValueError(
+                f"SCHEDULER_MODE 必须是 {_VALID_SCHEDULER_MODES} 之一，"
+                f"当前值: '{self.scheduler_mode}'"
+            )
+        self.scheduler_mode = scheduler_mode
+        if self.max_failure_count < 1:
+            raise ValueError(
+                f"MAX_FAILURE_COUNT 必须 >= 1，当前值: {self.max_failure_count}"
+            )
+        return self
 
 
 # 全局配置实例

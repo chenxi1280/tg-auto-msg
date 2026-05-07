@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
-from telethon import Button
+from telethon import Button, events
 
 from backend.config.core.settings import settings
 from backend.database.schema.models import Resource, ScheduledMessageTask
@@ -268,3 +268,8 @@ def generate_h5_task_logs_url(task_id: str) -> str:
     """Generate H5 URL for task send logs page."""
     base = normalize_h5_base_url() or "http://localhost:8000"
     return f"{base}/tasks/{task_id}/logs"
+
+
+def should_edit_event(event) -> bool:
+    """Check if event is a callback query (can use event.edit)."""
+    return isinstance(event, events.CallbackQuery.Event)

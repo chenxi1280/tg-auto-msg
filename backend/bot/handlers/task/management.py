@@ -88,7 +88,9 @@ from backend.bot.handlers.task.editing import (
 
 
 def _should_edit_event(event) -> bool:
-    return isinstance(event, events.CallbackQuery.Event)
+    """Check if event is a callback query (can use event.edit)."""
+    from backend.bot.handlers.core.helpers import should_edit_event
+    return should_edit_event(event)
 
 
 async def _answer_or_respond(event, text: str, *, alert: bool = False, parse_mode: str | None = None):

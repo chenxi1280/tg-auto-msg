@@ -4,8 +4,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from io import BytesIO
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
-import secrets
-import string
 import uuid
 
 from fastapi import HTTPException
@@ -31,8 +29,9 @@ from backend.database.schema.models import (
 from backend.h5_backend.services.admin_rbac.service import get_admin_rbac_service
 from backend.h5_backend.services.admin.service import get_admin_license_service
 from backend.h5_backend.services.me.service import MeService
-
-CARD_ALPHABET = string.ascii_uppercase + string.digits
+from backend.h5_backend.services.shared.card_utils import generate_card_code
+from backend.h5_backend.services.shared.pagination import normalize_page
+from backend.h5_backend.services.shared.serializers import serialize_pricing_plan
 ROLE_SUPER_ADMIN = "super_admin"
 ROLE_MASTER_AGENT = "master_agent"
 ROLE_SUB_AGENT = "sub_agent"
@@ -52,9 +51,7 @@ class AdminPanelService:
 
     @staticmethod
     def _generate_card_code(prefix: str = "") -> str:
-        normalized_prefix = (prefix or "").strip().upper()
-        random_part = "".join(secrets.choice(CARD_ALPHABET) for _ in range(16))
-        return f"{normalized_prefix}{random_part}"
+        return generate_card_code(prefix)
 
     @staticmethod
     def _account_type(account: AdminAccount) -> str:
@@ -188,18 +185,7 @@ class AdminPanelService:
 
     @staticmethod
     def _serialize_pricing_plan(plan: PricingPlan) -> Dict[str, Any]:
-        return {
-            "plan_code": plan.plan_code,
-            "display_name": plan.display_name,
-            "billing_cycle": plan.billing_cycle,
-            "price_cents": int(plan.price_cents or 0),
-            "price_yuan": f"{int(plan.price_cents or 0) / 100:.2f}",
-            "duration_days": int(plan.duration_days or 0),
-            "is_active": bool(plan.is_active),
-            "sort_order": int(plan.sort_order or 0),
-            "created_at": plan.created_at.isoformat() if plan.created_at else None,
-            "updated_at": plan.updated_at.isoformat() if plan.updated_at else None,
-        }
+        return serialize_pricing_plan(plan)
 
     def _serialize_batch(
         self,
@@ -308,7 +294,7 @@ class AdminPanelService:
 
     @staticmethod
     def _normalize_page(limit: int, offset: int) -> Tuple[int, int]:
-        return max(1, min(500, int(limit))), max(0, int(offset))
+        return normalize_page(limit, offset)
 
     @staticmethod
     async def _build_plan_name_map_from_codes(session: Any, plan_codes: set[str]) -> Dict[str, str]:

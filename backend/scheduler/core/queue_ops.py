@@ -100,18 +100,15 @@ async def get_pending_tasks(
     if not task_ids:
         return []
 
-    tasks: list[ScheduledMessageTask] = []
     async with get_async_session() as session:
-        for task_id in task_ids:
-            result = await session.execute(
-                select(ScheduledMessageTask).where(
-                    ScheduledMessageTask.task_id == task_id
-                )
+        result = await session.execute(
+            select(ScheduledMessageTask).where(
+                ScheduledMessageTask.task_id.in_(task_ids),
+                ScheduledMessageTask.enabled == True,
+                ScheduledMessageTask.trigger_mode == TaskTriggerMode.SCHEDULED.value,
             )
-            task = result.scalar_one_or_none()
-            if task and task.enabled and task.trigger_mode == TaskTriggerMode.SCHEDULED.value:
-                tasks.append(task)
-    return tasks
+        )
+        return list(result.scalars().all())
 
 
 async def ensure_redis_connection(redis_client, redis_url: str):

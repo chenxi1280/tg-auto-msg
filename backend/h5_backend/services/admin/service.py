@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import re
-import secrets
-import string
 from io import BytesIO
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -38,11 +36,13 @@ from backend.h5_backend.services.licensing.service import (
     get_authorization_overview,
     list_user_authorizations,
 )
+from backend.h5_backend.services.shared.audit import mask_actor_name
+from backend.h5_backend.services.shared.card_utils import CARD_ALPHABET, generate_card_code
+from backend.h5_backend.services.shared.pagination import paginate_items
+from backend.h5_backend.services.shared.serializers import serialize_pricing_plan
 from backend.config.core.settings import settings
 from backend.utils.url_validation import is_valid_button_url
 
-
-CARD_ALPHABET = string.ascii_uppercase + string.digits
 AUDIT_ACTION_LABELS = {
     "admin.update_plan": "更新卡密规格配置",
     "admin.delete_plan": "删除卡密规格",
@@ -117,18 +117,7 @@ class AdminLicenseService:
 
     @staticmethod
     def _serialize_plan(plan: PricingPlan) -> Dict[str, Any]:
-        return {
-            "plan_code": plan.plan_code,
-            "display_name": plan.display_name,
-            "billing_cycle": plan.billing_cycle,
-            "price_cents": plan.price_cents,
-            "price_yuan": AdminLicenseService._to_price_yuan(plan.price_cents),
-            "duration_days": plan.duration_days,
-            "is_active": plan.is_active,
-            "sort_order": plan.sort_order,
-            "created_at": plan.created_at.isoformat() if plan.created_at else None,
-            "updated_at": plan.updated_at.isoformat() if plan.updated_at else None,
-        }
+        return serialize_pricing_plan(plan)
 
     @staticmethod
     def _serialize_card(card: ActivationCard) -> Dict[str, Any]:
@@ -193,32 +182,15 @@ class AdminLicenseService:
 
     @staticmethod
     def _paginate_items(items: List[Dict[str, Any]], *, limit: int, offset: int) -> Dict[str, Any]:
-        normalized_limit = max(1, min(500, int(limit)))
-        normalized_offset = max(0, int(offset))
-        sliced_items = items[normalized_offset:normalized_offset + normalized_limit]
-        return {
-            "items": sliced_items,
-            "total": len(items),
-            "limit": normalized_limit,
-            "offset": normalized_offset,
-        }
+        return paginate_items(items, limit=limit, offset=offset)
 
     @staticmethod
     def _generate_card_code(prefix: str = "") -> str:
-        normalized_prefix = (prefix or "").strip().upper()
-        random_part = "".join(secrets.choice(CARD_ALPHABET) for _ in range(16))
-        return f"{normalized_prefix}{random_part}"
+        return generate_card_code(prefix)
 
     @staticmethod
     def _mask_actor(actor: str) -> str:
-        raw = (actor or "").strip()
-        if not raw:
-            return "admin"
-        if "#" in raw:
-            return raw
-        if len(raw) <= 8:
-            return "***"
-        return f"{raw[:4]}***{raw[-4:]}"
+        return mask_actor_name(actor)
 
     async def _append_audit(
         self,

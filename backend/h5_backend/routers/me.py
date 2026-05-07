@@ -46,14 +46,10 @@ async def get_authorization_status(current_user: User = Depends(get_current_user
 
 
 @router.get("/api/me/plans")
-async def get_plans(active_only: bool = True, current_user: User = Depends(get_current_user)):
+async def get_plans(current_user: User = Depends(get_current_user)):
     """获取可购买的卡密规格列表。"""
     service = get_me_service()
-    if active_only:
-        data = await service.list_active_plans()
-    else:
-        data = await service.list_active_plans()
-    _ = current_user
+    data = await service.list_active_plans()
     return {"success": True, "data": data}
 
 

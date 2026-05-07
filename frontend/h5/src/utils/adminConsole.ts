@@ -78,3 +78,22 @@ export const settlementLabel = (value?: string | null): string => SETTLEMENT_LAB
 export const ledgerBizLabel = (value?: string | null): string => LEDGER_LABELS[value || ''] || value || '-'
 
 export const operationLogLabel = (value?: string | null): string => OPERATION_LOG_LABELS[value || ''] || value || '-'
+
+export const planDisplayName = (
+  planCode?: string | null,
+  planDisplayNameValue?: string | null,
+  plans?: Array<{ plan_code: string; display_name: string }> | null,
+): string => {
+  if (planDisplayNameValue) return planDisplayNameValue
+  if (!planCode) return '-'
+  return plans?.find((p) => p.plan_code === planCode)?.display_name || '规格已记录'
+}
+
+export const FUNDING_SOURCE_LABELS: Record<string, string> = {
+  platform: '平台直生',
+  balance: '余额',
+  credit: '授信',
+}
+
+export const fundingSourceLabel = (value?: string | null): string =>
+  FUNDING_SOURCE_LABELS[value || ''] || value || '-'

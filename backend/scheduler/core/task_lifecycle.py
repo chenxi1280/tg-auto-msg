@@ -9,9 +9,8 @@ from sqlalchemy import select
 from backend.database.schema.models import ScheduledMessageTask, TaskLog, TaskTriggerSource
 
 
-def calculate_next_run(now: int, target_hour: int, interval_min: int) -> int:
-    """Calculate next run timestamp (current implementation: fixed interval)."""
-    del target_hour
+def calculate_next_run(now: int, interval_min: int) -> int:
+    """Calculate next run timestamp as now + interval."""
     return now + interval_min * 60
 
 
@@ -28,9 +27,8 @@ def check_time_limit(task: ScheduledMessageTask, current_hour: int, now: int) ->
     if in_time_range:
         return True, None
 
-    logger.debug(f"任务 {task.task_id} 不在时段内，跳过")
-    next_hour = task.day_start_hour if current_hour >= task.day_end_hour else current_hour
-    next_run = calculate_next_run(now, next_hour, task.repeat_interval_min)
+    logger.debug("任务 {} 不在时段内，跳过", task.task_id)
+    next_run = calculate_next_run(now, task.repeat_interval_min)
     return False, next_run
 
 

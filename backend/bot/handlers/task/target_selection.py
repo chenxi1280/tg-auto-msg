@@ -41,7 +41,9 @@ from backend.database.schema.models import TaskTriggerMode
 
 
 def _should_edit_event(event) -> bool:
-    return isinstance(event, events.CallbackQuery.Event)
+    """Check if event is a callback query (can use event.edit)."""
+    from backend.bot.handlers.core.helpers import should_edit_event
+    return should_edit_event(event)
 
 
 def _selector_expired_message(draft_mode: Optional[bool]) -> str:
