@@ -77,7 +77,7 @@ return 0
                 settings.redis_url,
             )
         except Exception as e:
-            logger.warning(f"调度器 Redis 连接不可用，尝试重连失败: {e}")
+            logger.warning("调度器 Redis 连接不可用，尝试重连失败: {}", e)
             raise
 
     async def _recover_runtime_state(self):
@@ -131,14 +131,14 @@ return 0
         """启动调度器"""
         self.running = True
         mode = getattr(settings, "scheduler_mode", "all").lower()
-        logger.info(f"任务调度器已启动（模式: {mode}, 扫描间隔: {self.SCAN_INTERVAL}秒）")
+        logger.info("任务调度器已启动（模式: {}, 扫描间隔: {}秒）", mode, self.SCAN_INTERVAL)
 
         while self.running:
             try:
                 await self.tick(mode=mode)
                 await asyncio.sleep(self.SCAN_INTERVAL)
             except Exception as e:
-                logger.exception(f"调度器运行错误: {type(e).__name__}: {e!r}")
+                logger.exception("调度器运行错误: {}: {!r}", type(e).__name__, e)
                 await asyncio.sleep(self.SCAN_INTERVAL)
 
     async def stop(self):
@@ -152,7 +152,7 @@ return 0
         now = int(datetime.now().timestamp())
         current_hour = datetime.now().hour
 
-        logger.debug(f"执行调度扫描，当前时间: {datetime.now()}")
+        logger.debug("执行调度扫描，当前时间: {}", datetime.now())
 
         if mode in ("all", "producer"):
             # 1. 从数据库获取待执行任务，加入 Redis 队列
@@ -167,7 +167,7 @@ return 0
         if not tasks_to_execute:
             return
 
-        logger.info(f"本次扫描待执行任务数: {len(tasks_to_execute)}")
+        logger.info("本次扫描待执行任务数: {}", len(tasks_to_execute))
 
         # 3. 并发执行任务（受速率限制控制）
         for task_data in tasks_to_execute:
@@ -231,7 +231,7 @@ return 0
             ex=self.PROCESSING_TTL,
         )
         if not lock_acquired:
-            logger.debug(f"任务 {task_id} 正在处理中，跳过")
+            logger.debug("任务 {} 正在处理中，跳过", task_id)
             return
 
         try:
@@ -247,7 +247,7 @@ return 0
                 task = result.scalar_one_or_none()
 
                 if not task or not task.enabled:
-                    logger.debug(f"任务 {task_id} 不存在或已禁用")
+                    logger.debug("任务 {} 不存在或已禁用", task_id)
                     return
             try:
                 summary = await _execute_task_once(

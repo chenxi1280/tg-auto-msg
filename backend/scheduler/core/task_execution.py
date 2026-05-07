@@ -193,15 +193,17 @@ async def resolve_send_target(
                 return input_peer
         except Exception as e:
             logger.warning(
-                f"任务 {task.task_id} 使用资源表解析目标失败，回退 get_input_entity: "
-                f"peer_id={target_peer_id}, peer_type={peer_type}, error={e}"
+                "任务 {} 使用资源表解析目标失败，回退 get_input_entity: "
+                "peer_id={}, peer_type={}, error={}",
+                task.task_id, target_peer_id, peer_type, e,
             )
 
     try:
         return await client.get_input_entity(target_peer_id)
     except Exception as e:
         logger.warning(
-            f"任务 {task.task_id} get_input_entity 解析失败: peer_id={target_peer_id}, error={e}"
+            "任务 {} get_input_entity 解析失败: peer_id={}, error={}",
+            task.task_id, target_peer_id, e,
         )
 
     try:
@@ -212,7 +214,8 @@ async def resolve_send_target(
                 return entity
     except Exception as e:
         logger.warning(
-            f"任务 {task.task_id} 从 dialogs 回填实体失败: peer_id={target_peer_id}, error={e}"
+            "任务 {} 从 dialogs 回填实体失败: peer_id={}, error={}",
+            task.task_id, target_peer_id, e,
         )
 
     return target_peer_id
@@ -370,14 +373,15 @@ async def do_send_message(
             await client.delete_messages(send_target, [previous_message_id])
         except Exception as e:
             logger.warning(
-                f"删除上一条消息失败 task={task.task_id}, previous_message_id={previous_message_id}: {e}"
+                "删除上一条消息失败 task={}, previous_message_id={}: {}",
+                task.task_id, previous_message_id, e,
             )
 
     try:
         msg = await _send_with_buttons(buttons)
     except Exception as e:
         if buttons and _is_button_markup_error(e):
-            logger.warning(f"任务 {task.task_id} 按钮发送失败，自动降级为无按钮消息: {e}")
+            logger.warning("任务 {} 按钮发送失败，自动降级为无按钮消息: {}", task.task_id, e)
             msg = await _send_with_buttons(None)
         else:
             raise
@@ -386,7 +390,7 @@ async def do_send_message(
         try:
             await client.pin_message(send_target, msg.id, notify=False)
         except Exception as e:
-            logger.warning(f"置顶消息失败 task={task.task_id}: {e}")
+            logger.warning("置顶消息失败 task={}: {}", task.task_id, e)
 
     return msg.id if msg else None
 

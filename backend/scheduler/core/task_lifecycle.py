@@ -102,7 +102,7 @@ async def handle_task_failure(
     if apply_disable_policy and task.failure_count >= max_failure_count:
         task.enabled = False
         logger.warning(
-            f"任务 {task.task_id} 连续失败 {task.failure_count} 次，自动禁用"
+            "任务 {} 连续失败 {} 次，自动禁用", task.task_id, task.failure_count
         )
 
     await session.commit()
@@ -128,5 +128,6 @@ async def suspend_account_tasks(
 
     await session.commit()
     logger.warning(
-        f"账号 {account_id} 任务已暂停到 {suspend_until}，原因: {reason}，影响任务数: {len(tasks)}"
+        "账号 {} 任务已暂停到 {}，原因: {}，影响任务数: {}",
+        account_id, suspend_until, reason, len(tasks),
     )
