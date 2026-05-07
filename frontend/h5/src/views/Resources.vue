@@ -253,8 +253,8 @@ const loadResources = async () => {
 
     resources.value = await accountStore.getAccountResources(selectedAccountId.value, params)
     total.value = resources.value.length
-  } catch (err: any) {
-    ElMessage.error(err.message || '加载资源失败')
+  } catch {
+    // HTTP errors already handled by the response interceptor
   } finally {
     loading.value = false
   }
@@ -267,8 +267,8 @@ const syncResources = async () => {
   try {
     const result = await accountStore.syncAccount(selectedAccountId.value, true)
     ElMessage.success(result.message || '该账号已加入同步队列')
-  } catch (err: any) {
-    ElMessage.error(err.message || '同步失败')
+  } catch {
+    // HTTP errors already handled by the response interceptor
   }
 }
 

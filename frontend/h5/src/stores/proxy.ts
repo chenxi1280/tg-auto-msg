@@ -24,8 +24,8 @@ export const useProxyStore = defineStore('proxy', () => {
     try {
       const res = await proxyApi.getProxies()
       proxies.value = res.data || []
-    } catch (err: any) {
-      error.value = err.message || '获取代理列表失败'
+    } catch (err: unknown) {
+      error.value = (err instanceof Error ? err.message : null) || '获取代理列表失败'
       console.error('获取代理列表失败:', err)
     } finally {
       loading.value = false
@@ -45,7 +45,7 @@ export const useProxyStore = defineStore('proxy', () => {
       // 重新获取列表
       await fetchProxies()
       return res.data
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('添加代理失败:', err)
       throw err
     }
@@ -62,7 +62,7 @@ export const useProxyStore = defineStore('proxy', () => {
         proxy.response_time_ms = res.data.response_time_ms
       }
       return res.data
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('检查代理健康状态失败:', err)
       throw err
     }
@@ -74,7 +74,7 @@ export const useProxyStore = defineStore('proxy', () => {
       await proxyApi.deleteProxy(proxyId)
       // 从本地状态移除
       proxies.value = proxies.value.filter(p => p.proxy_id !== proxyId)
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('删除代理失败:', err)
       throw err
     }
@@ -89,7 +89,7 @@ export const useProxyStore = defineStore('proxy', () => {
       if (proxy) {
         proxy.assigned_account_id = accountId
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('分配代理失败:', err)
       throw err
     }
@@ -104,7 +104,7 @@ export const useProxyStore = defineStore('proxy', () => {
       if (proxy) {
         proxy.assigned_account_id = null
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('解绑代理失败:', err)
       throw err
     }

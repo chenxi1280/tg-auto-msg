@@ -119,8 +119,8 @@ const loadData = async () => {
     ])
     taskTitle.value = taskRes.data?.title || '未命名任务'
     logs.value = logsRes.data || []
-  } catch (err: any) {
-    ElMessage.error(err?.message || '加载任务记录失败')
+  } catch {
+    // HTTP errors already handled by the response interceptor
   } finally {
     loading.value = false
   }

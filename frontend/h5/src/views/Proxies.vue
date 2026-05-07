@@ -203,8 +203,8 @@ const checkAllHealth = async () => {
       }
     }
     ElMessage.success('健康检查完成')
-  } catch (err: any) {
-    ElMessage.error(err.message || '检查失败')
+  } catch {
+    // HTTP errors already handled by the response interceptor
   } finally {
     checking.value = false
   }
@@ -219,8 +219,8 @@ const handleCheckHealth = async (proxy: Proxy) => {
     } else {
       ElMessage.warning(`代理 ${proxy.host}:${proxy.port} 异常`)
     }
-  } catch (err: any) {
-    ElMessage.error(err.message || '检查失败')
+  } catch {
+    // HTTP errors already handled by the response interceptor
   }
 }
 
@@ -229,8 +229,8 @@ const handleUnassign = async (proxy: Proxy) => {
   try {
     await proxyStore.unassignProxy(proxy.proxy_id)
     ElMessage.success('代理已解绑')
-  } catch (err: any) {
-    ElMessage.error(err.message || '操作失败')
+  } catch {
+    // HTTP errors already handled by the response interceptor
   }
 }
 
@@ -250,7 +250,7 @@ const handleDelete = async (proxy: Proxy) => {
     ElMessage.success('代理已删除')
   } catch (err: any) {
     if (err !== 'cancel') {
-      ElMessage.error(err.message || '删除失败')
+      // HTTP errors already handled by the response interceptor
     }
   }
 }
@@ -281,8 +281,8 @@ const handleAddProxy = async () => {
       username: '',
       password: ''
     }
-  } catch (err: any) {
-    ElMessage.error(err.message || '添加失败')
+  } catch {
+    // HTTP errors already handled by the response interceptor
   } finally {
     adding.value = false
   }

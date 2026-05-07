@@ -422,7 +422,6 @@ const handleSendPhoneCode = async () => {
     ElMessage.success('验证码已发送，请在 Telegram 中查看')
   } catch (err: any) {
     error.value = err.message || '发送验证码失败'
-    ElMessage.error(error.value)
   } finally {
     sendingPhoneCode.value = false
   }
@@ -457,7 +456,6 @@ const handleSubmitPhoneCode = async () => {
     )
   } catch (err: any) {
     error.value = err.message || '验证码验证失败'
-    ElMessage.error(error.value)
   } finally {
     submittingPhoneCode.value = false
   }
@@ -506,7 +504,6 @@ const handleSubmitPassword = async () => {
     )
   } catch (err: any) {
     error.value = err.message || '二步密码验证失败'
-    ElMessage.error(error.value)
   } finally {
     submittingPassword.value = false
   }

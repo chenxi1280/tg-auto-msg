@@ -6,14 +6,13 @@ import { ref, computed } from 'vue'
 import * as accountApi from '@/api/account'
 import type { Account } from '@/api/account'
 
-const extractErrorMessage = (err: any, fallback: string): string => {
-  return (
-    err?.response?.data?.detail ||
-    err?.response?.data?.message ||
-    err?.response?.data?.error ||
-    err?.message ||
-    fallback
-  )
+function extractErrorMessage(err: unknown, fallback = '操作失败'): string {
+  if (err && typeof err === 'object' && 'response' in err) {
+    const axiosErr = err as { response?: { data?: { detail?: string; message?: string } } }
+    return axiosErr.response?.data?.detail || axiosErr.response?.data?.message || fallback
+  }
+  if (err instanceof Error) return err.message
+  return fallback
 }
 
 export const useAccountStore = defineStore('account', () => {
@@ -35,8 +34,8 @@ export const useAccountStore = defineStore('account', () => {
     try {
       const res = await accountApi.getAccounts(userId, probe)
       accounts.value = res.data || []
-    } catch (err: any) {
-      error.value = err.message || '获取账号列表失败'
+    } catch (err: unknown) {
+      error.value = extractErrorMessage(err, '获取账号列表失败')
       console.error('获取账号列表失败:', err)
     } finally {
       loading.value = false
@@ -51,10 +50,9 @@ export const useAccountStore = defineStore('account', () => {
         message: res.message || '',
         alreadyRunning: Boolean((res as any).already_running)
       }
-    } catch (err: any) {
-      const message = extractErrorMessage(err, '同步账号资源失败')
+    } catch (err: unknown) {
       console.error('同步账号资源失败:', err)
-      throw new Error(message)
+      throw err
     }
   }
 
@@ -67,7 +65,7 @@ export const useAccountStore = defineStore('account', () => {
       if (account) {
         account.is_active = true
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('启用账号失败:', err)
       throw err
     }
@@ -82,7 +80,7 @@ export const useAccountStore = defineStore('account', () => {
       if (account) {
         account.is_active = false
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('禁用账号失败:', err)
       throw err
     }
@@ -94,7 +92,7 @@ export const useAccountStore = defineStore('account', () => {
       await accountApi.deleteAccount(accountId)
       // 从本地状态移除
       accounts.value = accounts.value.filter(a => a.account_id !== accountId)
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('删除账号失败:', err)
       throw err
     }
@@ -109,10 +107,10 @@ export const useAccountStore = defineStore('account', () => {
     try {
       const res = await accountApi.getAccountResources(accountId, params)
       return res.data || []
-    } catch (err: any) {
-      const message = extractErrorMessage(err, '获取账号资源失败')
+    } catch (err: unknown) {
+      error.value = extractErrorMessage(err, '获取账号资源失败')
       console.error('获取账号资源失败:', err)
-      throw new Error(message)
+      return []
     }
   }
 

@@ -272,8 +272,8 @@ const goBindBot = async () => {
       return
     }
     window.location.href = res.data.bot_bind_url
-  } catch (err: any) {
-    ElMessage.error(err.message || '生成 Bot 绑定入口失败')
+  } catch {
+    // HTTP errors already handled by the response interceptor
   }
 }
 

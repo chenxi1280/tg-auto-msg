@@ -396,8 +396,8 @@ const goBindAccount = async () => {
       return
     }
     window.location.href = link
-  } catch (err: any) {
-    ElMessage.error(err.message || '生成 Bot 绑定入口失败')
+  } catch {
+    // HTTP errors already handled by the response interceptor
   }
 }
 
@@ -431,8 +431,8 @@ const confirmRenewSlot = async () => {
     renewDialog.visible = false
     renewDialog.cardCode = ''
     await refreshAccounts()
-  } catch (err: any) {
-    ElMessage.error(err.message || '授权续费失败')
+  } catch {
+    // HTTP errors already handled by the response interceptor
   } finally {
     renewDialog.loading = false
   }
@@ -445,8 +445,8 @@ const syncAccount = async (accountId: string) => {
   try {
     const result = await accountStore.syncAccount(accountId, true)
     ElMessage.success(result.message || '该账号已加入同步队列')
-  } catch (err: any) {
-    ElMessage.error(err.message || '同步失败')
+  } catch {
+    // HTTP errors already handled by the response interceptor
   } finally {
     syncLoading[accountId] = false
   }
@@ -466,7 +466,7 @@ const confirmDisable = async (account: Account) => {
     ElMessage.success('账号已禁用')
   } catch (err: any) {
     if (err !== 'cancel') {
-      ElMessage.error(err.message || '操作失败')
+      // HTTP errors already handled by the response interceptor
     }
   }
 }
@@ -476,8 +476,8 @@ const enableAccount = async (accountId: string) => {
   try {
     await accountStore.enableAccount(accountId)
     ElMessage.success('账号已启用')
-  } catch (err: any) {
-    ElMessage.error(err.message || '操作失败')
+  } catch {
+    // HTTP errors already handled by the response interceptor
   }
 }
 
@@ -497,7 +497,7 @@ const confirmDelete = async (account: Account) => {
     ElMessage.success('账号已解绑')
   } catch (err: any) {
     if (err !== 'cancel') {
-      ElMessage.error(err.message || '解绑失败')
+      // HTTP errors already handled by the response interceptor
     }
   }
 }

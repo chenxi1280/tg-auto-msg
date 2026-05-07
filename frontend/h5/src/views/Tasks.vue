@@ -167,8 +167,8 @@ const loadTasks = async () => {
   try {
     const res = await getTasks()
     tasks.value = res.data || []
-  } catch (err: any) {
-    ElMessage.error(err.message || '加载任务失败')
+  } catch {
+    // HTTP errors already handled by the response interceptor
   } finally {
     loadingTasks.value = false
   }
@@ -228,17 +228,17 @@ const runTaskOnce = async (taskId: string, title: string) => {
       })
     }
     await loadTasks()
-  } catch (err: any) {
-    ElMessage.error(err.message || '执行任务失败')
+  } catch {
+    // HTTP errors already handled by the response interceptor
   }
 }
 
 const toggleTaskEnabled = async (task: TaskItem, enabled: boolean) => {
   try {
     await updateTask(task.task_id, { enabled })
-  } catch (err: any) {
+  } catch {
     task.enabled = !enabled
-    ElMessage.error(err.message || '状态更新失败')
+    // HTTP errors already handled by the response interceptor
   }
 }
 
@@ -258,7 +258,7 @@ const removeTask = async (taskId: string) => {
     await loadTasks()
   } catch (err: any) {
     if (err !== 'cancel') {
-      ElMessage.error(err.message || '删除失败')
+      // HTTP errors already handled by the response interceptor
     }
   }
 }

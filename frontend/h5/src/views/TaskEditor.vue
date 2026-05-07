@@ -316,8 +316,8 @@ const loadResources = async (autoSyncIfEmpty = false, preserveTargets = true) =>
     }
 
     emit('update:resources', [...resources.value])
-  } catch (err: any) {
-    ElMessage.error(err.message || '加载聊天资源失败')
+  } catch {
+    // HTTP errors already handled by the response interceptor
   } finally {
     loadingResources.value = false
   }
@@ -549,8 +549,8 @@ const submitTask = async () => {
     resetForm(true)
     showEditor.value = false
     emit('saved')
-  } catch (err: any) {
-    ElMessage.error(err.message || '提交失败')
+  } catch {
+    // HTTP errors already handled by the response interceptor
   } finally {
     submitting.value = false
   }
@@ -612,8 +612,8 @@ const startEdit = async (task: TaskItem) => {
         form.targetKeys = found ? [resourceKey(found)] : []
       }
     }
-  } catch (err: any) {
-    ElMessage.error(err.message || '加载任务详情失败')
+  } catch {
+    // HTTP errors already handled by the response interceptor
   }
 }
 
