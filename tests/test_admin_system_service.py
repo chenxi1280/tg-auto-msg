@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi import HTTPException
 
 from backend.database.schema.models import AppSetting
-from backend.h5_backend.services.admin.service import AdminLicenseService
+from backend.h5_backend.services.admin.settings_service import SettingsService
 
 
 class _ScalarResult:
@@ -45,7 +45,7 @@ def _build_notice_manager_module(refresh_summary):
 
 class AdminSystemServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_get_today_system_stats_returns_all_three_metrics(self):
-        service = AdminLicenseService()
+        service = SettingsService()
         values = iter([12, 5, 7])
 
         class _StatsSession:
@@ -56,7 +56,7 @@ class AdminSystemServiceTests(unittest.IsolatedAsyncioTestCase):
         async def fake_get_async_session():
             yield _StatsSession()
 
-        with patch("backend.h5_backend.services.admin.service.get_async_session", new=fake_get_async_session):
+        with patch("backend.h5_backend.services.admin.settings_service.get_async_session", new=fake_get_async_session):
             result = await service.get_today_system_stats()
 
         self.assertEqual(result["today_sent_messages"], 12)
@@ -66,7 +66,7 @@ class AdminSystemServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertRegex(result["date"], r"^\d{4}-\d{2}-\d{2}$")
 
     async def test_update_bot_notice_settings_includes_refresh_summary(self):
-        service = AdminLicenseService()
+        service = SettingsService()
         fake_session = _NoticeSession()
 
         @asynccontextmanager
@@ -81,9 +81,8 @@ class AdminSystemServiceTests(unittest.IsolatedAsyncioTestCase):
             "pin_failed_users": 1,
         }
 
-        with patch("backend.h5_backend.services.admin.service.get_async_session", new=fake_get_async_session), patch.object(
-            service,
-            "_append_audit",
+        with patch("backend.h5_backend.services.admin.settings_service.get_async_session", new=fake_get_async_session), patch(
+            "backend.h5_backend.services.admin.settings_service.append_audit_log",
             AsyncMock(),
         ), patch.dict(
             "sys.modules",
@@ -114,16 +113,15 @@ class AdminSystemServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["refresh_summary"], refresh_summary)
 
     async def test_update_bot_notice_settings_allows_empty_target_url(self):
-        service = AdminLicenseService()
+        service = SettingsService()
         fake_session = _NoticeSession()
 
         @asynccontextmanager
         async def fake_get_async_session():
             yield fake_session
 
-        with patch("backend.h5_backend.services.admin.service.get_async_session", new=fake_get_async_session), patch.object(
-            service,
-            "_append_audit",
+        with patch("backend.h5_backend.services.admin.settings_service.get_async_session", new=fake_get_async_session), patch(
+            "backend.h5_backend.services.admin.settings_service.append_audit_log",
             AsyncMock(),
         ), patch.dict(
             "sys.modules",
@@ -154,16 +152,15 @@ class AdminSystemServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["target_url"], "")
 
     async def test_update_purchase_settings_allows_external_shop_url(self):
-        service = AdminLicenseService()
+        service = SettingsService()
         fake_session = _NoticeSession()
 
         @asynccontextmanager
         async def fake_get_async_session():
             yield fake_session
 
-        with patch("backend.h5_backend.services.admin.service.get_async_session", new=fake_get_async_session), patch.object(
-            service,
-            "_append_audit",
+        with patch("backend.h5_backend.services.admin.settings_service.get_async_session", new=fake_get_async_session), patch(
+            "backend.h5_backend.services.admin.settings_service.append_audit_log",
             AsyncMock(),
         ):
             result = await service.update_purchase_settings(
@@ -178,7 +175,7 @@ class AdminSystemServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["purchase_button_text"], "购买卡密")
 
     async def test_update_purchase_settings_rejects_local_shop_url(self):
-        service = AdminLicenseService()
+        service = SettingsService()
 
         with self.assertRaises(HTTPException) as raised:
             await service.update_purchase_settings(

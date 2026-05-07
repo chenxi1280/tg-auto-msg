@@ -283,6 +283,8 @@ export interface SystemProxy {
   created_at: string | null
 }
 
+export interface LegacyProxy extends SystemProxy {}
+
 // ── License / Legacy Cards ───────────────────────────────────────────────────
 
 export interface LegacyLicenseCard {

@@ -558,7 +558,7 @@ const submitTask = async () => {
 
 /* --------------- public methods --------------- */
 
-const openCreateForm = async (mode: 'scheduled' | 'manual_shortcut', initialAccountId?: string) => {
+const openCreateForm = async (mode: 'scheduled' | 'manual_shortcut', initialAccountId?: string): Promise<boolean> => {
   resetForm(true)
   form.triggerMode = mode
   form.enabled = mode === 'manual_shortcut'
@@ -571,13 +571,13 @@ const openCreateForm = async (mode: 'scheduled' | 'manual_shortcut', initialAcco
     await loadResources(true, false)
   }
   showEditor.value = true
+  return true
 }
 
-const startEdit = async (task: TaskItem) => {
+const startEdit = async (task: TaskItem): Promise<boolean> => {
   try {
     const detail = (await getTask(task.task_id)).data
 
-    showEditor.value = true
     resourceKeyword.value = ''
     editingTaskId.value = detail.task_id
     form.title = detail.title
@@ -612,8 +612,11 @@ const startEdit = async (task: TaskItem) => {
         form.targetKeys = found ? [resourceKey(found)] : []
       }
     }
+    showEditor.value = true
+    return true
   } catch {
     // HTTP errors already handled by the response interceptor
+    return false
   }
 }
 

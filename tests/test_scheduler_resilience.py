@@ -16,6 +16,12 @@ class _FakeQueueScalarResult:
     def __init__(self, task):
         self._task = task
 
+    def scalars(self):
+        return self
+
+    def all(self):
+        return [self._task] if self._task is not None else []
+
     def scalar_one_or_none(self):
         return self._task
 

@@ -8,13 +8,13 @@ from backend.database.schema.models import AgentFundLedger
 from backend.h5_backend.services.admin_panel.service import (
     ACCOUNT_TYPE_AGENT,
     ACCOUNT_TYPE_STAFF,
-    AdminPanelService,
     BUSINESS_IDENTITY_MASTER_AGENT,
     BUSINESS_IDENTITY_SUB_AGENT,
     ROLE_MASTER_AGENT,
     ROLE_SUB_AGENT,
     ROLE_SUPER_ADMIN,
 )
+from backend.h5_backend.services.admin_panel.batch_service import CardBatchService
 
 
 class _FakeSession:
@@ -34,7 +34,7 @@ class _FakeSession:
 
 class AdminPanelGenerationTests(unittest.IsolatedAsyncioTestCase):
     async def test_super_admin_generation_uses_platform_flow(self):
-        service = AdminPanelService()
+        service = CardBatchService()
         operator = SimpleNamespace(
             id=1,
             username="admin",
@@ -122,7 +122,7 @@ class AdminPanelGenerationTests(unittest.IsolatedAsyncioTestCase):
         }
 
         with patch(
-            "backend.h5_backend.services.admin_panel.service.get_async_session",
+            "backend.h5_backend.services.admin_panel.batch_service.get_async_session",
             new=fake_get_async_session,
         ), patch.object(
             service,
@@ -132,9 +132,8 @@ class AdminPanelGenerationTests(unittest.IsolatedAsyncioTestCase):
             service,
             "_create_batch_records",
             AsyncMock(return_value=(batch, cards)),
-        ), patch.object(
-            service,
-            "_append_audit",
+        ), patch(
+            "backend.h5_backend.services.admin_panel.batch_service.append_audit",
             AsyncMock(),
         ), patch.object(
             service,
@@ -158,7 +157,7 @@ class AdminPanelGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake_session.added, [])
 
     async def test_master_agent_balance_generation_deducts_balance_and_writes_ledger(self):
-        service = AdminPanelService()
+        service = CardBatchService()
         operator = SimpleNamespace(
             id=2,
             username="master",
@@ -246,7 +245,7 @@ class AdminPanelGenerationTests(unittest.IsolatedAsyncioTestCase):
         }
 
         with patch(
-            "backend.h5_backend.services.admin_panel.service.get_async_session",
+            "backend.h5_backend.services.admin_panel.batch_service.get_async_session",
             new=fake_get_async_session,
         ), patch.object(
             service,
@@ -256,9 +255,8 @@ class AdminPanelGenerationTests(unittest.IsolatedAsyncioTestCase):
             service,
             "_create_batch_records",
             AsyncMock(return_value=(batch, cards)),
-        ), patch.object(
-            service,
-            "_append_audit",
+        ), patch(
+            "backend.h5_backend.services.admin_panel.batch_service.append_audit",
             AsyncMock(),
         ):
             result = await service.generate_card_batch(
@@ -276,7 +274,7 @@ class AdminPanelGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(int(ledger_rows[0].amount_cents), 2000)
 
     async def test_sub_agent_credit_generation_updates_each_level_usage_and_ledgers(self):
-        service = AdminPanelService()
+        service = CardBatchService()
         root_master = SimpleNamespace(
             id=1,
             username="root",
@@ -420,7 +418,7 @@ class AdminPanelGenerationTests(unittest.IsolatedAsyncioTestCase):
         }
 
         with patch(
-            "backend.h5_backend.services.admin_panel.service.get_async_session",
+            "backend.h5_backend.services.admin_panel.batch_service.get_async_session",
             new=fake_get_async_session,
         ), patch.object(
             service,
@@ -430,9 +428,8 @@ class AdminPanelGenerationTests(unittest.IsolatedAsyncioTestCase):
             service,
             "_create_batch_records",
             AsyncMock(return_value=(batch, cards)),
-        ), patch.object(
-            service,
-            "_append_audit",
+        ), patch(
+            "backend.h5_backend.services.admin_panel.batch_service.append_audit",
             AsyncMock(),
         ), patch.object(
             service,

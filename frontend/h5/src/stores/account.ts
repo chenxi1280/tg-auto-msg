@@ -110,7 +110,7 @@ export const useAccountStore = defineStore('account', () => {
     } catch (err: unknown) {
       error.value = extractErrorMessage(err, '获取账号资源失败')
       console.error('获取账号资源失败:', err)
-      return []
+      throw err
     }
   }
 

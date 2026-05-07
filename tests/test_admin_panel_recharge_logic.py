@@ -8,9 +8,9 @@ from backend.database.schema.models import AgentFundLedger
 from backend.h5_backend.services.admin_panel.service import (
     ACCOUNT_TYPE_AGENT,
     ACCOUNT_TYPE_STAFF,
-    AdminPanelService,
     ROLE_SUPER_ADMIN,
 )
+from backend.h5_backend.services.admin_panel.ledger_service import FundLedgerService
 
 
 class _ScalarListResult:
@@ -86,7 +86,7 @@ class _RechargeSession:
 
 class RechargeCreditSettlementTests(unittest.IsolatedAsyncioTestCase):
     async def test_create_recharge_entry_keeps_insufficient_amount_as_credit_prepay(self):
-        service = AdminPanelService()
+        service = FundLedgerService()
         operator = SimpleNamespace(
             id=1,
             role_code=ROLE_SUPER_ADMIN,
@@ -119,19 +119,16 @@ class RechargeCreditSettlementTests(unittest.IsolatedAsyncioTestCase):
             yield fake_session
 
         with patch(
-            "backend.h5_backend.services.admin_panel.service.get_async_session",
+            "backend.h5_backend.services.admin_panel.ledger_service.get_async_session",
             new=fake_get_async_session,
-        ), patch.object(
-            service,
-            "_ensure_visible_account",
+        ), patch(
+            "backend.h5_backend.services.admin_panel.ledger_service.ensure_visible_account",
             AsyncMock(return_value=subject),
-        ), patch.object(
-            service,
-            "_append_audit",
+        ), patch(
+            "backend.h5_backend.services.admin_panel.ledger_service.append_audit",
             AsyncMock(),
-        ), patch.object(
-            service,
-            "_serialize_admin_account",
+        ), patch(
+            "backend.h5_backend.services.admin_panel.ledger_service.serialize_admin_account",
             side_effect=lambda account: {
                 "balance_cents": int(account.balance_cents or 0),
                 "credit_used_cents": int(account.credit_used_cents or 0),
@@ -156,7 +153,7 @@ class RechargeCreditSettlementTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("再补余额", ledger_rows[0].remark)
 
     async def test_create_recharge_entry_auto_settles_earliest_batch_then_carries_remaining_prepay(self):
-        service = AdminPanelService()
+        service = FundLedgerService()
         operator = SimpleNamespace(
             id=2,
             role_code="master_agent",
@@ -207,19 +204,16 @@ class RechargeCreditSettlementTests(unittest.IsolatedAsyncioTestCase):
             yield fake_session
 
         with patch(
-            "backend.h5_backend.services.admin_panel.service.get_async_session",
+            "backend.h5_backend.services.admin_panel.ledger_service.get_async_session",
             new=fake_get_async_session,
-        ), patch.object(
-            service,
-            "_ensure_visible_account",
+        ), patch(
+            "backend.h5_backend.services.admin_panel.ledger_service.ensure_visible_account",
             AsyncMock(return_value=subject),
-        ), patch.object(
-            service,
-            "_append_audit",
+        ), patch(
+            "backend.h5_backend.services.admin_panel.ledger_service.append_audit",
             AsyncMock(),
-        ), patch.object(
-            service,
-            "_serialize_admin_account",
+        ), patch(
+            "backend.h5_backend.services.admin_panel.ledger_service.serialize_admin_account",
             side_effect=lambda account: {
                 "balance_cents": int(account.balance_cents or 0),
                 "credit_used_cents": int(account.credit_used_cents or 0),

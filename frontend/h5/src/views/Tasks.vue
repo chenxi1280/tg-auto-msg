@@ -30,19 +30,19 @@
       </div>
     </div>
 
-    <div class=”container main”>
+    <div class="container main">
       <TaskEditor
-        ref=”editorRef”
-        :accounts=”accounts”
-        :tasks=”tasks”
-        :is-compact=”isCompact”
-        @update:resources=”onResourcesUpdate”
-        @close=”onEditorClose”
-        @saved=”onEditorSaved”
-        @run-once=”runTaskOnce”
+        ref="editorRef"
+        :accounts="accounts"
+        :tasks="tasks"
+        :is-compact="isCompact"
+        @update:resources="onResourcesUpdate"
+        @close="onEditorClose"
+        @saved="onEditorSaved"
+        @run-once="runTaskOnce"
       />
 
-      <div v-if=”!showEditor” class=”list card”>
+      <div v-if="!showEditor" class="list card">
         <h2>任务列表</h2>
         <div class="table-wrap">
           <el-table v-if="!isCompact" :data="tasks" stripe v-loading="loadingTasks">
@@ -158,6 +158,7 @@ const tasks = ref<TaskItem[]>([])
 const resources = ref<ResourceOption[]>([])
 const loadingTasks = ref(false)
 const showEditor = ref(false)
+const preferredAccountId = ref('')
 
 const accounts = computed(() => accountStore.accounts as Array<{ account_id: string; username?: string | null; first_name?: string | null; phone?: string | null }>)
 const manualTaskCount = computed(() => tasks.value.filter((task) => task.trigger_mode === 'manual_shortcut').length)
@@ -193,13 +194,13 @@ const openCreateForm = async (mode: 'scheduled' | 'manual_shortcut') => {
     ElMessage.warning('每个用户最多只能创建 3 个手动任务，请先删除一个后再试')
     return
   }
-  showEditor.value = true
-  await editorRef.value?.openCreateForm(mode)
+  const opened = await editorRef.value?.openCreateForm(mode, preferredAccountId.value || undefined)
+  showEditor.value = Boolean(opened)
 }
 
 const startEdit = async (task: TaskItem) => {
-  showEditor.value = true
-  await editorRef.value?.startEdit(task)
+  const opened = await editorRef.value?.startEdit(task)
+  showEditor.value = Boolean(opened)
 }
 
 const runTaskOnce = async (taskId: string, title: string) => {
@@ -306,11 +307,12 @@ onMounted(async () => {
   const peerTypeFromQuery = typeof route.query.peer_type === 'string' ? route.query.peer_type : ''
 
   if (accountIdFromQuery && accounts.value.some(a => a.account_id === accountIdFromQuery)) {
+    preferredAccountId.value = accountIdFromQuery
     if (!Number.isNaN(peerIdFromQuery)) {
-      showEditor.value = true
       const editor = editorRef.value
       if (editor) {
-        await editor.openCreateForm('scheduled', accountIdFromQuery)
+        const opened = await editor.openCreateForm('scheduled', accountIdFromQuery)
+        showEditor.value = Boolean(opened)
         const target = resources.value.find(
           r => r.peer_id === peerIdFromQuery && (!peerTypeFromQuery || r.peer_type === peerTypeFromQuery)
         )

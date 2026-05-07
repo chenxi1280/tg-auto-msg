@@ -4,7 +4,8 @@ from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from backend.h5_backend.services.admin_panel.service import AdminPanelService, ROLE_MASTER_AGENT, ROLE_SUB_AGENT, ROLE_SUPER_ADMIN
+from backend.h5_backend.services.admin_panel.log_service import OperationLogService
+from backend.h5_backend.services.admin_panel.service import ROLE_MASTER_AGENT, ROLE_SUB_AGENT, ROLE_SUPER_ADMIN
 
 
 class _ScalarListResult:
@@ -59,7 +60,7 @@ class _OperationLogSession:
 
 class OperationLogScopeTests(unittest.IsolatedAsyncioTestCase):
     async def test_operation_logs_respect_visible_account_chain(self):
-        service = AdminPanelService()
+        service = OperationLogService()
         accounts = [
             SimpleNamespace(id=1, province_code="default"),
             SimpleNamespace(id=2, province_code="default"),
@@ -133,15 +134,13 @@ class OperationLogScopeTests(unittest.IsolatedAsyncioTestCase):
             yield _OperationLogSession(accounts=accounts, ledgers=ledgers, batches=batches)
 
         with patch(
-            "backend.h5_backend.services.admin_panel.service.get_async_session",
+            "backend.h5_backend.services.admin_panel.log_service.get_async_session",
             new=fake_get_async_session,
-        ), patch.object(
-            service,
-            "_build_account_name_map_from_ids",
+        ), patch(
+            "backend.h5_backend.services.admin_panel.log_service.build_account_name_map_from_ids",
             AsyncMock(return_value={2: "总代", 3: "子代理", 4: "下级", 5: "平级总代"}),
-        ), patch.object(
-            service,
-            "_build_plan_name_map_from_codes",
+        ), patch(
+            "backend.h5_backend.services.admin_panel.log_service.build_plan_name_map_from_codes",
             AsyncMock(return_value={"plan_month": "月卡"}),
         ):
             super_admin = SimpleNamespace(id=1, role_code=ROLE_SUPER_ADMIN, province_code="default")

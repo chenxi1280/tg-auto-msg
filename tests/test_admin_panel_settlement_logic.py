@@ -3,7 +3,7 @@ from datetime import datetime
 from types import SimpleNamespace
 
 from backend.database.schema.models import AgentFundLedger
-from backend.h5_backend.services.admin_panel.service import AdminPanelService
+from backend.h5_backend.services.admin_panel.batch_service import CardBatchService
 
 
 class _ScalarResult:
@@ -38,7 +38,7 @@ class _SettlementSession:
 
 class SettlementLogicTests(unittest.IsolatedAsyncioTestCase):
     async def test_settlement_moves_liability_to_parent_and_reduces_credit_usage(self):
-        service = AdminPanelService()
+        service = CardBatchService()
         subject = SimpleNamespace(
             id=3,
             parent_account_id=2,
@@ -79,7 +79,7 @@ class SettlementLogicTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(int(ledger_rows[0].amount_cents), 5_000)
 
     async def test_settle_credit_batch_uses_credit_prepay_for_single_batch(self):
-        service = AdminPanelService()
+        service = CardBatchService()
         operator = SimpleNamespace(
             id=3,
             parent_account_id=2,
@@ -128,19 +128,16 @@ class SettlementLogicTests(unittest.IsolatedAsyncioTestCase):
             yield session
 
         with patch(
-            "backend.h5_backend.services.admin_panel.service.get_async_session",
+            "backend.h5_backend.services.admin_panel.batch_service.get_async_session",
             new=fake_get_async_session,
-        ), patch.object(
-            service,
-            "_visible_account_ids",
+        ), patch(
+            "backend.h5_backend.services.admin_panel.batch_service.visible_account_ids",
             AsyncMock(return_value=[2, 3, 4]),
-        ), patch.object(
-            service,
-            "_append_audit",
+        ), patch(
+            "backend.h5_backend.services.admin_panel.batch_service.append_audit",
             AsyncMock(),
-        ), patch.object(
-            service,
-            "_serialize_batch",
+        ), patch(
+            "backend.h5_backend.services.admin_panel.batch_service.serialize_batch",
             side_effect=lambda current_batch: {
                 "batch_id": current_batch.batch_id,
                 "payment_status": current_batch.payment_status,
