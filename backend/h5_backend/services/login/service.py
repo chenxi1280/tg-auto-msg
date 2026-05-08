@@ -24,6 +24,7 @@ from telethon.tl.functions.account import GetPasswordRequest
 from telethon.tl.functions.auth import CheckPasswordRequest
 
 from backend.bot.account.manager import get_account_manager
+from backend.bot.account.proxy_observation import start_proxy_observation
 from backend.bot.developer_apps import get_developer_app_service
 from backend.bot.developer_apps.service import (
     ASSIGNMENT_CONTEXT_EXISTING_REASSIGN,
@@ -31,14 +32,9 @@ from backend.bot.developer_apps.service import (
 )
 from backend.bot.client_runtime.manager import _wait_for_qr_login, is_userbot_ready
 from backend.config.core.settings import settings
-from backend.bot.handlers.core.user_link import (
-    clear_active_account_id,
-    replace_linked_system_user_id,
-    set_active_account_id,
-)
 from backend.bot.session.redis_login_manager import LoginStatus, get_redis_login_manager
 from backend.database.runtime.session import get_async_session
-from backend.database.schema.models import Account, HealthStatus, TelegramDeveloperApp
+from backend.database.schema.models import Account, HealthStatus, Proxy, TelegramDeveloperApp
 from backend.h5_backend.services.licensing.service import (
     TgAccountLimitExceededError,
     bind_current_authorization_to_account_if_possible,
@@ -129,6 +125,21 @@ class LoginService:
                 user_id=user_id,
             )
 
+    async def _resolve_login_proxy_config(self, *, user_id: int, target_account_id: Optional[str]):
+        target_id = str(target_account_id or "").strip()
+        if not target_id:
+            return None
+        async with get_async_session() as db_session:
+            account = await db_session.get(Account, target_id)
+            if account is None or int(account.user_id) != int(user_id):
+                raise HTTPException(status_code=404, detail="重登账号不存在")
+            proxy_id = int(account.proxy_id or 0)
+        if proxy_id <= 0:
+            return None
+        from backend.bot.proxy.pool import get_proxy_pool
+
+        return await get_proxy_pool().get_proxy_config(proxy_id)
+
     async def _upsert_login_account(
         self,
         *,
@@ -165,13 +176,28 @@ class LoginService:
         developer_service = get_developer_app_service()
         async with get_async_session() as db_session:
             trial_authorization = None
+            target_account_id = str(getattr(session, "target_account_id", "") or "").strip()
+            target_account = None
+            start_observation_after_login = False
+            if target_account_id:
+                target_account = await db_session.get(Account, target_account_id)
+                if target_account is None or int(target_account.user_id) != int(user_id):
+                    raise HTTPException(status_code=404, detail="重登账号不存在")
+                if target_account.tg_user_id and int(target_account.tg_user_id) != int(tg_user_id):
+                    raise HTTPException(status_code=400, detail="当前登录方式仅允许验证指定的 Telegram 账号")
+                if target_account.proxy_id:
+                    target_proxy = await db_session.get(Proxy, int(target_account.proxy_id))
+                    start_observation_after_login = bool(
+                        target_proxy and getattr(target_proxy, "is_system_gateway", False)
+                    )
+
             existing = await db_session.execute(
                 select(Account).where(
                     Account.user_id == user_id,
                     Account.tg_user_id == tg_user_id,
                 )
             )
-            account = existing.scalar_one_or_none()
+            account = target_account or existing.scalar_one_or_none()
 
             preferred_app_id = session.developer_app_id
             resolved_app_id = await developer_service.resolve_assignable_app_id(
@@ -228,6 +254,8 @@ class LoginService:
                 account.reauth_reason = None
                 account.reauth_required_at = None
                 account.health_status = HealthStatus.ONLINE
+                if start_observation_after_login:
+                    start_proxy_observation(account)
 
             await bind_current_authorization_to_account_if_possible(
                 user_id=user_id,
@@ -241,6 +269,12 @@ class LoginService:
             )
 
             if actor_tg_user_id and int(actor_tg_user_id) > 0:
+                from backend.bot.handlers.core.user_link import (
+                    clear_active_account_id,
+                    replace_linked_system_user_id,
+                    set_active_account_id,
+                )
+
                 previous_user_id = await replace_linked_system_user_id(
                     db_session,
                     int(actor_tg_user_id),
@@ -314,6 +348,7 @@ class LoginService:
         user_id: int,
         *,
         existing_tg_user_id: Optional[int] = None,
+        target_account_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         me_service = get_me_service()
         try:
@@ -336,6 +371,7 @@ class LoginService:
             LoginStatus.PHONE_INPUT_REQUIRED,
             system_user_id=user_id,
             developer_app_id=credentials.app_id or "",
+            target_account_id=target_account_id or "",
             login_mode="phone_code",
             qr_url="",
             error="",
@@ -415,6 +451,10 @@ class LoginService:
             StringSession(),
             api_id=credentials.api_id,
             api_hash=credentials.api_hash,
+            proxy=await self._resolve_login_proxy_config(
+                user_id=user_id,
+                target_account_id=getattr(session, "target_account_id", ""),
+            ),
         )
 
         try:
@@ -482,6 +522,10 @@ class LoginService:
             StringSession(decrypt_string_session(session.pending_session_encrypted)),
             api_id=credentials.api_id,
             api_hash=credentials.api_hash,
+            proxy=await self._resolve_login_proxy_config(
+                user_id=user_id,
+                target_account_id=getattr(session, "target_account_id", ""),
+            ),
         )
         attempts = int(session.code_attempts or "0")
 
@@ -658,6 +702,10 @@ class LoginService:
             StringSession(temp_session),
             api_id=credentials.api_id,
             api_hash=credentials.api_hash,
+            proxy=await self._resolve_login_proxy_config(
+                user_id=user_id,
+                target_account_id=getattr(session, "target_account_id", ""),
+            ),
         )
 
         try:

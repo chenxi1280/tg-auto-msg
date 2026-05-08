@@ -11,6 +11,11 @@ from backend.bot.account.reauth import (
     get_reauth_required_message,
     is_reauth_required_account,
 )
+from backend.bot.account.proxy_observation import (
+    SING_BOX_PROXY_REGIONS,
+    select_reauth_proxy_for_account,
+)
+from backend.bot.account.client_runtime import close_client
 from backend.bot.handlers.core.user_link import (
     get_active_account_id as _get_active_account_id,
     normalize_operator_account_refs as _normalize_operator_account_refs,
@@ -21,7 +26,7 @@ from backend.bot.handlers.task.queries import (
     resolve_actor_access_context as _resolve_actor_access_context,
 )
 from backend.bot.ui.messages import *
-from backend.database.schema.models import Account
+from backend.database.schema.models import Account, Proxy
 from backend.database.runtime.session import get_async_session
 from backend.h5_backend.services.licensing.service import (
     get_account_authorization_summary,
@@ -352,6 +357,14 @@ async def show_account_menu(event, user_id: int, account_id: str):
     keyboard = [
         [Button.inline("⚙️ 设为当前账号", data=f"acc_set_active:{account_id}")],
         [Button.inline("🔄 同步资源", data=f"acc_sync:{account_id}"), Button.inline("📱 重新绑定", data=f"acc_relogin:{account_id}")],
+        [
+            Button.inline(region.label, data=f"acc_proxy_select:{account_id}:{region.code}")
+            for region in SING_BOX_PROXY_REGIONS[:4]
+        ],
+        [
+            Button.inline(region.label, data=f"acc_proxy_select:{account_id}:{region.code}")
+            for region in SING_BOX_PROXY_REGIONS[4:]
+        ],
         [Button.inline("⏰ 创建定时任务", data=f"add_scheduled_task:{account_id}"), Button.inline("🖱️ 创建手动任务", data=f"add_manual_task:{account_id}")],
         [Button.inline("⏳ 续费卡密", data=f"acc_renew_authorization:{account_id}")],
         [Button.inline("解绑账号", data=f"acc_unbind:{account_id}")],
@@ -393,23 +406,75 @@ async def sync_single_account(event, user_id: int, account_id: str):
 
 
 async def relogin_account(event, user_id: int, account_id: str):
-    """重新绑定前先确认解除当前绑定。"""
+    """Start a re-login flow that keeps the existing account and tasks."""
     db_user_id, account = await _get_owned_account(user_id, account_id)
     if db_user_id is None or not account:
         await event.answer("账号不存在或无权限", alert=True)
         return
+    if is_reauth_required_account(account):
+        async with get_async_session() as session:
+            proxy = await session.get(Proxy, int(account.proxy_id)) if account.proxy_id else None
+        if not proxy or not bool(getattr(proxy, "is_system_gateway", False)):
+            await event.answer("请先选择一个固定代理地区，再重新登录。", alert=True)
+            await _send_or_reply(
+                event,
+                "⚠️ **请先选择代理地区**\n\n"
+                "该账号需要重新绑定。为降低再次失效风险，请先选择与用户日常 VPN/登录地区接近的固定代理，然后再重新登录。",
+                buttons=[
+                    [
+                        Button.inline(region.label, data=f"acc_proxy_select:{account_id}:{region.code}")
+                        for region in SING_BOX_PROXY_REGIONS[:4]
+                    ],
+                    [
+                        Button.inline(region.label, data=f"acc_proxy_select:{account_id}:{region.code}")
+                        for region in SING_BOX_PROXY_REGIONS[4:]
+                    ],
+                    [Button.inline("⬅️ 返回账号页", data=f"acc_menu:{account_id}")],
+                ],
+            )
+            return
     from backend.bot.onboarding import get_onboarding_service
 
-    await event.answer("请先确认是否解除当前绑定。")
-    await get_onboarding_service().prompt_replace_account_before_login(
+    await event.answer("开始重新登录，请用原 Telegram 账号完成验证。")
+    await get_onboarding_service().start_account_login(
         event,
         user_id,
-        account_id=str(account.account_id),
-        account_label=(
-            f"@{account.username}"
-            if account.username
-            else (account.phone or "未命名账号")
-        ),
+        existing_tg_user_id=int(account.tg_user_id or 0) or None,
+        target_account_id=str(account.account_id),
+    )
+
+
+async def select_account_proxy_region(event, user_id: int, account_id: str, region_code: str):
+    """Select a fixed proxy region for account re-login."""
+    db_user_id, account = await _get_owned_account(user_id, account_id)
+    if db_user_id is None or not account:
+        await event.answer("账号不存在或无权限", alert=True)
+        return
+
+    async with get_async_session() as session:
+        result = await select_reauth_proxy_for_account(
+            session,
+            user_id=int(db_user_id),
+            account_id=str(account_id),
+            region_code=region_code,
+        )
+        await session.commit()
+
+    from backend.bot.account.manager import get_account_manager
+
+    await close_client(get_account_manager(), str(account_id))
+    label = result.get("region_label") or result.get("region_code") or "已选地区"
+    await event.answer(f"已选择{label}代理，请重新登录。")
+    await _send_or_reply(
+        event,
+        "✅ **代理已配置**\n\n"
+        f"账号：{('@' + account.username) if account.username else (account.phone or '未命名账号')}\n"
+        f"代理地区：{label}\n\n"
+        "下一步：请点击“重新绑定”，用原 Telegram 账号完成登录。成功后账号会进入 24 小时观察期。",
+        buttons=[
+            [Button.inline("📱 重新绑定", data=f"acc_relogin:{account_id}")],
+            [Button.inline("⬅️ 返回账号页", data=f"acc_menu:{account_id}")],
+        ],
     )
 
 

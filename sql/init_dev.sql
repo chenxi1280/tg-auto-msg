@@ -378,6 +378,10 @@ CREATE TABLE IF NOT EXISTS proxies (
     proxy_type VARCHAR(10) NOT NULL,                    -- socks5/http/mtproto
     host VARCHAR(255) NOT NULL,
     port INTEGER NOT NULL,
+    display_name VARCHAR(100),                          -- 展示名称
+    region_code VARCHAR(20),                            -- 固定地区编码
+    is_system_gateway BOOLEAN DEFAULT FALSE NOT NULL,    -- 是否系统共享网关
+    is_shared BOOLEAN DEFAULT FALSE NOT NULL,            -- 是否允许多个账号共享
     username VARCHAR(100),                              -- 代理认证用户名
     password_encrypted VARCHAR(255),                    -- 加密存储的密码
 
@@ -399,15 +403,30 @@ CREATE TABLE IF NOT EXISTS proxies (
     CONSTRAINT unique_proxy UNIQUE (proxy_type, host, port)
 );
 
+-- 兼容旧库：为已存在的 proxies 补齐系统共享代理字段
+ALTER TABLE IF EXISTS proxies
+    ADD COLUMN IF NOT EXISTS display_name VARCHAR(100);
+ALTER TABLE IF EXISTS proxies
+    ADD COLUMN IF NOT EXISTS region_code VARCHAR(20);
+ALTER TABLE IF EXISTS proxies
+    ADD COLUMN IF NOT EXISTS is_system_gateway BOOLEAN DEFAULT FALSE NOT NULL;
+ALTER TABLE IF EXISTS proxies
+    ADD COLUMN IF NOT EXISTS is_shared BOOLEAN DEFAULT FALSE NOT NULL;
+
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_proxies_is_active ON proxies(is_active, is_healthy);
 CREATE INDEX IF NOT EXISTS idx_proxies_assigned ON proxies(assigned_account_id);
+CREATE INDEX IF NOT EXISTS idx_proxies_region_gateway ON proxies(region_code, is_system_gateway);
 
 -- 注释
 COMMENT ON TABLE proxies IS '代理池表';
 COMMENT ON COLUMN proxies.proxy_type IS '代理类型: socks5/http/mtproto';
 COMMENT ON COLUMN proxies.host IS '代理主机';
 COMMENT ON COLUMN proxies.port IS '代理端口';
+COMMENT ON COLUMN proxies.display_name IS '展示名称';
+COMMENT ON COLUMN proxies.region_code IS '固定地区编码';
+COMMENT ON COLUMN proxies.is_system_gateway IS '是否系统共享网关代理';
+COMMENT ON COLUMN proxies.is_shared IS '是否允许多个账号共享';
 COMMENT ON COLUMN proxies.password_encrypted IS '加密存储的密码';
 COMMENT ON COLUMN proxies.is_healthy IS '是否健康';
 COMMENT ON COLUMN proxies.response_time_ms IS '响应时间（毫秒）';
@@ -448,6 +467,9 @@ CREATE TABLE IF NOT EXISTS accounts (
     reauth_required BOOLEAN DEFAULT FALSE NOT NULL,
     reauth_reason VARCHAR(64),
     reauth_required_at TIMESTAMP,
+    proxy_observation_started_at TIMESTAMP,
+    proxy_observation_until TIMESTAMP,
+    proxy_observation_success_count INTEGER DEFAULT 0 NOT NULL,
 
     -- 负载均衡
     weight INTEGER DEFAULT 100,
@@ -479,6 +501,12 @@ ALTER TABLE IF EXISTS accounts
     ADD COLUMN IF NOT EXISTS reauth_reason VARCHAR(64);
 ALTER TABLE IF EXISTS accounts
     ADD COLUMN IF NOT EXISTS reauth_required_at TIMESTAMP;
+ALTER TABLE IF EXISTS accounts
+    ADD COLUMN IF NOT EXISTS proxy_observation_started_at TIMESTAMP;
+ALTER TABLE IF EXISTS accounts
+    ADD COLUMN IF NOT EXISTS proxy_observation_until TIMESTAMP;
+ALTER TABLE IF EXISTS accounts
+    ADD COLUMN IF NOT EXISTS proxy_observation_success_count INTEGER DEFAULT 0 NOT NULL;
 
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_accounts_user_id ON accounts(user_id);
@@ -487,6 +515,7 @@ CREATE INDEX IF NOT EXISTS idx_accounts_bind_code ON accounts(bind_code);
 CREATE INDEX IF NOT EXISTS idx_accounts_health_status ON accounts(health_status);
 CREATE INDEX IF NOT EXISTS idx_accounts_developer_app_id ON accounts(developer_app_id);
 CREATE INDEX IF NOT EXISTS idx_accounts_reauth_required ON accounts(reauth_required);
+CREATE INDEX IF NOT EXISTS idx_accounts_proxy_observation_until ON accounts(proxy_observation_until);
 
 -- 注释
 COMMENT ON TABLE accounts IS 'Userbot 账号管理表';
@@ -498,6 +527,9 @@ COMMENT ON COLUMN accounts.bind_code IS '6位绑定码';
 COMMENT ON COLUMN accounts.proxy_id IS '关联代理 ID';
 COMMENT ON COLUMN accounts.health_status IS '健康状态: online/offline/banned';
 COMMENT ON COLUMN accounts.is_flooding IS '是否触发 FloodWait';
+COMMENT ON COLUMN accounts.proxy_observation_started_at IS '账号代理观察期开始时间';
+COMMENT ON COLUMN accounts.proxy_observation_until IS '账号代理观察期结束时间';
+COMMENT ON COLUMN accounts.proxy_observation_success_count IS '代理观察期内成功发送计数';
 COMMENT ON COLUMN accounts.weight IS '权重（用于账号选择）';
 
 -- ============================================

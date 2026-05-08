@@ -10,11 +10,19 @@ from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import (
     Account,
     AppSetting,
+    Proxy,
     ScheduledMessageTask,
     TaskLog,
     User,
     UserAuthorization,
 )
+from backend.bot.account.proxy_observation import (
+    get_proxy_region_options,
+    is_proxy_observation_active,
+    proxy_observation_remaining_seconds,
+    select_reauth_proxy_for_account,
+)
+from backend.bot.account.manager import get_account_manager
 from backend.h5_backend.services.auth.service import get_auth_service
 from backend.h5_backend.services.licensing.service import (
     get_account_authorization_summary,
@@ -309,6 +317,8 @@ class UsersService:
 
             items = []
             for a in accounts:
+                account_proxy_id = getattr(a, "proxy_id", None)
+                proxy = await session.get(Proxy, int(account_proxy_id)) if account_proxy_id else None
                 task_counts = task_counts_by_account.get(
                     str(a.account_id),
                     {"task_count": 0, "enabled_task_count": 0},
@@ -332,6 +342,17 @@ class UsersService:
                     "first_name": a.first_name,
                     "phone": a.phone,
                     "developer_app_id": a.developer_app_id,
+                    "proxy_id": account_proxy_id,
+                    "proxy_region_code": proxy.region_code if proxy else None,
+                    "proxy_display_name": proxy.display_name if proxy else None,
+                    "proxy_endpoint": f"{proxy.proxy_type}://{proxy.host}:{proxy.port}" if proxy else None,
+                    "reauth_required": bool(getattr(a, "reauth_required", False)),
+                    "reauth_reason": getattr(a, "reauth_reason", None),
+                    "proxy_observation_started_at": a.proxy_observation_started_at.isoformat() if getattr(a, "proxy_observation_started_at", None) else None,
+                    "proxy_observation_until": a.proxy_observation_until.isoformat() if getattr(a, "proxy_observation_until", None) else None,
+                    "proxy_observation_success_count": int(getattr(a, "proxy_observation_success_count", 0) or 0),
+                    "proxy_observation_active": is_proxy_observation_active(a),
+                    "proxy_observation_remaining_seconds": proxy_observation_remaining_seconds(a),
                     "is_active": a.is_active,
                     "is_banned": a.is_banned,
                     "health_status": a.health_status,
@@ -349,6 +370,60 @@ class UsersService:
                     **(await get_account_authorization_summary(a.account_id, session=session)).to_dict(),
                 })
             return items
+
+    async def list_account_proxy_regions(self) -> List[Dict[str, Any]]:
+        options = get_proxy_region_options()
+        async with get_async_session() as session:
+            rows = (
+                await session.execute(
+                    select(Proxy).where(
+                        Proxy.is_system_gateway == True,
+                        Proxy.region_code.is_not(None),
+                    )
+                )
+            ).scalars().all()
+            proxy_by_region = {str(row.region_code): row for row in rows}
+
+        for item in options:
+            proxy = proxy_by_region.get(str(item["region_code"]))
+            item["proxy_id"] = proxy.proxy_id if proxy else None
+            item["is_healthy"] = bool(proxy.is_healthy) if proxy else False
+            item["last_check_at"] = proxy.last_check_at.isoformat() if proxy and proxy.last_check_at else None
+        return options
+
+    async def select_account_reauth_proxy(
+        self,
+        *,
+        user_id: int,
+        account_id: str,
+        region_code: str,
+        actor: str = "admin",
+        ip_address: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        async with get_async_session() as session:
+            result = await select_reauth_proxy_for_account(
+                session,
+                user_id=int(user_id),
+                account_id=str(account_id),
+                region_code=region_code,
+            )
+            await append_audit_log(
+                session,
+                actor=mask_actor_name(actor),
+                action="admin.select_account_reauth_proxy",
+                target_type="account",
+                target_id=str(account_id),
+                detail={
+                    "user_id": int(user_id),
+                    "region_code": result["region_code"],
+                    "proxy_id": result["proxy_id"],
+                },
+                ip_address=ip_address,
+            )
+            await session.commit()
+
+        await get_account_manager()._close_client(str(account_id))
+        return result
 
     async def list_account_send_logs(
         self,

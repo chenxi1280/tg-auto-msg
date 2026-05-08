@@ -303,6 +303,10 @@ export interface SystemProxy {
   proxy_type: string
   host: string
   port: number
+  display_name?: string | null
+  region_code?: string | null
+  is_system_gateway?: boolean
+  is_shared?: boolean
   username: string | null
   is_active: boolean
   is_healthy: boolean
@@ -395,6 +399,17 @@ export interface LegacyUserAccount {
   first_name: string | null
   phone: string | null
   developer_app_id: number | null
+  proxy_id?: number | null
+  proxy_region_code?: string | null
+  proxy_display_name?: string | null
+  proxy_endpoint?: string | null
+  reauth_required?: boolean
+  reauth_reason?: string | null
+  proxy_observation_started_at?: string | null
+  proxy_observation_until?: string | null
+  proxy_observation_success_count?: number
+  proxy_observation_active?: boolean
+  proxy_observation_remaining_seconds?: number
   is_active: boolean
   is_banned: boolean
   health_status: string | null
@@ -412,6 +427,18 @@ export interface LegacyUserAccount {
   authorization_id?: string | null
   authorization_status?: string | null
   authorization_end_at?: string | null
+}
+
+export interface AccountProxyRegion {
+  region_code: string
+  label: string
+  proxy_type: string
+  host: string
+  port: number
+  endpoint: string
+  proxy_id?: number | null
+  is_healthy?: boolean
+  last_check_at?: string | null
 }
 
 export interface LegacyUserAccountSendLog {

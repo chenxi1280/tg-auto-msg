@@ -1266,6 +1266,7 @@ class BotOnboardingService:
         tg_user_id: int,
         *,
         existing_tg_user_id: Optional[int] = None,
+        target_account_id: Optional[str] = None,
     ) -> None:
         access_ctx = await self._get_actor_access_context(tg_user_id)
         db_user_id = access_ctx.system_user_id
@@ -1288,6 +1289,7 @@ class BotOnboardingService:
             event,
             tg_user_id,
             existing_tg_user_id=existing_tg_user_id,
+            target_account_id=target_account_id,
         )
 
     async def _get_latest_bound_account_snapshot(self, db_user_id: int, *, account_id: Optional[str] = None) -> Optional[dict[str, Any]]:
@@ -1466,6 +1468,7 @@ class BotOnboardingService:
         tg_user_id: int,
         *,
         existing_tg_user_id: Optional[int] = None,
+        target_account_id: Optional[str] = None,
     ) -> None:
         access_ctx = await self._get_actor_access_context(tg_user_id)
         db_user_id = access_ctx.system_user_id
@@ -1493,6 +1496,7 @@ class BotOnboardingService:
             login_session = await get_login_service().create_phone_login_session(
                 db_user_id,
                 existing_tg_user_id=existing_tg_user_id,
+                target_account_id=target_account_id,
             )
         except HTTPException as exc:
             if exc.status_code == 429:
@@ -1506,6 +1510,7 @@ class BotOnboardingService:
             tg_user_id,
             login_id=login_id,
             expected_tg_user_id=existing_tg_user_id,
+            target_account_id=target_account_id,
             login_mode="phone_code",
         )
         prompt = await bot_client.send_message(

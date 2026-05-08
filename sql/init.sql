@@ -381,6 +381,10 @@ CREATE TABLE IF NOT EXISTS proxies (
     proxy_type VARCHAR(10) NOT NULL,
     host VARCHAR(255) NOT NULL,
     port INTEGER NOT NULL,
+    display_name VARCHAR(100),
+    region_code VARCHAR(20),
+    is_system_gateway BOOLEAN DEFAULT FALSE NOT NULL,
+    is_shared BOOLEAN DEFAULT FALSE NOT NULL,
     username VARCHAR(100),
     password_encrypted VARCHAR(255),
 
@@ -400,6 +404,7 @@ CREATE TABLE IF NOT EXISTS proxies (
 
 CREATE INDEX IF NOT EXISTS idx_proxies_is_active ON proxies(is_active, is_healthy);
 CREATE INDEX IF NOT EXISTS idx_proxies_assigned ON proxies(assigned_account_id);
+CREATE INDEX IF NOT EXISTS idx_proxies_region_gateway ON proxies(region_code, is_system_gateway);
 
 -- ========================================
 -- 11) 账号
@@ -430,6 +435,9 @@ CREATE TABLE IF NOT EXISTS accounts (
     reauth_required BOOLEAN DEFAULT FALSE NOT NULL,
     reauth_reason VARCHAR(64),
     reauth_required_at TIMESTAMP,
+    proxy_observation_started_at TIMESTAMP,
+    proxy_observation_until TIMESTAMP,
+    proxy_observation_success_count INTEGER DEFAULT 0 NOT NULL,
 
     weight INTEGER DEFAULT 100 NOT NULL,
 
@@ -448,6 +456,7 @@ CREATE INDEX IF NOT EXISTS idx_accounts_bind_code ON accounts(bind_code);
 CREATE INDEX IF NOT EXISTS idx_accounts_health_status ON accounts(health_status);
 CREATE INDEX IF NOT EXISTS idx_accounts_developer_app_id ON accounts(developer_app_id);
 CREATE INDEX IF NOT EXISTS idx_accounts_reauth_required ON accounts(reauth_required);
+CREATE INDEX IF NOT EXISTS idx_accounts_proxy_observation_until ON accounts(proxy_observation_until);
 
 -- ========================================
 -- 11) 资源

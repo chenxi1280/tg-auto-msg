@@ -49,6 +49,7 @@ class LoginSession:
     password_hint: str = ""
     pending_session_encrypted: str = ""
     account_id: str = ""
+    target_account_id: str = ""
     system_user_id: Optional[int] = None
     developer_app_id: Optional[int] = None
 
@@ -144,6 +145,7 @@ class RedisLoginManager:
             "password_hint": "",
             "pending_session_encrypted": "",
             "account_id": "",
+            "target_account_id": "",
             "system_user_id": "",
             "developer_app_id": "",
         }

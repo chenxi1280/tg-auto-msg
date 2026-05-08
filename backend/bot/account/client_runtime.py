@@ -182,6 +182,10 @@ async def ensure_account_proxy(manager, account_id: str) -> Optional[int]:
         return None
 
     proxy_pool = get_proxy_pool()
+    if account.proxy_id:
+        current_proxy = await proxy_pool.get_proxy(account.proxy_id)
+        if current_proxy and bool(getattr(current_proxy, "is_system_gateway", False)):
+            return account.proxy_id
 
     async def _assign_replacement() -> Optional[int]:
         replacement = await proxy_pool.get_available_proxy()

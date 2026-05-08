@@ -7,16 +7,20 @@ from typing import Optional
 
 from fastapi import HTTPException
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, text
 from telethon.errors import FloodWaitError, PeerFloodError
 
 from backend.bot.account.manager import AccountManager, get_account_manager
 from backend.bot.account.reauth import is_reauth_required_account
 from backend.bot.account.reauth_notifier import mark_account_reauth_required
+from backend.bot.account.proxy_observation import (
+    is_proxy_observation_active,
+    proxy_observation_has_send_budget,
+)
 from backend.bot.circuit.breaker import FloodWaitAction, get_circuit_breaker
 from backend.config.core.settings import settings
 from backend.database.runtime.session import get_async_session
-from backend.database.schema.models import ScheduledMessageTask, TaskTriggerSource
+from backend.database.schema.models import Account, ScheduledMessageTask, TaskTriggerSource
 from backend.h5_backend.services.licensing.service import (
     disable_tasks_for_account_if_unlicensed,
     get_account_authorization_summary,
@@ -213,10 +217,25 @@ async def _validate_and_resolve(
                 task.account_id,
                 str(getattr(account, "reauth_reason", "") or "session_unauthorized"),
             )
+            if advance_schedule:
+                task.next_run_at = now + max(1, int(task.repeat_interval_min or 1)) * 60
+                await session.commit()
             return _build_summary(
                 task=task, trigger_source=trigger_source,
                 status="skipped", total_targets=0, success_count=0, failed_count=0,
-                error_summary="当前执行账号需要重新绑定后才能发送，相关任务已暂停",
+                error_summary="当前执行账号需要重新绑定后才能发送，相关任务已暂缓",
+                account_display=account_display,
+            )
+        if account and is_proxy_observation_active(account) and not proxy_observation_has_send_budget(account):
+            if advance_schedule:
+                until = getattr(account, "proxy_observation_until", None)
+                if until is not None:
+                    task.next_run_at = max(now + 60, int(until.timestamp()))
+                    await session.commit()
+            return _build_summary(
+                task=task, trigger_source=trigger_source,
+                status="skipped", total_targets=0, success_count=0, failed_count=0,
+                error_summary="账号正在代理观察期内，已达到 24 小时观察期发送上限",
                 account_display=account_display,
             )
 
@@ -236,6 +255,8 @@ async def _validate_and_resolve(
 
     # 收集目标
     target_specs = collect_task_targets(task)
+    if account and is_proxy_observation_active(account):
+        target_specs = target_specs[:1]
     if not target_specs:
         return await _handle_no_targets(
             task=task, session=session, now=now,
@@ -398,6 +419,61 @@ async def _check_schedule_constraints(
         )
 
     return None
+
+
+def _is_postgres_session(session) -> bool:
+    try:
+        bind = session.get_bind()
+        return str(bind.dialect.name).lower().startswith("postgres")
+    except Exception:
+        return False
+
+
+async def _lock_and_recheck_observation_budget(
+    *,
+    task: ScheduledMessageTask,
+    target_specs: list[dict],
+    session,
+    now: int,
+    advance_schedule: bool,
+    trigger_source: str,
+    account_display: str,
+) -> tuple[TaskExecutionSummary | None, list[dict]]:
+    account_id = str(task.account_id or "").strip()
+    if not account_id:
+        return None, target_specs
+
+    account = await session.get(Account, account_id)
+    if account is None or not is_proxy_observation_active(account):
+        return None, target_specs
+
+    if _is_postgres_session(session):
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+            {"lock_key": f"proxy-observation:{account_id}"},
+        )
+        await session.refresh(account)
+
+    if not is_proxy_observation_active(account):
+        return None, target_specs
+
+    if not proxy_observation_has_send_budget(account):
+        if advance_schedule:
+            until = getattr(account, "proxy_observation_until", None)
+            if until is not None:
+                task.next_run_at = max(now + 60, int(until.timestamp()))
+                await session.commit()
+        return (
+            _build_summary(
+                task=task, trigger_source=trigger_source,
+                status="skipped", total_targets=0, success_count=0, failed_count=0,
+                error_summary="账号正在代理观察期内，已达到 24 小时观察期发送上限",
+                account_display=account_display,
+            ),
+            [],
+        )
+
+    return None, target_specs[:1]
 
 
 # ---------------------------------------------------------------------------
@@ -620,6 +696,16 @@ async def execute_task_once(
         )
         if skipped is not None:
             return skipped
+
+        observation_skipped, target_specs = await _lock_and_recheck_observation_budget(
+            task=task, target_specs=target_specs,
+            session=session, now=now,
+            advance_schedule=advance_schedule,
+            trigger_source=trigger_source,
+            account_display=vr.account_display,
+        )
+        if observation_skipped is not None:
+            return observation_skipped
 
         # --- Phase 3: send with error recovery ---
         try:

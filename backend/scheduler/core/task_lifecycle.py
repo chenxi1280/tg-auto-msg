@@ -7,6 +7,7 @@ from loguru import logger
 from sqlalchemy import select
 
 from backend.database.schema.models import ScheduledMessageTask, TaskLog, TaskTriggerSource
+from backend.bot.account.proxy_observation import mark_proxy_observation_success
 
 
 def calculate_next_run(now: int, interval_min: int) -> int:
@@ -69,6 +70,7 @@ async def handle_task_success(
 
     if task.account_id:
         await account_manager.increment_messages_sent(task.account_id)
+        await mark_proxy_observation_success(session, task.account_id)
 
     await session.commit()
 

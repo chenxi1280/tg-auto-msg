@@ -11,6 +11,10 @@ from loguru import logger
 from sqlalchemy import delete, func, select
 
 from backend.bot.account.manager import get_account_manager
+from backend.bot.account.proxy_observation import (
+    format_observation_block_message,
+    is_proxy_observation_active,
+)
 from backend.database.schema.models import (
     Account,
     AppSetting,
@@ -231,6 +235,8 @@ class TaskService:
         payload["user_id"] = user_id
         account = await self._resolve_account(payload, user_id)
         if account is not None:
+            if is_proxy_observation_active(account):
+                raise HTTPException(status_code=423, detail=format_observation_block_message(account))
             await require_account_task_permission(account.account_id, action_text="创建自动发送任务")
         now_ts = int(datetime.now().timestamp())
 

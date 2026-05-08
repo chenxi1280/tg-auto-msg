@@ -1,5 +1,5 @@
 import { adminApi } from './client'
-import type { LegacyUser, LegacyUserAccount, LegacyUserAccountSendLog, LicenseAuthorization, PaginatedResponse } from './types'
+import type { AccountProxyRegion, LegacyUser, LegacyUserAccount, LegacyUserAccountSendLog, LicenseAuthorization, PaginatedResponse } from './types'
 
 export const adminListUsers = (params?: {
   search?: string
@@ -21,6 +21,16 @@ export const adminListUserAccountSendLogs = (
   },
 ): Promise<{ success: boolean; data: PaginatedResponse<LegacyUserAccountSendLog> }> =>
   adminApi.get(`/admin/users/${userId}/accounts/${accountId}/send-logs`, { params })
+
+export const adminListAccountProxyRegions = (): Promise<{ success: boolean; data: AccountProxyRegion[] }> =>
+  adminApi.get('/admin/account-proxy-regions')
+
+export const adminSelectAccountReauthProxy = (
+  userId: number,
+  accountId: string,
+  regionCode: string,
+): Promise<{ success: boolean; message: string; data: Record<string, unknown> }> =>
+  adminApi.post(`/admin/users/${userId}/accounts/${accountId}/reauth-proxy`, { region_code: regionCode })
 
 export const adminResetUserPassword = (userId: number, newPassword: string): Promise<{ success: boolean; message: string }> =>
   adminApi.post(`/admin/users/${userId}/reset-password`, { new_password: newPassword })

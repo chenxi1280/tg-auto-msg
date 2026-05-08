@@ -135,6 +135,15 @@
         <el-table-column prop="tg_user_id" label="TG UID" width="130" />
         <el-table-column prop="phone" label="手机号" width="140" />
         <el-table-column prop="health_status" label="健康状态" width="120" />
+        <el-table-column label="代理" min-width="150">
+          <template #default="{ row }">
+            <div class="developer-app-cell">
+              <span>{{ proxyLabel(row) }}</span>
+              <el-tag v-if="row.proxy_observation_active" type="warning" size="small">观察期</el-tag>
+              <el-tag v-else-if="row.reauth_required" type="danger" size="small">待重绑</el-tag>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column label="任务数" width="120">
           <template #default="{ row }">{{ row.enabled_task_count ?? 0 }} / {{ row.task_count ?? 0 }}</template>
         </el-table-column>
@@ -167,9 +176,10 @@
         <el-table-column label="授权到期" min-width="160">
           <template #default="{ row }">{{ formatDateTime(row.authorization_end_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="160" fixed="right">
+        <el-table-column label="操作" width="230" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="openSendLogs(row)">发送记录</el-button>
+            <el-button v-if="canManageUsers" link type="warning" @click="openProxyDialog(row)">选择代理</el-button>
             <el-button v-if="canManageUsers" link type="danger" @click="deleteAccount(row.account_id)">删除</el-button>
           </template>
         </el-table-column>
@@ -201,6 +211,10 @@
               <span class="mobile-data-card__value">{{ formatSendResult(row.last_send_result) }}（{{ row.send_success_count ?? 0 }} / {{ row.send_failed_count ?? 0 }}）</span>
             </div>
             <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">代理</span>
+              <span class="mobile-data-card__value">{{ proxyLabel(row) }}</span>
+            </div>
+            <div class="mobile-data-card__row">
               <span class="mobile-data-card__label">最近错误</span>
               <span class="mobile-data-card__value">{{ row.last_send_error_message || '-' }}</span>
             </div>
@@ -215,6 +229,7 @@
           </div>
           <div class="mobile-action-bar">
             <el-button type="primary" plain @click="openSendLogs(row)">发送记录</el-button>
+            <el-button v-if="canManageUsers" type="warning" plain @click="openProxyDialog(row)">选择代理</el-button>
             <el-button v-if="canManageUsers" type="danger" plain @click="deleteAccount(row.account_id)">删除</el-button>
           </div>
         </div>
@@ -245,6 +260,30 @@
       <template #footer>
         <el-button @click="developerAppDialog.visible = false">取消</el-button>
         <el-button type="primary" :loading="savingDeveloperApp" @click="saveDeveloperApp">保存</el-button>
+      </template>
+    </ResponsiveFormLayer>
+
+    <ResponsiveFormLayer v-model="proxyDialog.visible" title="选择账号代理地区" width="460px">
+      <el-form label-position="top">
+        <el-form-item label="账号">
+          <el-input :model-value="proxyDialog.account_name" disabled />
+        </el-form-item>
+        <el-form-item label="代理地区">
+          <el-radio-group v-model="proxyDialog.region_code" class="proxy-region-grid">
+            <el-radio-button
+              v-for="region in proxyRegions"
+              :key="region.region_code"
+              :label="region.region_code"
+            >
+              {{ region.label }}
+            </el-radio-button>
+          </el-radio-group>
+          <div class="form-tip">保存后账号会进入待重新绑定状态，用户需用原 Telegram 账号重新登录。</div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="proxyDialog.visible = false">取消</el-button>
+        <el-button type="primary" :loading="savingProxy" @click="saveProxyRegion">保存</el-button>
       </template>
     </ResponsiveFormLayer>
 
@@ -328,14 +367,16 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import type { DeveloperApp, LegacyUser, LegacyUserAccount, LegacyUserAccountSendLog } from '@/api/admin'
+import type { AccountProxyRegion, DeveloperApp, LegacyUser, LegacyUserAccount, LegacyUserAccountSendLog } from '@/api/admin'
 import {
   adminDeleteManagedAccount,
+  adminListAccountProxyRegions,
   adminListDeveloperApps,
   adminListUserAccountSendLogs,
   adminListUserAccounts,
   adminListUsers,
   adminResetUserPassword,
+  adminSelectAccountReauthProxy,
   adminSetUserDeveloperApp,
 } from '@/api/admin'
 import { useAdminConsoleStore } from '@/stores/adminConsole'
@@ -356,6 +397,7 @@ const users = ref<LegacyUser[]>([])
 const userAccounts = ref<LegacyUserAccount[]>([])
 const sendLogs = ref<LegacyUserAccountSendLog[]>([])
 const developerApps = ref<DeveloperApp[]>([])
+const proxyRegions = ref<AccountProxyRegion[]>([])
 const selectedUserId = ref<number | null>(null)
 const total = ref(0)
 const lastActionMessage = ref('')
@@ -365,6 +407,7 @@ const sendLogTotal = ref(0)
 
 const savingPassword = ref(false)
 const savingDeveloperApp = ref(false)
+const savingProxy = ref(false)
 
 const pagination = reactive({
   currentPage: 1,
@@ -381,6 +424,14 @@ const developerAppDialog = reactive({
   visible: false,
   user_id: 0,
   developer_app_id: null as number | null,
+})
+
+const proxyDialog = reactive({
+  visible: false,
+  user_id: 0,
+  account_id: '',
+  account_name: '',
+  region_code: '',
 })
 
 const sendLogDrawer = reactive({
@@ -478,6 +529,10 @@ const formatTriggerSource = (source?: string | null) => {
   return labels[normalized] || '系统触发'
 }
 
+const proxyLabel = (account: LegacyUserAccount) => {
+  return account.proxy_display_name || account.proxy_endpoint || (account.proxy_id ? `代理#${account.proxy_id}` : '未配置')
+}
+
 const loadUsers = async (resetPage = false) => {
   if (resetPage) pagination.currentPage = 1
   const response = await adminListUsers({
@@ -526,6 +581,15 @@ const loadDeveloperApps = async () => {
     ...store.developerAppSettings,
     ...response.data.settings,
   }
+}
+
+const loadProxyRegions = async () => {
+  if (!canManageUsers.value) {
+    proxyRegions.value = []
+    return
+  }
+  const response = await adminListAccountProxyRegions()
+  proxyRegions.value = response.data
 }
 
 const loadUserAccounts = async () => {
@@ -631,6 +695,32 @@ const saveDeveloperApp = async () => {
   }
 }
 
+const openProxyDialog = async (account: LegacyUserAccount) => {
+  if (!selectedUserId.value) return
+  if (!proxyRegions.value.length) {
+    await loadProxyRegions()
+  }
+  proxyDialog.visible = true
+  proxyDialog.user_id = selectedUserId.value
+  proxyDialog.account_id = account.account_id
+  proxyDialog.account_name = account.tg_account_name || account.username || account.phone || account.account_id
+  proxyDialog.region_code = account.proxy_region_code || proxyRegions.value[0]?.region_code || ''
+}
+
+const saveProxyRegion = async () => {
+  if (!proxyDialog.user_id || !proxyDialog.account_id || !proxyDialog.region_code) return
+  savingProxy.value = true
+  try {
+    await adminSelectAccountReauthProxy(proxyDialog.user_id, proxyDialog.account_id, proxyDialog.region_code)
+    proxyDialog.visible = false
+    await loadUserAccounts()
+    lastActionMessage.value = '账号代理已配置，请通知用户重新登录'
+    ElMessage.success(lastActionMessage.value)
+  } finally {
+    savingProxy.value = false
+  }
+}
+
 const deleteAccount = async (accountId: string) => {
   await ElMessageBox.confirm('删除该 TG 账号后无法恢复，确定继续吗？', '删除 TG 账号', { type: 'warning' })
   await adminDeleteManagedAccount(accountId)
@@ -640,7 +730,7 @@ const deleteAccount = async (accountId: string) => {
 }
 
 onMounted(async () => {
-  await Promise.all([loadUsers(), loadDeveloperApps()])
+  await Promise.all([loadUsers(), loadDeveloperApps(), loadProxyRegions()])
 })
 </script>
 
@@ -696,6 +786,12 @@ onMounted(async () => {
   align-items: center;
   gap: 12px;
   margin-bottom: 16px;
+}
+
+.proxy-region-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .pagination-wrap {

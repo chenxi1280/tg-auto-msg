@@ -271,6 +271,8 @@ class AccountManager:
                 "last_used_at",
                 "reauth_reason",
                 "reauth_required_at",
+                "proxy_observation_started_at",
+                "proxy_observation_until",
             }
             for key, value in kwargs.items():
                 if not hasattr(account, key):

@@ -93,7 +93,7 @@ def _session_ctx(session):
 
 
 class ReauthNotifierTests(unittest.IsolatedAsyncioTestCase):
-    async def test_mark_account_reauth_required_disables_tasks_sends_and_records_notice(self):
+    async def test_mark_account_reauth_required_keeps_tasks_enabled_sends_and_records_notice(self):
         account = Account(
             account_id="acc-1",
             user_id=9,
@@ -122,11 +122,12 @@ class ReauthNotifierTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.notice_sent)
         self.assertTrue(account.reauth_required)
         self.assertEqual(account.reauth_reason, "session_unauthorized")
-        self.assertFalse(tasks[0].enabled)
-        self.assertFalse(tasks[1].enabled)
+        self.assertTrue(tasks[0].enabled)
+        self.assertTrue(tasks[1].enabled)
         send_mock.assert_awaited_once()
-        button = send_mock.await_args.kwargs["buttons"][0][0]
-        self.assertEqual(button.data, b"acc_relogin:acc-1")
+        buttons = send_mock.await_args.kwargs["buttons"]
+        self.assertEqual(buttons[0][0].data, b"acc_proxy_select:acc-1:hk")
+        self.assertEqual(buttons[-1][0].data, b"acc_relogin:acc-1")
         self.assertIn("reauth_notice:acc-1", session.settings)
 
     async def test_mark_account_reauth_required_does_not_repeat_immediate_notice(self):

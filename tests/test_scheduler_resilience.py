@@ -30,9 +30,13 @@ class _FakeQueueScalarResult:
 class _FakeQueueSession:
     def __init__(self, task):
         self._task = task
+        self.commits = 0
 
     async def execute(self, _statement):
         return _FakeQueueScalarResult(self._task)
+
+    async def commit(self):
+        self.commits += 1
 
 
 class QueueOpsTests(unittest.IsolatedAsyncioTestCase):
@@ -259,4 +263,7 @@ class TaskRunnerReauthTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(summary.status, "skipped")
         self.assertIn("需要重新绑定", summary.error_summary)
+        self.assertTrue(task.enabled)
+        self.assertGreater(task.next_run_at, 1)
+        self.assertEqual(session.commits, 1)
         mark_mock.assert_awaited_once_with("acc-reauth", "session_unauthorized")

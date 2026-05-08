@@ -892,6 +892,10 @@ class Proxy(Base):
     proxy_type: Mapped[str] = mapped_column(String(10), nullable=False, comment="代理类型: socks5/http/mtproto")
     host: Mapped[str] = mapped_column(String(255), nullable=False, comment="代理主机")
     port: Mapped[int] = mapped_column(Integer, nullable=False, comment="代理端口")
+    display_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, comment="代理展示名称")
+    region_code: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, comment="固定区域代码")
+    is_system_gateway: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, comment="是否系统内网代理网关")
+    is_shared: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, comment="是否允许多个账号共享")
     username: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, comment="代理认证用户名")
     password_encrypted: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="加密存储的密码")
 
@@ -926,6 +930,7 @@ class Proxy(Base):
         UniqueConstraint("proxy_type", "host", "port", name="unique_proxy"),
         Index("idx_proxies_is_active", "is_active", "is_healthy"),
         Index("idx_proxies_assigned", "assigned_account_id"),
+        Index("idx_proxies_region_gateway", "region_code", "is_system_gateway"),
     )
 
     def __repr__(self) -> str:
@@ -972,6 +977,9 @@ class Account(Base):
     reauth_required: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, comment="是否需要重新绑定")
     reauth_reason: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, comment="需要重登的原因")
     reauth_required_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="重登要求生效时间")
+    proxy_observation_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="代理重登观察期开始时间")
+    proxy_observation_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="代理重登观察期结束时间")
+    proxy_observation_success_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False, comment="代理观察期成功发送计数")
 
     # 负载均衡
     weight: Mapped[int] = mapped_column(Integer, default=100, comment="权重（用于账号选择）")
@@ -1004,6 +1012,7 @@ class Account(Base):
         Index("idx_accounts_bind_code", "bind_code"),
         Index("idx_accounts_developer_app_id", "developer_app_id"),
         Index("idx_accounts_reauth_required", "reauth_required"),
+        Index("idx_accounts_proxy_observation_until", "proxy_observation_until"),
     )
 
     def __repr__(self) -> str:

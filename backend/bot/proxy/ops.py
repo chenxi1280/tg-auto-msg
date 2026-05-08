@@ -142,7 +142,8 @@ async def assign_proxy(account_id: str, proxy_id: int) -> bool:
         if not proxy:
             logger.error(f"代理不存在: {proxy_id}")
             return False
-        if proxy.assigned_account_id and proxy.assigned_account_id != account_id:
+        is_shared = bool(getattr(proxy, "is_shared", False))
+        if not is_shared and proxy.assigned_account_id and proxy.assigned_account_id != account_id:
             logger.warning(f"代理 {proxy_id} 已被分配给其他账号")
             return False
 
@@ -162,7 +163,10 @@ async def assign_proxy(account_id: str, proxy_id: int) -> bool:
             if old_proxy and old_proxy.assigned_account_id == account_id:
                 old_proxy.assigned_account_id = None
 
-        proxy.assigned_account_id = account_id
+        if is_shared:
+            proxy.assigned_account_id = None
+        else:
+            proxy.assigned_account_id = account_id
         proxy.usage_count += 1
         account.proxy_id = proxy_id
         await session.commit()
@@ -191,7 +195,8 @@ async def unassign_proxy(account_id: str) -> bool:
             return False
 
         old_proxy_id = proxy.proxy_id
-        proxy.assigned_account_id = None
+        if proxy.assigned_account_id == account_id:
+            proxy.assigned_account_id = None
         account.proxy_id = None
         await session.commit()
 

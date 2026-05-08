@@ -1,4 +1,4 @@
-"""Reauth-required account task suspension and user reminders."""
+"""Reauth-required account reminders."""
 from __future__ import annotations
 
 import asyncio
@@ -17,6 +17,7 @@ from telethon.errors import (
 )
 
 from backend.bot.account.reauth import is_reauth_required_account
+from backend.bot.account.proxy_observation import SING_BOX_PROXY_REGIONS
 from backend.bot.client_runtime.manager import bot_client, ensure_manager_bot_ready
 from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import (
@@ -134,10 +135,18 @@ async def _send_reauth_notice(item: ReauthNoticeItem) -> bool:
         "重新绑定前请确认主要账号日常登录区域与服务器/梯子/代理区域尽量一致且稳定，避免 Telegram 拦截新登录。"
     )
     try:
+        region_buttons = [
+            Button.inline(region.label, data=f"acc_proxy_select:{item.account_id}:{region.code}")
+            for region in SING_BOX_PROXY_REGIONS
+        ]
         await bot_client.send_message(
             int(item.tg_user_id),
             text,
-            buttons=[[Button.inline("📱 重新绑定", data=f"acc_relogin:{item.account_id}")]],
+            buttons=[
+                region_buttons[:4],
+                region_buttons[4:],
+                [Button.inline("📱 重新绑定", data=f"acc_relogin:{item.account_id}")],
+            ],
         )
         await _record_notice_sent(item.account_id)
         return True
@@ -164,7 +173,11 @@ async def _send_reauth_notice(item: ReauthNoticeItem) -> bool:
 
 
 async def mark_account_reauth_required(account_id: str, reason: str) -> Optional[ReauthTransitionResult]:
-    """Mark an account as reauth-required, disable its tasks, and notify once."""
+    """Mark an account as reauth-required and notify once.
+
+    Tasks stay enabled. The scheduler skips them while the account requires
+    reauth, then the proxy observation budget controls sends after re-login.
+    """
     normalized_reason = str(reason or "").strip() or "unknown"
     now = datetime.now()
     notice_item: Optional[ReauthNoticeItem] = None
@@ -188,9 +201,6 @@ async def mark_account_reauth_required(account_id: str, reason: str) -> Optional
                 )
             )
         ).scalars().all()
-        for task in enabled_tasks:
-            task.enabled = False
-
         authorization_end_at = await _load_active_authorization_end_at(session, str(account_id), now)
         disabled_task_count = len(enabled_tasks)
 

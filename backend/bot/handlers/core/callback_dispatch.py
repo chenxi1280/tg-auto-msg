@@ -12,6 +12,7 @@ from backend.bot.handlers.account.management import (
     confirm_unbind_account,
     relogin_account,
     renew_account_authorization,
+    select_account_proxy_region,
     set_current_account,
     show_account_menu,
     show_accounts_list,
@@ -423,6 +424,13 @@ async def _handle_acc_relogin_callback(event, user_id: int, parts: list[str]):
     await relogin_account(event, user_id, parts[1])
 
 
+async def _handle_acc_proxy_select_callback(event, user_id: int, parts: list[str]):
+    if len(parts) < 3:
+        await event.answer("参数错误", alert=True)
+        return
+    await select_account_proxy_region(event, user_id, parts[1], parts[2])
+
+
 async def _handle_acc_unbind_callback(event, user_id: int, parts: list[str]):
     if len(parts) < 2:
         await event.answer("参数错误", alert=True)
@@ -547,6 +555,7 @@ _CUSTOM_ACTION_HANDLERS = {
     "acc_set_active": _handle_acc_set_active_callback,
     "acc_sync": _handle_acc_sync_callback,
     "acc_relogin": _handle_acc_relogin_callback,
+    "acc_proxy_select": _handle_acc_proxy_select_callback,
     "acc_unbind": _handle_acc_unbind_callback,
     "acc_unbind_confirm": _handle_acc_unbind_confirm_callback,
     "acc_add_task": _handle_acc_add_task_callback,

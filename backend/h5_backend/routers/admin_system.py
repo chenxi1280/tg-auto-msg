@@ -94,6 +94,10 @@ class SetUserDeveloperAppRequest(BaseModel):
     developer_app_id: Optional[int] = Field(default=None, ge=1)
 
 
+class SelectAccountProxyRequest(BaseModel):
+    region_code: str = Field(..., min_length=2, max_length=20)
+
+
 def _actor(current_admin: AdminAccount) -> str:
     return f"{current_admin.username}#{current_admin.id}"
 
@@ -603,6 +607,33 @@ async def list_user_account_send_logs(
             offset=offset,
         ),
     }
+
+
+@router.get("/api/admin/account-proxy-regions")
+async def list_account_proxy_regions(
+    current_admin: AdminAccount = Depends(require_admin_permissions("users.read")),
+):
+    service = get_admin_license_service()
+    return {"success": True, "data": await service.list_account_proxy_regions()}
+
+
+@router.post("/api/admin/users/{user_id}/accounts/{account_id}/reauth-proxy")
+async def select_account_reauth_proxy(
+    user_id: int,
+    account_id: str,
+    payload: SelectAccountProxyRequest,
+    request: Request,
+    current_admin: AdminAccount = Depends(require_admin_permissions("users.write")),
+):
+    service = get_admin_license_service()
+    data = await service.select_account_reauth_proxy(
+        user_id=user_id,
+        account_id=account_id,
+        region_code=payload.region_code,
+        actor=_actor(current_admin),
+        ip_address=_client_ip(request),
+    )
+    return {"success": True, "message": "账号代理已配置，请通知用户重新登录", "data": data}
 
 
 @router.post("/api/admin/users/{user_id}/reset-password")
