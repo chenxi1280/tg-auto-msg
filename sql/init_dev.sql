@@ -83,7 +83,7 @@ CREATE INDEX IF NOT EXISTS idx_pricing_plans_is_active ON pricing_plans(is_activ
 
 INSERT INTO pricing_plans (plan_code, display_name, billing_cycle, price_cents, duration_days, is_active, sort_order)
 VALUES
-    ('monthly', '月付卡密', 'monthly', 10000, 30, TRUE, 10)
+    ('monthly', '月付卡密', 'monthly', 12000, 30, TRUE, 10)
 ON CONFLICT (plan_code) DO UPDATE
 SET
     display_name = EXCLUDED.display_name,
@@ -181,6 +181,10 @@ ON CONFLICT (key) DO NOTHING;
 
 INSERT INTO app_settings (key, value)
 VALUES ('purchase_button_text', '联系 Telegram 购买')
+ON CONFLICT (key) DO NOTHING;
+
+INSERT INTO app_settings (key, value)
+VALUES ('purchase_buttons', '[{"text":"联系 Telegram 购买","url":"https://t.me/"}]')
 ON CONFLICT (key) DO NOTHING;
 
 INSERT INTO app_settings (key, value)

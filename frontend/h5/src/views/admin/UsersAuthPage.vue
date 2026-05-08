@@ -24,6 +24,12 @@
         <el-table-column label="账号数" width="100">
           <template #default="{ row }">{{ row.account_count }}</template>
         </el-table-column>
+        <el-table-column label="TG账号" min-width="180">
+          <template #default="{ row }">{{ row.tg_account_summary || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="任务数" width="120">
+          <template #default="{ row }">{{ row.enabled_task_count ?? 0 }} / {{ row.task_count ?? 0 }}</template>
+        </el-table-column>
         <el-table-column label="授权状态" min-width="180">
           <template #default="{ row }">
             {{ row.current_authorization?.status || '未授权' }}
@@ -66,6 +72,14 @@
             <el-tag :type="selectedUserId === row.id ? 'primary' : 'info'">{{ selectedUserId === row.id ? '已选中' : `账号 ${row.account_count}` }}</el-tag>
           </div>
           <div class="mobile-data-card__grid">
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">TG账号</span>
+              <span class="mobile-data-card__value">{{ row.tg_account_summary || '-' }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">任务数</span>
+              <span class="mobile-data-card__value">{{ row.enabled_task_count ?? 0 }} / {{ row.task_count ?? 0 }}</span>
+            </div>
             <div class="mobile-data-card__row">
               <span class="mobile-data-card__label">授权状态</span>
               <span class="mobile-data-card__value">{{ row.current_authorization?.status || '未授权' }}</span>
@@ -115,9 +129,16 @@
       </template>
       <el-empty v-if="!selectedUserId" description="请选择要查看的用户" />
       <el-table v-else-if="!isCompact" :data="userAccounts" stripe>
-        <el-table-column prop="username" label="TG 用户名" width="140" />
+        <el-table-column label="TG 账号名" min-width="160">
+          <template #default="{ row }">{{ row.tg_account_name || row.username || '-' }}</template>
+        </el-table-column>
+        <el-table-column prop="tg_user_id" label="TG UID" width="130" />
         <el-table-column prop="phone" label="手机号" width="140" />
         <el-table-column prop="health_status" label="健康状态" width="120" />
+        <el-table-column label="任务数" width="120">
+          <template #default="{ row }">{{ row.enabled_task_count ?? 0 }} / {{ row.task_count ?? 0 }}</template>
+        </el-table-column>
+        <el-table-column prop="messages_sent" label="发送数" width="100" />
         <el-table-column label="开发者应用" min-width="140">
           <template #default="{ row }">
             <div class="developer-app-cell">
@@ -145,12 +166,20 @@
         <div v-for="row in userAccounts" :key="row.account_id" class="mobile-data-card">
           <div class="mobile-data-card__header">
             <div>
-              <div class="mobile-data-card__title">{{ row.username || row.phone || '未命名 TG 账号' }}</div>
-              <div class="mobile-data-card__subtitle">{{ row.phone || '未绑定手机号' }}</div>
+              <div class="mobile-data-card__title">{{ row.tg_account_name || row.username || row.phone || '未命名 TG 账号' }}</div>
+              <div class="mobile-data-card__subtitle">UID {{ row.tg_user_id || '-' }} / {{ row.phone || '未绑定手机号' }}</div>
             </div>
             <el-tag>{{ row.health_status || 'unknown' }}</el-tag>
           </div>
           <div class="mobile-data-card__grid">
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">任务数</span>
+              <span class="mobile-data-card__value">{{ row.enabled_task_count ?? 0 }} / {{ row.task_count ?? 0 }}</span>
+            </div>
+            <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">发送数</span>
+              <span class="mobile-data-card__value">{{ row.messages_sent ?? 0 }}</span>
+            </div>
             <div class="mobile-data-card__row">
               <span class="mobile-data-card__label">开发者应用</span>
               <span class="mobile-data-card__value">{{ developerAppDisplay(row.developer_app_id).label }}</span>

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import json
 import secrets
 import string
 from datetime import datetime, timedelta
@@ -24,6 +25,7 @@ from backend.database.schema.models import (
 )
 from backend.h5_backend.services.auth.service import get_auth_service
 from backend.utils.security.crypto import get_crypto_manager
+from backend.utils.url_validation import is_valid_purchase_button_url
 from backend.h5_backend.services.licensing.service import (
     activate_card_for_user,
     ensure_can_add_tg_account,
@@ -35,6 +37,7 @@ from backend.h5_backend.services.licensing.service import (
 DEFAULT_PURCHASE_URL = "https://t.me/"
 DEFAULT_PURCHASE_BUTTON_TEXT = "联系 Telegram 购买"
 DEFAULT_BOT_NOTICE_ENTRY_BUTTON_TEXT = "📢 公告栏"
+PURCHASE_SETTING_KEYS = ["purchase_url", "purchase_button_text", "purchase_buttons"]
 _NOTICE_URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
 
 
@@ -111,6 +114,49 @@ class MeService:
         payload = f"{1 if enabled else 0}\n{message_text.strip()}\n{target_url.strip()}"
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
 
+    @staticmethod
+    def _load_purchase_buttons_json(raw_value: Optional[str]) -> Optional[List[Dict[str, Any]]]:
+        if not raw_value:
+            return None
+        try:
+            parsed = json.loads(raw_value)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(parsed, list):
+            return None
+        return [item for item in parsed if isinstance(item, dict)]
+
+    @staticmethod
+    def _normalize_purchase_buttons(
+        raw_buttons: Optional[List[Dict[str, Any]]],
+        *,
+        legacy_url: str,
+        legacy_button_text: str,
+    ) -> List[Dict[str, str]]:
+        buttons: List[Dict[str, str]] = []
+        for index, item in enumerate((raw_buttons or [])[:2]):
+            text = str(item.get("text") or item.get("button_text") or "").strip()
+            url = str(item.get("url") or "").strip()
+            if not url or not is_valid_purchase_button_url(url):
+                continue
+            buttons.append(
+                {
+                    "text": text or (DEFAULT_PURCHASE_BUTTON_TEXT if index == 0 else f"购买入口 {index + 1}"),
+                    "url": url,
+                }
+            )
+        if buttons:
+            return buttons
+        fallback_url = (legacy_url or DEFAULT_PURCHASE_URL).strip()
+        if not is_valid_purchase_button_url(fallback_url):
+            fallback_url = DEFAULT_PURCHASE_URL
+        return [
+            {
+                "text": (legacy_button_text or DEFAULT_PURCHASE_BUTTON_TEXT).strip() or DEFAULT_PURCHASE_BUTTON_TEXT,
+                "url": fallback_url,
+            }
+        ]
+
     async def get_current_authorization(self, user_id: int) -> Optional[Dict[str, Any]]:
         status = await self.get_authorization_status(user_id)
         return status.get("current_authorization")
@@ -159,17 +205,26 @@ class MeService:
             plans = result.scalars().all()
             return [self._serialize_plan(plan) for plan in plans]
 
-    async def get_purchase_entry(self) -> Dict[str, str]:
+    async def get_purchase_entry(self) -> Dict[str, Any]:
         async with get_async_session() as session:
             rows = (
                 await session.execute(
-                    select(AppSetting).where(AppSetting.key.in_(["purchase_url", "purchase_button_text"]))
+                    select(AppSetting).where(AppSetting.key.in_(PURCHASE_SETTING_KEYS))
                 )
             ).scalars().all()
             values = {row.key: row.value for row in rows}
+            legacy_url = (values.get("purchase_url") or DEFAULT_PURCHASE_URL).strip()
+            legacy_text = (values.get("purchase_button_text") or DEFAULT_PURCHASE_BUTTON_TEXT).strip()
+            buttons = self._normalize_purchase_buttons(
+                self._load_purchase_buttons_json(values.get("purchase_buttons")),
+                legacy_url=legacy_url,
+                legacy_button_text=legacy_text,
+            )
+            primary = buttons[0]
             return {
-                "url": (values.get("purchase_url") or DEFAULT_PURCHASE_URL).strip(),
-                "button_text": (values.get("purchase_button_text") or DEFAULT_PURCHASE_BUTTON_TEXT).strip(),
+                "url": primary["url"],
+                "button_text": primary["text"],
+                "buttons": buttons,
             }
 
     async def get_public_notice_entry(self) -> Dict[str, Any]:

@@ -1,0 +1,330 @@
+"""Reauth-required account task suspension and user reminders."""
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional
+
+from loguru import logger
+from sqlalchemy import select
+from telethon import Button
+from telethon.errors import (
+    ChatWriteForbiddenError,
+    InputUserDeactivatedError,
+    PeerIdInvalidError,
+    UserIsBlockedError,
+)
+
+from backend.bot.account.reauth import is_reauth_required_account
+from backend.bot.client_runtime.manager import bot_client, ensure_manager_bot_ready
+from backend.database.runtime.session import get_async_session
+from backend.database.schema.models import (
+    Account,
+    AppSetting,
+    HealthStatus,
+    ScheduledMessageTask,
+    UserAuthorization,
+)
+
+REAUTH_NOTICE_KEY_PREFIX = "reauth_notice:"
+REAUTH_REMINDER_REASONS = {"api_hash_rotated", "session_unauthorized"}
+
+
+@dataclass(frozen=True)
+class ReauthNoticeItem:
+    account_id: str
+    user_id: int
+    tg_user_id: int
+    account_label: str
+    disabled_task_count: int
+    authorization_end_at: Optional[datetime]
+    reason: str
+
+
+@dataclass(frozen=True)
+class ReauthTransitionResult:
+    account_id: str
+    user_id: int
+    was_reauth_required: bool
+    disabled_task_count: int
+    authorization_end_at: Optional[datetime]
+    notice_sent: bool
+
+
+def _notice_key(account_id: str) -> str:
+    return f"{REAUTH_NOTICE_KEY_PREFIX}{str(account_id)}"
+
+
+def _today_key(now: Optional[datetime] = None) -> str:
+    return (now or datetime.now()).date().isoformat()
+
+
+def _format_account_label(account: Account) -> str:
+    username = str(getattr(account, "username", "") or "").strip()
+    if username:
+        return username if username.startswith("@") else f"@{username}"
+    phone = str(getattr(account, "phone", "") or "").strip()
+    if phone:
+        return phone
+    return str(getattr(account, "account_id", "") or "当前账号")
+
+
+def _format_end_at(end_at: Optional[datetime]) -> str:
+    if end_at is None:
+        return "-"
+    return end_at.strftime("%Y-%m-%d %H:%M")
+
+
+def _classify_delivery_exception(exc: Exception) -> str:
+    if isinstance(exc, UserIsBlockedError):
+        return "blocked"
+    if isinstance(exc, InputUserDeactivatedError):
+        return "deactivated"
+    if isinstance(exc, (PeerIdInvalidError, ChatWriteForbiddenError)):
+        return "unreachable"
+    return "failed"
+
+
+async def _load_active_authorization_end_at(session, account_id: str, now: datetime) -> Optional[datetime]:
+    authorization = (
+        await session.execute(
+            select(UserAuthorization)
+            .where(
+                UserAuthorization.current_account_id == str(account_id),
+                UserAuthorization.status == "active",
+                UserAuthorization.end_at > now,
+            )
+            .order_by(UserAuthorization.end_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return authorization.end_at if authorization is not None else None
+
+
+async def _load_user_links(session) -> dict[int, int]:
+    from backend.bot.handlers.core.user_link import load_latest_linked_tg_user_ids
+
+    return await load_latest_linked_tg_user_ids(session)
+
+
+async def _record_notice_sent(account_id: str, *, now: Optional[datetime] = None) -> None:
+    today = _today_key(now)
+    async with get_async_session() as session:
+        row = await session.get(AppSetting, _notice_key(account_id))
+        if row is None:
+            session.add(AppSetting(key=_notice_key(account_id), value=today))
+        else:
+            row.value = today
+        await session.commit()
+
+
+async def _send_reauth_notice(item: ReauthNoticeItem) -> bool:
+    if not await ensure_manager_bot_ready():
+        logger.warning("Manager Bot 当前未就绪，跳过账号重绑提醒发送: account_id={}", item.account_id)
+        return False
+
+    text = (
+        "账号授权已失效\n\n"
+        f"账号：{item.account_label}\n"
+        f"相关任务：{item.disabled_task_count} 条\n"
+        f"授权到期：{_format_end_at(item.authorization_end_at)}\n\n"
+        "该账号已无法继续发送任务，需要重新绑定后才能继续使用。\n"
+        "重新绑定前请确认梯子/代理登录地点稳定，并尽量接近日常使用地区，避免 Telegram 拦截新登录。"
+    )
+    try:
+        await bot_client.send_message(
+            int(item.tg_user_id),
+            text,
+            buttons=[[Button.inline("📱 重新绑定", data=f"acc_relogin:{item.account_id}")]],
+        )
+        await _record_notice_sent(item.account_id)
+        return True
+    except Exception as exc:
+        error_type = _classify_delivery_exception(exc)
+        if error_type in {"blocked", "deactivated", "unreachable"}:
+            logger.warning(
+                "账号重绑提醒跳过用户: user_id={}, tg_user_id={}, account_id={}, reason={}, error={}",
+                item.user_id,
+                item.tg_user_id,
+                item.account_id,
+                error_type,
+                exc,
+            )
+        else:
+            logger.error(
+                "发送账号重绑提醒失败: user_id={}, tg_user_id={}, account_id={}, error={}",
+                item.user_id,
+                item.tg_user_id,
+                item.account_id,
+                exc,
+            )
+        return False
+
+
+async def mark_account_reauth_required(account_id: str, reason: str) -> Optional[ReauthTransitionResult]:
+    """Mark an account as reauth-required, disable its tasks, and notify once."""
+    normalized_reason = str(reason or "").strip() or "unknown"
+    now = datetime.now()
+    notice_item: Optional[ReauthNoticeItem] = None
+
+    async with get_async_session() as session:
+        account = await session.get(Account, str(account_id))
+        if account is None:
+            return None
+
+        was_reauth_required = is_reauth_required_account(account)
+        account.health_status = HealthStatus.OFFLINE
+        account.reauth_required = True
+        account.reauth_reason = normalized_reason
+        account.reauth_required_at = account.reauth_required_at or now
+
+        enabled_tasks = (
+            await session.execute(
+                select(ScheduledMessageTask).where(
+                    ScheduledMessageTask.account_id == str(account_id),
+                    ScheduledMessageTask.enabled == True,
+                )
+            )
+        ).scalars().all()
+        for task in enabled_tasks:
+            task.enabled = False
+
+        authorization_end_at = await _load_active_authorization_end_at(session, str(account_id), now)
+        disabled_task_count = len(enabled_tasks)
+
+        user_links = await _load_user_links(session)
+        tg_user_id = user_links.get(int(account.user_id))
+        if not was_reauth_required and tg_user_id is not None:
+            notice_item = ReauthNoticeItem(
+                account_id=str(account.account_id),
+                user_id=int(account.user_id),
+                tg_user_id=int(tg_user_id),
+                account_label=_format_account_label(account),
+                disabled_task_count=disabled_task_count,
+                authorization_end_at=authorization_end_at,
+                reason=normalized_reason,
+            )
+
+        await session.commit()
+
+    notice_sent = False
+    if notice_item is not None:
+        notice_sent = await _send_reauth_notice(notice_item)
+    else:
+        logger.info(
+            "账号重绑即时提醒跳过: account_id={}, reason={}, already_reauth_or_unlinked={}",
+            account_id,
+            normalized_reason,
+            True,
+        )
+
+    return ReauthTransitionResult(
+        account_id=str(account_id),
+        user_id=notice_item.user_id if notice_item is not None else 0,
+        was_reauth_required=was_reauth_required,
+        disabled_task_count=disabled_task_count,
+        authorization_end_at=authorization_end_at,
+        notice_sent=notice_sent,
+    )
+
+
+class ReauthReminderRuntime:
+    """Background daily reminders for accounts waiting for rebind."""
+
+    CHECK_INTERVAL_SECONDS = 3600
+
+    def __init__(self) -> None:
+        self.running = False
+
+    async def start(self) -> None:
+        self.running = True
+        logger.info("账号重绑提醒任务已启动")
+        while self.running:
+            try:
+                await self.scan_once()
+            except Exception as exc:
+                logger.exception(f"账号重绑提醒扫描失败: {type(exc).__name__}: {exc!r}")
+            await asyncio.sleep(self.CHECK_INTERVAL_SECONDS)
+
+    async def stop(self) -> None:
+        self.running = False
+        logger.info("账号重绑提醒任务已停止")
+
+    async def scan_once(self) -> int:
+        items = await self._collect_due_reminders()
+        if not items:
+            return 0
+        if not await ensure_manager_bot_ready():
+            logger.warning("Manager Bot 当前未就绪，跳过本轮账号重绑提醒发送")
+            return 0
+
+        sent = 0
+        for item in items:
+            if await _send_reauth_notice(item):
+                sent += 1
+        if sent:
+            logger.info("账号重绑提醒发送完成: {} 条", sent)
+        return sent
+
+    async def _collect_due_reminders(self) -> list[ReauthNoticeItem]:
+        now = datetime.now()
+        today = _today_key(now)
+        async with get_async_session() as session:
+            user_links = await _load_user_links(session)
+            if not user_links:
+                return []
+
+            rows = (
+                await session.execute(
+                    select(Account, UserAuthorization.end_at)
+                    .join(UserAuthorization, UserAuthorization.current_account_id == Account.account_id)
+                    .where(
+                        Account.is_active.is_(True),
+                        Account.reauth_required.is_(True),
+                        UserAuthorization.status == "active",
+                        UserAuthorization.end_at > now,
+                    )
+                    .order_by(UserAuthorization.end_at.asc(), Account.updated_at.asc())
+                )
+            ).all()
+
+            items: list[ReauthNoticeItem] = []
+            seen_accounts: set[str] = set()
+            for account, authorization_end_at in rows:
+                account_id = str(account.account_id)
+                if account_id in seen_accounts:
+                    continue
+                seen_accounts.add(account_id)
+
+                tg_user_id = user_links.get(int(account.user_id))
+                if tg_user_id is None:
+                    continue
+
+                notice_state = await session.get(AppSetting, _notice_key(account_id))
+                if notice_state is not None and str(notice_state.value or "").strip() == today:
+                    continue
+
+                task_count = (
+                    await session.execute(
+                        select(ScheduledMessageTask).where(
+                            ScheduledMessageTask.account_id == account_id
+                        )
+                    )
+                ).scalars().all()
+
+                items.append(
+                    ReauthNoticeItem(
+                        account_id=account_id,
+                        user_id=int(account.user_id),
+                        tg_user_id=int(tg_user_id),
+                        account_label=_format_account_label(account),
+                        disabled_task_count=len(task_count),
+                        authorization_end_at=authorization_end_at,
+                        reason=str(account.reauth_reason or "unknown"),
+                    )
+                )
+            return items
+
+
+reauth_reminder_runtime = ReauthReminderRuntime()

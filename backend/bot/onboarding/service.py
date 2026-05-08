@@ -61,6 +61,7 @@ from backend.h5_backend.services.me.service import get_me_service
 from backend.h5_backend.services.task.service import get_task_service
 from backend.bot.ui.keyboards import build_reply_shortcut_keyboard
 from backend.bot.ui.messages import BOT_HELP_MANUAL
+from backend.utils.url_validation import is_valid_purchase_button_url
 from backend.utils.security.crypto import decrypt_string_session, encrypt_string_session, get_crypto_manager
 
 _PENDING_LOGIN_TASKS: dict[int, asyncio.Task] = {}
@@ -183,6 +184,27 @@ def _account_display_name(account: Account) -> str:
     if account.phone:
         return account.phone
     return "未命名账号"
+
+
+def _build_purchase_button_rows(purchase: dict[str, Any]) -> list[list[Any]]:
+    rows: list[list[Any]] = []
+    raw_buttons = purchase.get("buttons")
+    if isinstance(raw_buttons, list):
+        for index, item in enumerate(raw_buttons[:2]):
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "").strip()
+            if not is_valid_purchase_button_url(url):
+                continue
+            text = str(item.get("text") or item.get("button_text") or "").strip()
+            rows.append([Button.url(text or f"立即购买 {index + 1}", url)])
+    if rows:
+        return rows
+
+    purchase_url = (purchase.get("url") or "").strip()
+    if is_valid_purchase_button_url(purchase_url):
+        rows.append([Button.url(purchase.get("button_text") or "立即购买", purchase_url)])
+    return rows
 
 
 def _friendly_login_error(message: str) -> str:
@@ -929,11 +951,11 @@ class BotOnboardingService:
             "下一步：完成购买后，返回 Bot 输入卡密续费当前授权。"
         )
         buttons = [[Button.inline("⬅️ 返回主菜单", data="bot_home")]]
-        purchase_url = (purchase.get("url") or "").strip()
-        if is_valid_button_url(purchase_url):
-            buttons.insert(0, [Button.url(purchase.get("button_text") or "立即购买", purchase_url)])
+        purchase_button_rows = _build_purchase_button_rows(purchase)
+        if purchase_button_rows:
+            buttons = purchase_button_rows + buttons
         else:
-            text = f"{text}\n\n购买链接：{purchase_url or '未配置'}"
+            text = f"{text}\n\n购买链接：{(purchase.get('url') or '').strip() or '未配置'}"
         await _send_or_edit(event, text, buttons=buttons)
 
     async def show_initial_password(self, event, tg_user_id: int) -> None:
@@ -1023,8 +1045,8 @@ class BotOnboardingService:
         purchase = status.get("purchase") or {}
         if not status["is_active"]:
             buttons.insert(0, [Button.inline("🎟️ 激活卡密", data="bot_activate")])
-        if not status["is_active"] and is_valid_button_url((purchase.get("url") or "").strip()):
-            buttons.insert(0, [Button.url(purchase.get("button_text") or "立即购买", purchase["url"])])
+        if not status["is_active"]:
+            buttons = _build_purchase_button_rows(purchase) + buttons
         await _send_or_edit(event, text, buttons=buttons)
 
     async def show_activation_menu(self, event, tg_user_id: int) -> None:
@@ -1077,13 +1099,13 @@ class BotOnboardingService:
             buttons = [[Button.inline("⬅️ 返回主菜单", data="bot_home")]]
             purchase = await me_service.get_authorization_status(db_user_id)
             purchase_meta = purchase.get("purchase") or {}
-            purchase_url = (purchase_meta.get("url") or "").strip()
-            if is_valid_button_url(purchase_url):
-                buttons.insert(0, [Button.url(purchase_meta.get("button_text") or "立即购买", purchase_url)])
+            purchase_button_rows = _build_purchase_button_rows(purchase_meta)
+            if purchase_button_rows:
+                buttons = purchase_button_rows + buttons
             await event.respond(
                 f"❌ 激活失败：{exc.detail}\n"
                 "下一步：请核对激活码后重新输入，或点击「🛒 立即购买」获取新的激活码。"
-                + ("\n\n购买链接未配置，请联系管理员。" if not is_valid_button_url(purchase_url) else ""),
+                + ("\n\n购买链接未配置，请联系管理员。" if not purchase_button_rows else ""),
                 buttons=buttons,
             )
             return
@@ -1493,6 +1515,8 @@ class BotOnboardingService:
             "示例：`+8613812345678`\n\n"
             "本次绑定会话 15 分钟内有效。\n"
             "为避免误绑定，2 分钟内只能发起 1 次 TG 账号绑定。\n\n"
+            "注意：请确认当前梯子/代理登录地点稳定，并尽量接近日常使用地区；"
+            "如果 Telegram 提示“新登录已被阻止”，请更换更合适的网络后重新绑定。\n\n"
             "下一步：发送手机号后，Bot 会向 Telegram 发起验证码绑定。",
             parse_mode="markdown",
             buttons=[[Button.inline("⬅️ 取消绑定", data=f"bot_cancel_login:{login_id}")]],

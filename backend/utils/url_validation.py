@@ -5,6 +5,7 @@ import ipaddress
 from urllib.parse import urlparse
 
 LOCAL_BUTTON_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+TELEGRAM_BUTTON_URL_PREFIXES = ("https://t.me/", "https://telegram.me/", "tg://")
 
 
 def is_valid_button_url(url: str) -> bool:
@@ -31,3 +32,9 @@ def is_valid_button_url(url: str) -> bool:
     except ValueError:
         pass
     return True
+
+
+def is_valid_purchase_button_url(url: str) -> bool:
+    """Validate URL for purchase/contact buttons."""
+    value = (url or "").strip()
+    return value.startswith(TELEGRAM_BUTTON_URL_PREFIXES) or is_valid_button_url(value)

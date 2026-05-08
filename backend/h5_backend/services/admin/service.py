@@ -232,7 +232,7 @@ class AdminLicenseService:
     # Settings → settings_service.SettingsService
     # ------------------------------------------------------------------
 
-    async def get_purchase_settings(self) -> Dict[str, str]:
+    async def get_purchase_settings(self) -> Dict[str, Any]:
         from backend.h5_backend.services.admin.settings_service import get_settings_service
         return await get_settings_service().get_purchase_settings()
 

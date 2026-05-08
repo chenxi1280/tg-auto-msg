@@ -15,12 +15,14 @@
           </div>
         </template>
         <el-form label-position="top">
-          <el-form-item label="购买链接">
-            <el-input v-model.trim="purchaseForm.purchase_url" :disabled="!canUpdate" placeholder="https://shop.example.com/cards 或 https://t.me/your_contact" />
-          </el-form-item>
-          <el-form-item label="按钮文案">
-            <el-input v-model.trim="purchaseForm.purchase_button_text" :disabled="!canUpdate" maxlength="50" show-word-limit />
-          </el-form-item>
+          <div v-for="(button, index) in purchaseButtons" :key="index" class="purchase-button-row">
+            <el-form-item :label="`按钮 ${index + 1} 文案`">
+              <el-input v-model.trim="button.text" :disabled="!canUpdate" maxlength="50" show-word-limit />
+            </el-form-item>
+            <el-form-item :label="`按钮 ${index + 1} 链接`">
+              <el-input v-model.trim="button.url" :disabled="!canUpdate" placeholder="https://shop.example.com/cards 或 https://t.me/your_contact" />
+            </el-form-item>
+          </div>
           <el-button v-if="canUpdate" type="primary" :loading="savingPurchase" @click="savePurchase">
             保存购买入口
           </el-button>
@@ -79,10 +81,10 @@ const canUpdate = computed(() => store.hasPermission('system.settings.update'))
 const savingPurchase = ref(false)
 const savingNotice = ref(false)
 
-const purchaseForm = reactive({
-  purchase_url: '',
-  purchase_button_text: '联系 Telegram 购买',
-})
+const purchaseButtons = reactive([
+  { text: '联系 Telegram 购买', url: '' },
+  { text: '', url: '' },
+])
 
 const noticeForm = reactive({
   enabled: false,
@@ -96,8 +98,15 @@ const loadData = async () => {
     adminGetPurchaseSettings(),
     adminGetBotNoticeSettings(),
   ])
-  purchaseForm.purchase_url = purchaseResponse.data.purchase_url
-  purchaseForm.purchase_button_text = purchaseResponse.data.purchase_button_text
+  const buttons = purchaseResponse.data.purchase_buttons?.length
+    ? purchaseResponse.data.purchase_buttons
+    : [{ text: purchaseResponse.data.purchase_button_text, url: purchaseResponse.data.purchase_url }]
+  const firstPurchaseButton = purchaseButtons[0]!
+  const secondPurchaseButton = purchaseButtons[1]!
+  firstPurchaseButton.text = buttons[0]?.text || purchaseResponse.data.purchase_button_text || '联系 Telegram 购买'
+  firstPurchaseButton.url = buttons[0]?.url || purchaseResponse.data.purchase_url || ''
+  secondPurchaseButton.text = buttons[1]?.text || ''
+  secondPurchaseButton.url = buttons[1]?.url || ''
   noticeForm.enabled = noticeResponse.data.enabled
   noticeForm.entry_button_text = noticeResponse.data.entry_button_text
   noticeForm.message_text = noticeResponse.data.message_text
@@ -107,7 +116,12 @@ const loadData = async () => {
 const savePurchase = async () => {
   savingPurchase.value = true
   try {
-    await adminUpdatePurchaseSettings({ ...purchaseForm })
+    const firstButton = purchaseButtons[0]!
+    await adminUpdatePurchaseSettings({
+      purchase_url: firstButton.url,
+      purchase_button_text: firstButton.text || '联系 Telegram 购买',
+      purchase_buttons: purchaseButtons.map((button) => ({ text: button.text, url: button.url })),
+    })
     ElMessage.success('购买入口已保存')
   } finally {
     savingPurchase.value = false
@@ -157,6 +171,10 @@ onMounted(async () => {
 
 .notice-tip {
   margin-bottom: 16px;
+}
+
+.purchase-button-row {
+  padding-bottom: 8px;
 }
 
 @media (max-width: 768px) {

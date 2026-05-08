@@ -10,6 +10,7 @@ from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import (
     Account,
     AppSetting,
+    ScheduledMessageTask,
     User,
     UserAuthorization,
 )
@@ -23,6 +24,16 @@ from backend.h5_backend.services.shared.audit import append_audit_log, mask_acto
 
 class UsersService:
     """Admin-only operations for user and account management."""
+
+    @staticmethod
+    def _account_display_name(account: Account) -> str:
+        if account.username:
+            return f"@{account.username}"
+        if account.first_name:
+            return account.first_name
+        if account.phone:
+            return account.phone
+        return str(account.account_id)
 
     async def list_users(self, search: Optional[str] = None, limit: int = 100, offset: int = 0) -> Dict[str, Any]:
         limit = max(1, min(500, int(limit)))
@@ -59,6 +70,11 @@ class UsersService:
             user_ids = [row.id for row in rows]
 
             user_app_map: Dict[int, Optional[int]] = {}
+            accounts_by_user: Dict[int, List[Account]] = {int(user_id): [] for user_id in user_ids}
+            task_counts_by_user: Dict[int, Dict[str, int]] = {
+                int(user_id): {"task_count": 0, "enabled_task_count": 0}
+                for user_id in user_ids
+            }
             if user_ids:
                 keys = [f"user_dev_app:{uid}" for uid in user_ids]
                 app_rows = (
@@ -74,10 +90,42 @@ class UsersService:
                     except Exception:
                         continue
 
+                account_rows = (
+                    await session.execute(
+                        select(Account)
+                        .where(Account.user_id.in_(user_ids))
+                        .order_by(Account.created_at.desc())
+                    )
+                ).scalars().all()
+                for account in account_rows:
+                    accounts_by_user.setdefault(int(account.user_id), []).append(account)
+
+                task_rows = (
+                    await session.execute(
+                        select(
+                            ScheduledMessageTask.user_id,
+                            func.count(ScheduledMessageTask.task_id).label("task_count"),
+                            func.count(ScheduledMessageTask.task_id)
+                            .filter(ScheduledMessageTask.enabled.is_(True))
+                            .label("enabled_task_count"),
+                        )
+                        .where(ScheduledMessageTask.user_id.in_(user_ids))
+                        .group_by(ScheduledMessageTask.user_id)
+                    )
+                ).all()
+                for task_row in task_rows:
+                    task_counts_by_user[int(task_row.user_id)] = {
+                        "task_count": int(task_row.task_count or 0),
+                        "enabled_task_count": int(task_row.enabled_task_count or 0),
+                    }
+
             data: List[Dict[str, Any]] = []
             for row in rows:
                 authorizations = await list_user_authorizations(int(row.id), session=session)
                 current = authorizations[0] if authorizations else None
+                user_accounts = accounts_by_user.get(int(row.id), [])
+                tg_account_names = [self._account_display_name(account) for account in user_accounts]
+                task_counts = task_counts_by_user.get(int(row.id), {"task_count": 0, "enabled_task_count": 0})
                 data.append(
                     {
                         "id": row.id,
@@ -88,6 +136,10 @@ class UsersService:
                         "account_count": int(row.account_count or 0),
                         "authorization_count": 1 if current else 0,
                         "developer_app_id": user_app_map.get(row.id),
+                        "tg_account_names": tg_account_names,
+                        "tg_account_summary": "、".join(tg_account_names[:3]) + (" 等" if len(tg_account_names) > 3 else ""),
+                        "task_count": task_counts["task_count"],
+                        "enabled_task_count": task_counts["enabled_task_count"],
                         "current_authorization": {
                             "start_at": current.start_at.isoformat() if current else None,
                             "end_at": current.end_at.isoformat() if current else None,
@@ -152,12 +204,42 @@ class UsersService:
                     select(Account).where(Account.user_id == user_id).order_by(Account.created_at.desc())
                 )
             ).scalars().all()
+            account_ids = [str(account.account_id) for account in accounts]
+            task_counts_by_account: Dict[str, Dict[str, int]] = {
+                account_id: {"task_count": 0, "enabled_task_count": 0}
+                for account_id in account_ids
+            }
+            if account_ids:
+                task_rows = (
+                    await session.execute(
+                        select(
+                            ScheduledMessageTask.account_id,
+                            func.count(ScheduledMessageTask.task_id).label("task_count"),
+                            func.count(ScheduledMessageTask.task_id)
+                            .filter(ScheduledMessageTask.enabled.is_(True))
+                            .label("enabled_task_count"),
+                        )
+                        .where(ScheduledMessageTask.account_id.in_(account_ids))
+                        .group_by(ScheduledMessageTask.account_id)
+                    )
+                ).all()
+                for task_row in task_rows:
+                    task_counts_by_account[str(task_row.account_id)] = {
+                        "task_count": int(task_row.task_count or 0),
+                        "enabled_task_count": int(task_row.enabled_task_count or 0),
+                    }
 
-            return [
-                {
+            items = []
+            for a in accounts:
+                task_counts = task_counts_by_account.get(
+                    str(a.account_id),
+                    {"task_count": 0, "enabled_task_count": 0},
+                )
+                items.append({
                     "account_id": a.account_id,
                     "tg_user_id": a.tg_user_id,
                     "username": a.username,
+                    "tg_account_name": self._account_display_name(a),
                     "first_name": a.first_name,
                     "phone": a.phone,
                     "developer_app_id": a.developer_app_id,
@@ -166,11 +248,12 @@ class UsersService:
                     "health_status": a.health_status,
                     "is_flooding": a.is_flooding,
                     "messages_sent": a.messages_sent,
+                    "task_count": task_counts["task_count"],
+                    "enabled_task_count": task_counts["enabled_task_count"],
                     "created_at": a.created_at.isoformat() if a.created_at else None,
                     **(await get_account_authorization_summary(a.account_id, session=session)).to_dict(),
-                }
-                for a in accounts
-            ]
+                })
+            return items
 
     async def admin_delete_account(
         self,

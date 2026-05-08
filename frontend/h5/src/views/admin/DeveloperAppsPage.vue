@@ -88,6 +88,26 @@
         </el-button>
       </div>
       <el-table v-if="!isCompact" :data="apps" stripe @selection-change="handleSelectionChange">
+        <el-table-column type="expand">
+          <template #default="{ row }">
+            <div class="account-expand">
+              <el-empty v-if="!row.account_items?.length" description="暂无登录账号" />
+              <el-table v-else :data="row.account_items" size="small">
+                <el-table-column label="TG账号" min-width="160">
+                  <template #default="{ row: account }">{{ account.tg_account_name || account.username || '-' }}</template>
+                </el-table-column>
+                <el-table-column prop="tg_user_id" label="TG UID" width="130" />
+                <el-table-column prop="phone" label="手机号" width="140" />
+                <el-table-column prop="owner_username" label="所属用户" min-width="140" />
+                <el-table-column prop="health_status" label="健康" width="110" />
+                <el-table-column label="任务数" width="110">
+                  <template #default="{ row: account }">{{ account.enabled_task_count ?? 0 }} / {{ account.task_count ?? 0 }}</template>
+                </el-table-column>
+                <el-table-column prop="messages_sent" label="发送数" width="100" />
+              </el-table>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column type="selection" width="48" />
         <el-table-column prop="app_name" label="应用名" min-width="160" />
         <el-table-column prop="api_id" label="API ID" width="100" />
@@ -103,6 +123,9 @@
         </el-table-column>
         <el-table-column label="容量" width="140">
           <template #default="{ row }">{{ row.max_accounts || '不限' }}</template>
+        </el-table-column>
+        <el-table-column label="登录账号" width="120">
+          <template #default="{ row }">{{ row.active_account_count ?? 0 }} / {{ row.account_count ?? 0 }}</template>
         </el-table-column>
         <el-table-column label="权重" width="100">
           <template #default="{ row }">{{ row.selection_weight }}</template>
@@ -144,8 +167,19 @@
               <span class="mobile-data-card__value">{{ row.max_accounts || '不限' }} / {{ row.selection_weight }}</span>
             </div>
             <div class="mobile-data-card__row">
+              <span class="mobile-data-card__label">登录账号</span>
+              <span class="mobile-data-card__value">{{ row.active_account_count ?? 0 }} / {{ row.account_count ?? 0 }}</span>
+            </div>
+            <div class="mobile-data-card__row">
               <span class="mobile-data-card__label">备注</span>
               <span class="mobile-data-card__value">{{ row.notes || '-' }}</span>
+            </div>
+          </div>
+          <div v-if="row.account_items?.length" class="mobile-account-list">
+            <div v-for="account in row.account_items.slice(0, 5)" :key="account.account_id" class="mobile-account-row">
+              <span>{{ account.tg_account_name || account.username || '-' }}</span>
+              <span>{{ account.owner_username || '-' }}</span>
+              <span>{{ account.enabled_task_count ?? 0 }} / {{ account.task_count ?? 0 }}</span>
             </div>
           </div>
           <div class="mobile-action-bar">
@@ -479,5 +513,23 @@ onMounted(async () => {
 .pagination-wrap {
   margin-top: 16px;
   justify-content: flex-end;
+}
+
+.account-expand {
+  padding: 8px 16px 16px;
+}
+
+.mobile-account-list {
+  margin-top: 12px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.mobile-account-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 8px 0;
+  color: #475569;
+  font-size: 13px;
 }
 </style>

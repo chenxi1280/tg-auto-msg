@@ -12,6 +12,7 @@ from telethon.errors import FloodWaitError, PeerFloodError
 
 from backend.bot.account.manager import AccountManager, get_account_manager
 from backend.bot.account.reauth import is_reauth_required_account
+from backend.bot.account.reauth_notifier import mark_account_reauth_required
 from backend.bot.circuit.breaker import FloodWaitAction, get_circuit_breaker
 from backend.config.core.settings import settings
 from backend.database.runtime.session import get_async_session
@@ -208,7 +209,16 @@ async def _validate_and_resolve(
         account = await account_manager.get_account(task.account_id)
         account_display = _account_display_name(account, task.account_id)
         if account and is_reauth_required_account(account):
-            raise HTTPException(status_code=400, detail="当前执行账号需要重新绑定后才能发送")
+            await mark_account_reauth_required(
+                task.account_id,
+                str(getattr(account, "reauth_reason", "") or "session_unauthorized"),
+            )
+            return _build_summary(
+                task=task, trigger_source=trigger_source,
+                status="skipped", total_targets=0, success_count=0, failed_count=0,
+                error_summary="当前执行账号需要重新绑定后才能发送，相关任务已暂停",
+                account_display=account_display,
+            )
 
     # 修复缺失的 next_run_at
     if advance_schedule and task.next_run_at is None:

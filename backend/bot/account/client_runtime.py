@@ -1,7 +1,6 @@
 """Telegram client/proxy runtime helpers for AccountManager."""
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Dict, Optional
 
 from loguru import logger
@@ -9,6 +8,7 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 
 from backend.bot.account.reauth import is_reauth_required_account
+from backend.bot.account.reauth_notifier import mark_account_reauth_required
 from backend.config.core.settings import settings
 from backend.bot.developer_apps import get_developer_app_service
 from backend.database.schema.models import HealthStatus
@@ -136,13 +136,7 @@ async def get_client(manager, account_id: str) -> Optional[TelegramClient]:
                 f"account_version={getattr(account, 'developer_app_version', 1)}, "
                 f"app_version={credentials.credentials_version}"
             )
-            await manager.update_account(
-                account_id,
-                reauth_required=True,
-                reauth_reason="api_hash_rotated",
-                reauth_required_at=datetime.now(),
-                health_status=HealthStatus.OFFLINE,
-            )
+            await mark_account_reauth_required(account_id, "api_hash_rotated")
             return None
 
         if api_id <= 0 or not api_hash:
@@ -163,13 +157,7 @@ async def get_client(manager, account_id: str) -> Optional[TelegramClient]:
         if not await client.is_user_authorized():
             logger.error(f"账号 {account_id} 未授权，可能已登出")
             await client.disconnect()
-            await manager.update_account(
-                account_id,
-                health_status=HealthStatus.OFFLINE,
-                reauth_required=True,
-                reauth_reason="session_unauthorized",
-                reauth_required_at=datetime.now(),
-            )
+            await mark_account_reauth_required(account_id, "session_unauthorized")
             return None
 
         await manager.update_account(

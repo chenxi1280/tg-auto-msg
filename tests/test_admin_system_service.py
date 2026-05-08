@@ -46,7 +46,7 @@ def _build_notice_manager_module(refresh_summary):
 class AdminSystemServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_get_today_system_stats_returns_all_three_metrics(self):
         service = SettingsService()
-        values = iter([12, 5, 7])
+        values = iter([20, 12, 8, 5, 7, 3, 4])
 
         class _StatsSession:
             async def execute(self, _stmt):
@@ -60,8 +60,13 @@ class AdminSystemServiceTests(unittest.IsolatedAsyncioTestCase):
             result = await service.get_today_system_stats()
 
         self.assertEqual(result["today_sent_messages"], 12)
+        self.assertEqual(result["today_sent_messages_total"], 20)
+        self.assertEqual(result["today_sent_success"], 12)
+        self.assertEqual(result["today_sent_failed"], 8)
         self.assertEqual(result["today_bound_cards"], 5)
         self.assertEqual(result["today_new_users"], 7)
+        self.assertEqual(result["today_activations"], 3)
+        self.assertEqual(result["today_card_renewals"], 4)
         self.assertEqual(result["timezone"], "Asia/Shanghai")
         self.assertRegex(result["date"], r"^\d{4}-\d{2}-\d{2}$")
 
@@ -173,6 +178,42 @@ class AdminSystemServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(fake_session.committed)
         self.assertEqual(result["purchase_url"], "https://shop.example.com/cards?sku=monthly")
         self.assertEqual(result["purchase_button_text"], "购买卡密")
+        self.assertEqual(
+            result["purchase_buttons"],
+            [{"text": "购买卡密", "url": "https://shop.example.com/cards?sku=monthly"}],
+        )
+
+    async def test_update_purchase_settings_accepts_two_buttons_and_keeps_legacy_primary(self):
+        service = SettingsService()
+        fake_session = _NoticeSession()
+
+        @asynccontextmanager
+        async def fake_get_async_session():
+            yield fake_session
+
+        with patch("backend.h5_backend.services.admin.settings_service.get_async_session", new=fake_get_async_session), patch(
+            "backend.h5_backend.services.admin.settings_service.append_audit_log",
+            AsyncMock(),
+        ):
+            result = await service.update_purchase_settings(
+                purchase_buttons=[
+                    {"text": "联系 A", "url": "https://t.me/contact_a"},
+                    {"text": "联系 B", "url": "https://shop.example.com/cards"},
+                ],
+                actor="admin#1",
+                ip_address="127.0.0.1",
+            )
+
+        self.assertTrue(fake_session.committed)
+        self.assertEqual(result["purchase_url"], "https://t.me/contact_a")
+        self.assertEqual(result["purchase_button_text"], "联系 A")
+        self.assertEqual(
+            result["purchase_buttons"],
+            [
+                {"text": "联系 A", "url": "https://t.me/contact_a"},
+                {"text": "联系 B", "url": "https://shop.example.com/cards"},
+            ],
+        )
 
     async def test_update_purchase_settings_rejects_local_shop_url(self):
         service = SettingsService()

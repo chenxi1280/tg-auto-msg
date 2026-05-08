@@ -213,6 +213,12 @@ export interface OperationLog {
 export interface PurchaseSettings {
   purchase_url: string
   purchase_button_text: string
+  purchase_buttons?: PurchaseButton[]
+}
+
+export interface PurchaseButton {
+  text: string
+  url: string
 }
 
 export interface BotNoticeSettings {
@@ -237,6 +243,11 @@ export interface SystemTodayStats {
   today_sent_messages: number
   today_bound_cards: number
   today_new_users: number
+  today_activations: number
+  today_card_renewals: number
+  today_sent_messages_total: number
+  today_sent_success: number
+  today_sent_failed: number
 }
 
 export interface DeveloperApp {
@@ -254,6 +265,26 @@ export interface DeveloperApp {
   credentials_version: number
   last_rotated_at: string | null
   notes: string | null
+  account_count?: number
+  active_account_count?: number
+  account_items?: DeveloperAppAccount[]
+}
+
+export interface DeveloperAppAccount {
+  account_id: string
+  tg_user_id: number | null
+  username: string | null
+  tg_account_name: string
+  first_name: string | null
+  phone: string | null
+  owner_user_id: number
+  owner_username: string | null
+  is_active: boolean
+  health_status: string | null
+  messages_sent: number
+  task_count: number
+  enabled_task_count: number
+  created_at: string | null
 }
 
 export interface DeveloperAppSettings {
@@ -345,6 +376,10 @@ export interface LegacyUser {
   account_count: number
   authorization_count: number
   developer_app_id: number | null
+  tg_account_names?: string[]
+  tg_account_summary?: string
+  task_count?: number
+  enabled_task_count?: number
   current_authorization: {
     start_at: string | null
     end_at: string | null
@@ -356,6 +391,7 @@ export interface LegacyUserAccount {
   account_id: string
   tg_user_id: number | null
   username: string | null
+  tg_account_name?: string
   first_name: string | null
   phone: string | null
   developer_app_id: number | null
@@ -364,6 +400,8 @@ export interface LegacyUserAccount {
   health_status: string | null
   is_flooding: boolean
   messages_sent: number
+  task_count?: number
+  enabled_task_count?: number
   created_at: string | null
   authorization_id?: string | null
   authorization_status?: string | null

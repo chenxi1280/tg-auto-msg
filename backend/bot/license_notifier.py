@@ -23,7 +23,7 @@ from backend.database.schema.models import (
 )
 from backend.h5_backend.services.licensing.service import list_due_slot_reminders
 from backend.h5_backend.services.me.service import get_me_service
-from backend.utils.url_validation import is_valid_button_url
+from backend.utils.url_validation import is_valid_purchase_button_url
 
 NOTICE_DAYS = (7, 3, 1)
 
@@ -95,15 +95,26 @@ class LicenseSlotNotifier:
                     f"到期时间：{item.end_at.strftime('%Y-%m-%d %H:%M')}\n\n"
                     "请提前续费，避免该 TG 账号的自动发送任务中断。"
                 )
-                buttons = None
-                purchase_url = (purchase.get("url") or "").strip()
-                if is_valid_button_url(purchase_url):
-                    buttons = [[Button.url(purchase.get("button_text") or "立即购买", purchase_url)]]
+                buttons = []
+                raw_buttons = purchase.get("buttons")
+                if isinstance(raw_buttons, list):
+                    for index, button in enumerate(raw_buttons[:2]):
+                        if not isinstance(button, dict):
+                            continue
+                        url = str(button.get("url") or "").strip()
+                        if not is_valid_purchase_button_url(url):
+                            continue
+                        text = str(button.get("text") or button.get("button_text") or "").strip()
+                        buttons.append([Button.url(text or f"立即购买 {index + 1}", url)])
+                if not buttons:
+                    purchase_url = (purchase.get("url") or "").strip()
+                    if is_valid_purchase_button_url(purchase_url):
+                        buttons = [[Button.url(purchase.get("button_text") or "立即购买", purchase_url)]]
 
                 await bot_client.send_message(
                     item.tg_user_id,
                     text,
-                    buttons=buttons,
+                    buttons=buttons or None,
                     parse_mode="markdown",
                 )
                 await self._record_notice(item)

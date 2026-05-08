@@ -49,6 +49,7 @@ export interface AuthorizationStatus {
   purchase: {
     url: string
     button_text: string
+    buttons?: Array<{ text: string; url: string }>
   }
 }
 
@@ -87,6 +88,7 @@ export interface MeProfile {
   purchase: {
     url: string
     button_text: string
+    buttons?: Array<{ text: string; url: string }>
   }
 }
 

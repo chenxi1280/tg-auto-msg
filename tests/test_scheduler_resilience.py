@@ -8,6 +8,7 @@ from backend.bot.circuit.breaker import CircuitBreaker
 from backend.bot.account.health_selection import select_account
 from backend.bot.account.manager import AccountSelectionStrategy
 from backend.database.schema.models import HealthStatus, TaskTriggerMode
+from backend.scheduler.core.task_runner import execute_task_once
 from backend.scheduler.core.queue_ops import get_pending_tasks
 from backend.scheduler.core.worker import TaskScheduler
 
@@ -214,3 +215,48 @@ class AccountSelectionTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(selected.account_id, "acc-b")
+
+
+class TaskRunnerReauthTests(unittest.IsolatedAsyncioTestCase):
+    async def test_execute_task_once_stops_reauth_required_account_before_sending(self):
+        task = SimpleNamespace(
+            task_id="task-reauth",
+            title="失效任务",
+            user_id=9,
+            account_id="acc-reauth",
+            enabled=True,
+            next_run_at=1,
+            start_at=None,
+            end_at=None,
+            repeat_interval_min=10,
+            text=None,
+            media_type="none",
+            buttons=None,
+        )
+        account = SimpleNamespace(
+            account_id="acc-reauth",
+            username="sender",
+            phone="",
+            first_name="",
+            reauth_required=True,
+            reauth_reason="session_unauthorized",
+        )
+        session = _FakeQueueSession(task)
+        account_manager = SimpleNamespace(get_account=AsyncMock(return_value=account))
+        auth_summary = SimpleNamespace(can_create_tasks=True)
+
+        @asynccontextmanager
+        async def fake_session_ctx():
+            yield session
+
+        with (
+            patch("backend.scheduler.core.task_runner.get_async_session", fake_session_ctx),
+            patch("backend.scheduler.core.task_runner.get_account_manager", return_value=account_manager),
+            patch("backend.scheduler.core.task_runner.get_account_authorization_summary", AsyncMock(return_value=auth_summary)),
+            patch("backend.scheduler.core.task_runner.mark_account_reauth_required", AsyncMock()) as mark_mock,
+        ):
+            summary = await execute_task_once("task-reauth")
+
+        self.assertEqual(summary.status, "skipped")
+        self.assertIn("需要重新绑定", summary.error_summary)
+        mark_mock.assert_awaited_once_with("acc-reauth", "session_unauthorized")

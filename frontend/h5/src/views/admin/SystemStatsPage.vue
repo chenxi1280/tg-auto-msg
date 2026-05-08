@@ -8,19 +8,34 @@
 
     <div class="stats-grid" v-loading="loading">
       <el-card shadow="hover">
-        <div class="stat-label">今日发送消息条数</div>
-        <div class="stat-value">{{ stats?.today_sent_messages ?? 0 }}</div>
-        <div class="stat-meta">仅统计成功发送的任务日志</div>
+        <div class="stat-label">今日激活</div>
+        <div class="stat-value">{{ stats?.today_activations ?? 0 }}</div>
+        <div class="stat-meta">按今日新开通授权统计</div>
       </el-card>
       <el-card shadow="hover">
-        <div class="stat-label">今日绑定卡密数量</div>
-        <div class="stat-value">{{ stats?.today_bound_cards ?? 0 }}</div>
-        <div class="stat-meta">按今日激活/使用的卡密统计</div>
+        <div class="stat-label">今日卡密激活续费</div>
+        <div class="stat-value">{{ stats?.today_card_renewals ?? 0 }}</div>
+        <div class="stat-meta">按今日消耗卡密次数统计</div>
       </el-card>
       <el-card shadow="hover">
         <div class="stat-label">今日新增用户</div>
         <div class="stat-value">{{ stats?.today_new_users ?? 0 }}</div>
         <div class="stat-meta">按今日创建的系统用户统计</div>
+      </el-card>
+      <el-card shadow="hover">
+        <div class="stat-label">今日发送总数</div>
+        <div class="stat-value">{{ stats?.today_sent_messages_total ?? 0 }}</div>
+        <div class="stat-meta">成功和失败发送日志合计</div>
+      </el-card>
+      <el-card shadow="hover">
+        <div class="stat-label">今日成功</div>
+        <div class="stat-value">{{ stats?.today_sent_success ?? stats?.today_sent_messages ?? 0 }}</div>
+        <div class="stat-meta">结果为 success 的任务日志</div>
+      </el-card>
+      <el-card shadow="hover">
+        <div class="stat-label">今日失败</div>
+        <div class="stat-value">{{ stats?.today_sent_failed ?? 0 }}</div>
+        <div class="stat-meta">结果为 failed 的任务日志</div>
       </el-card>
     </div>
 

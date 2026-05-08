@@ -4,17 +4,107 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from backend.bot.developer_apps import get_developer_app_service
 from backend.database.runtime.session import get_async_session
-from backend.database.schema.models import User
+from backend.database.schema.models import Account, ScheduledMessageTask, User
 from backend.h5_backend.services.shared.audit import append_audit_log, mask_actor_name
 from backend.h5_backend.services.shared.pagination import paginate_items
 
 
 class DeveloperAppsService:
     """Encapsulates admin CRUD and management of developer apps."""
+
+    @staticmethod
+    def _account_display_name(account: Account) -> str:
+        if account.username:
+            return f"@{account.username}"
+        if account.first_name:
+            return account.first_name
+        if account.phone:
+            return account.phone
+        return str(account.account_id)
+
+    async def _enrich_apps_with_accounts(self, apps: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+        app_ids = [int(item["id"]) for item in apps if item.get("id") is not None]
+        if not app_ids:
+            return apps
+
+        account_items_by_app: Dict[int, list[Dict[str, Any]]] = {app_id: [] for app_id in app_ids}
+        task_counts_by_account: Dict[str, Dict[str, int]] = {}
+        async with get_async_session() as session:
+            accounts = (
+                await session.execute(
+                    select(Account, User.username.label("owner_username"))
+                    .join(User, User.id == Account.user_id)
+                    .where(Account.developer_app_id.in_(app_ids))
+                    .order_by(Account.developer_app_id.asc(), Account.created_at.desc())
+                )
+            ).all()
+            account_ids = [str(account.account_id) for account, _owner_username in accounts]
+            if account_ids:
+                task_rows = (
+                    await session.execute(
+                        select(
+                            ScheduledMessageTask.account_id,
+                            func.count(ScheduledMessageTask.task_id).label("task_count"),
+                            func.count(ScheduledMessageTask.task_id)
+                            .filter(ScheduledMessageTask.enabled.is_(True))
+                            .label("enabled_task_count"),
+                        )
+                        .where(ScheduledMessageTask.account_id.in_(account_ids))
+                        .group_by(ScheduledMessageTask.account_id)
+                    )
+                ).all()
+                task_counts_by_account = {
+                    str(row.account_id): {
+                        "task_count": int(row.task_count or 0),
+                        "enabled_task_count": int(row.enabled_task_count or 0),
+                    }
+                    for row in task_rows
+                }
+
+            for account, owner_username in accounts:
+                app_id = int(account.developer_app_id or 0)
+                if app_id not in account_items_by_app:
+                    continue
+                task_counts = task_counts_by_account.get(
+                    str(account.account_id),
+                    {"task_count": 0, "enabled_task_count": 0},
+                )
+                account_items_by_app[app_id].append(
+                    {
+                        "account_id": account.account_id,
+                        "tg_user_id": account.tg_user_id,
+                        "username": account.username,
+                        "tg_account_name": self._account_display_name(account),
+                        "first_name": account.first_name,
+                        "phone": account.phone,
+                        "owner_user_id": account.user_id,
+                        "owner_username": owner_username,
+                        "is_active": account.is_active,
+                        "health_status": account.health_status,
+                        "messages_sent": account.messages_sent,
+                        "task_count": task_counts["task_count"],
+                        "enabled_task_count": task_counts["enabled_task_count"],
+                        "created_at": account.created_at.isoformat() if account.created_at else None,
+                    }
+                )
+
+        enriched = []
+        for app in apps:
+            app_id = int(app.get("id") or 0)
+            account_items = account_items_by_app.get(app_id, [])
+            enriched.append(
+                {
+                    **app,
+                    "account_count": len(account_items),
+                    "active_account_count": sum(1 for item in account_items if item["is_active"]),
+                    "account_items": account_items,
+                }
+            )
+        return enriched
 
     async def list_developer_apps(
         self,
@@ -41,6 +131,7 @@ class DeveloperAppsService:
             apps = [item for item in apps if str(item.get("health_status") or "").lower() == normalized_health]
         if is_active is not None:
             apps = [item for item in apps if bool(item.get("is_active")) is bool(is_active)]
+        apps = await self._enrich_apps_with_accounts(apps)
         page = paginate_items(apps, limit=limit, offset=offset)
         return {**page, "settings": settings_data}
 

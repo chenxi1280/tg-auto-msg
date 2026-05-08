@@ -53,8 +53,14 @@
         </template>
         <p class="helper-text">点击下方按钮购买全球通卡密。购买后可在“我的”页面输入卡密，为当前唯一授权续费。</p>
         <div class="actions">
-          <el-button type="primary" size="large" @click="goTelegramPurchase">
-            {{ purchase.button_text || '去购买卡密' }}
+          <el-button
+            v-for="button in purchaseButtons"
+            :key="`${button.text}-${button.url}`"
+            type="primary"
+            size="large"
+            @click="goTelegramPurchase(button.url)"
+          >
+            {{ button.text || '去购买卡密' }}
           </el-button>
           <el-button size="large" @click="goMy">去激活卡密</el-button>
         </div>
@@ -64,7 +70,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import type { PricingPlan, AuthorizationStatus } from '@/api/me'
@@ -77,6 +83,12 @@ const licenseStatus = ref<AuthorizationStatus | null>(null)
 const purchase = ref({
   url: '',
   button_text: '去购买卡密',
+  buttons: [] as Array<{ text: string; url: string }>,
+})
+
+const purchaseButtons = computed(() => {
+  if (purchase.value.buttons?.length) return purchase.value.buttons
+  return purchase.value.url ? [{ text: purchase.value.button_text, url: purchase.value.url }] : []
 })
 
 const loadData = async () => {
@@ -85,18 +97,22 @@ const loadData = async () => {
     const res = await getLicenseStatus()
     licenseStatus.value = res.data
     plans.value = res.data.plans || []
-    purchase.value = res.data.purchase || purchase.value
+    purchase.value = {
+      ...purchase.value,
+      ...(res.data.purchase || {}),
+      buttons: res.data.purchase?.buttons || [],
+    }
   } finally {
     loading.value = false
   }
 }
 
-const goTelegramPurchase = () => {
-  if (!purchase.value.url) {
+const goTelegramPurchase = (url: string) => {
+  if (!url) {
     ElMessage.warning('购买链接暂未配置，请联系管理员')
     return
   }
-  window.open(purchase.value.url, '_blank')
+  window.open(url, '_blank')
 }
 
 const goMy = () => {

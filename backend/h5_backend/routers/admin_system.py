@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -48,9 +48,15 @@ class AssignProxyRequest(BaseModel):
     account_id: str = Field(..., min_length=6, max_length=64)
 
 
+class PurchaseButtonRequest(BaseModel):
+    text: str = Field(default="", max_length=50)
+    url: str = Field(default="", max_length=500)
+
+
 class UpdatePurchaseSettingsRequest(BaseModel):
-    purchase_url: str = Field(..., min_length=1, max_length=500)
-    purchase_button_text: str = Field(default="联系 Telegram 购买", min_length=1, max_length=50)
+    purchase_url: str = Field(default="", max_length=500)
+    purchase_button_text: str = Field(default="联系 Telegram 购买", max_length=50)
+    purchase_buttons: Optional[List[PurchaseButtonRequest]] = Field(default=None, max_length=2)
 
 
 class UpdateBotNoticeSettingsRequest(BaseModel):
@@ -114,6 +120,7 @@ async def update_purchase_settings(
     data = await service.update_purchase_settings(
         purchase_url=payload.purchase_url,
         purchase_button_text=payload.purchase_button_text,
+        purchase_buttons=[item.model_dump() for item in payload.purchase_buttons] if payload.purchase_buttons is not None else None,
         actor=_actor(current_admin),
         ip_address=_client_ip(request),
     )

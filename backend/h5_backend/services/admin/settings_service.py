@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import re
+import json
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
@@ -11,16 +12,16 @@ from loguru import logger
 from sqlalchemy import func, select
 
 from backend.database.runtime.session import get_async_session
-from backend.database.schema.models import AppSetting, TaskLog, ActivationCard, User
+from backend.database.schema.models import AppSetting, TaskLog, ActivationCard, User, UserAuthorization, UserAuthorizationCard
 from backend.config.core.settings import settings
-from backend.utils.url_validation import is_valid_button_url
+from backend.utils.url_validation import is_valid_button_url, is_valid_purchase_button_url
 from backend.h5_backend.services.shared.audit import append_audit_log, mask_actor_name
 
 _NOTICE_URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
 DEFAULT_PURCHASE_URL = "https://t.me/"
 DEFAULT_PURCHASE_BUTTON_TEXT = "联系 Telegram 购买"
 DEFAULT_BOT_NOTICE_ENTRY_BUTTON_TEXT = "📢 公告栏"
-TELEGRAM_PURCHASE_URL_PREFIXES = ("https://t.me/", "https://telegram.me/", "tg://")
+PURCHASE_SETTING_KEYS = ["purchase_url", "purchase_button_text", "purchase_buttons"]
 
 
 class SettingsService:
@@ -39,21 +40,74 @@ class SettingsService:
 
     @staticmethod
     def _is_valid_purchase_url(url: str) -> bool:
-        return url.startswith(TELEGRAM_PURCHASE_URL_PREFIXES) or is_valid_button_url(url)
+        return is_valid_purchase_button_url(url)
 
-    async def get_purchase_settings(self) -> Dict[str, str]:
+    @classmethod
+    def _normalize_purchase_buttons(
+        cls,
+        raw_buttons: Optional[List[Dict[str, Any]]],
+        *,
+        legacy_url: str,
+        legacy_button_text: str,
+    ) -> List[Dict[str, str]]:
+        buttons: List[Dict[str, str]] = []
+        for index, item in enumerate((raw_buttons or [])[:2]):
+            text = str(item.get("text") or item.get("button_text") or "").strip()
+            url = str(item.get("url") or "").strip()
+            if not text and not url:
+                continue
+            if not url:
+                raise HTTPException(status_code=400, detail=f"购买按钮 {index + 1} 链接不能为空")
+            if not cls._is_valid_purchase_url(url):
+                raise HTTPException(status_code=400, detail=f"购买按钮 {index + 1} 链接格式无效，仅支持 Telegram 链接或公网 HTTP/HTTPS 商铺链接")
+            buttons.append(
+                {
+                    "text": text or (DEFAULT_PURCHASE_BUTTON_TEXT if index == 0 else f"购买入口 {index + 1}"),
+                    "url": url,
+                }
+            )
+
+        if buttons:
+            return buttons
+
+        fallback_url = (legacy_url or DEFAULT_PURCHASE_URL).strip()
+        fallback_text = (legacy_button_text or DEFAULT_PURCHASE_BUTTON_TEXT).strip()
+        if not cls._is_valid_purchase_url(fallback_url):
+            fallback_url = DEFAULT_PURCHASE_URL
+        return [{"text": fallback_text or DEFAULT_PURCHASE_BUTTON_TEXT, "url": fallback_url}]
+
+    @staticmethod
+    def _load_purchase_buttons_json(raw_value: Optional[str]) -> Optional[List[Dict[str, Any]]]:
+        if not raw_value:
+            return None
+        try:
+            parsed = json.loads(raw_value)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(parsed, list):
+            return None
+        return [item for item in parsed if isinstance(item, dict)]
+
+    async def get_purchase_settings(self) -> Dict[str, Any]:
         async with get_async_session() as session:
             rows = (
                 await session.execute(
-                    select(AppSetting).where(AppSetting.key.in_(["purchase_url", "purchase_button_text"]))
+                    select(AppSetting).where(AppSetting.key.in_(PURCHASE_SETTING_KEYS))
                 )
             ).scalars().all()
             values = {row.key: row.value for row in rows}
+            legacy_url = (values.get("purchase_url") or DEFAULT_PURCHASE_URL).strip()
+            legacy_text = (values.get("purchase_button_text") or DEFAULT_PURCHASE_BUTTON_TEXT).strip()
+            buttons = self._normalize_purchase_buttons(
+                self._load_purchase_buttons_json(values.get("purchase_buttons")),
+                legacy_url=legacy_url,
+                legacy_button_text=legacy_text,
+            )
+            primary = buttons[0]
             return {
-                "purchase_url": (values.get("purchase_url") or DEFAULT_PURCHASE_URL).strip(),
-                "purchase_button_text": (
-                    values.get("purchase_button_text") or DEFAULT_PURCHASE_BUTTON_TEXT
-                ).strip(),
+                "purchase_url": primary["url"],
+                "purchase_button_text": primary["text"],
+                "purchase_buttons": buttons,
             }
 
     async def get_bot_notice_settings(self) -> Dict[str, Any]:
@@ -105,30 +159,44 @@ class SettingsService:
     async def update_purchase_settings(
         self,
         *,
-        purchase_url: str,
-        purchase_button_text: str,
+        purchase_url: str = "",
+        purchase_button_text: str = "",
+        purchase_buttons: Optional[List[Dict[str, Any]]] = None,
         actor: str = "admin",
         ip_address: Optional[str] = None,
-    ) -> Dict[str, str]:
-        url = (purchase_url or "").strip()
-        button_text = (purchase_button_text or "").strip() or DEFAULT_PURCHASE_BUTTON_TEXT
-        if not url:
-            raise HTTPException(status_code=400, detail="购买链接不能为空")
-        if not self._is_valid_purchase_url(url):
-            raise HTTPException(status_code=400, detail="购买链接格式无效，仅支持 Telegram 链接或公网 HTTP/HTTPS 商铺链接")
+    ) -> Dict[str, Any]:
+        if purchase_buttons is None:
+            url = (purchase_url or "").strip()
+            if not url:
+                raise HTTPException(status_code=400, detail="购买链接不能为空")
+            if not self._is_valid_purchase_url(url):
+                raise HTTPException(status_code=400, detail="购买链接格式无效，仅支持 Telegram 链接或公网 HTTP/HTTPS 商铺链接")
+        buttons = self._normalize_purchase_buttons(
+            purchase_buttons,
+            legacy_url=purchase_url,
+            legacy_button_text=purchase_button_text,
+        )
+        primary = buttons[0]
+        buttons_json = json.dumps(buttons, ensure_ascii=False)
 
         async with get_async_session() as session:
             url_row = await session.get(AppSetting, "purchase_url")
             if not url_row:
-                session.add(AppSetting(key="purchase_url", value=url))
+                session.add(AppSetting(key="purchase_url", value=primary["url"]))
             else:
-                url_row.value = url
+                url_row.value = primary["url"]
 
             text_row = await session.get(AppSetting, "purchase_button_text")
             if not text_row:
-                session.add(AppSetting(key="purchase_button_text", value=button_text))
+                session.add(AppSetting(key="purchase_button_text", value=primary["text"]))
             else:
-                text_row.value = button_text
+                text_row.value = primary["text"]
+
+            buttons_row = await session.get(AppSetting, "purchase_buttons")
+            if not buttons_row:
+                session.add(AppSetting(key="purchase_buttons", value=buttons_json))
+            else:
+                buttons_row.value = buttons_json
 
             await append_audit_log(
                 session,
@@ -136,12 +204,16 @@ class SettingsService:
                 action="admin.update_purchase_settings",
                 target_type="settings",
                 target_id="purchase",
-                detail={"purchase_url": url, "purchase_button_text": button_text},
+                detail={
+                    "purchase_url": primary["url"],
+                    "purchase_button_text": primary["text"],
+                    "purchase_buttons": buttons,
+                },
                 ip_address=ip_address,
             )
             await session.commit()
 
-        return {"purchase_url": url, "purchase_button_text": button_text}
+        return {"purchase_url": primary["url"], "purchase_button_text": primary["text"], "purchase_buttons": buttons}
 
     async def update_bot_notice_settings(
         self,
@@ -209,7 +281,30 @@ class SettingsService:
                 (
                     await session.execute(
                         select(func.count(TaskLog.id)).where(
+                            TaskLog.send_at >= start_of_day,
+                            TaskLog.send_at < end_of_day,
+                        )
+                    )
+                ).scalar_one()
+                or 0
+            )
+            sent_success = int(
+                (
+                    await session.execute(
+                        select(func.count(TaskLog.id)).where(
                             TaskLog.result == "success",
+                            TaskLog.send_at >= start_of_day,
+                            TaskLog.send_at < end_of_day,
+                        )
+                    )
+                ).scalar_one()
+                or 0
+            )
+            sent_failed = int(
+                (
+                    await session.execute(
+                        select(func.count(TaskLog.id)).where(
+                            TaskLog.result == "failed",
                             TaskLog.send_at >= start_of_day,
                             TaskLog.send_at < end_of_day,
                         )
@@ -241,13 +336,40 @@ class SettingsService:
                 ).scalar_one()
                 or 0
             )
+            activations = int(
+                (
+                    await session.execute(
+                        select(func.count(UserAuthorization.authorization_id)).where(
+                            UserAuthorization.created_at >= start_of_day,
+                            UserAuthorization.created_at < end_of_day,
+                        )
+                    )
+                ).scalar_one()
+                or 0
+            )
+            card_renewals = int(
+                (
+                    await session.execute(
+                        select(func.count(UserAuthorizationCard.id)).where(
+                            UserAuthorizationCard.applied_at >= start_of_day,
+                            UserAuthorizationCard.applied_at < end_of_day,
+                        )
+                    )
+                ).scalar_one()
+                or 0
+            )
 
         return {
             "date": now.date().isoformat(),
             "timezone": timezone_name,
-            "today_sent_messages": sent_messages,
+            "today_sent_messages": sent_success,
             "today_bound_cards": bound_cards,
             "today_new_users": new_users,
+            "today_activations": activations,
+            "today_card_renewals": card_renewals,
+            "today_sent_messages_total": sent_messages,
+            "today_sent_success": sent_success,
+            "today_sent_failed": sent_failed,
         }
 
 
