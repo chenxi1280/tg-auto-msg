@@ -138,18 +138,46 @@ class AdminPanelService:
     async def list_plans(self) -> List[Dict[str, Any]]:
         return await get_admin_license_service().list_plans()
 
-    async def list_pricing_plans(self, limit: int = 100, offset: int = 0) -> Dict[str, Any]:
+    async def list_pricing_plans(
+        self,
+        *,
+        current_admin=None,
+        search: Optional[str] = None,
+        is_active: Optional[bool] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
         from backend.database.runtime.session import get_async_session
         from backend.database.schema.models import PricingPlan
         from backend.h5_backend.services.shared.pagination import normalize_page
-        from sqlalchemy import func, select
+        from sqlalchemy import func, or_, select
 
+        del current_admin
         limit, offset = normalize_page(limit, offset)
+        filters = []
+        keyword = (search or "").strip()
+        if keyword:
+            pattern = f"%{keyword}%"
+            filters.append(
+                or_(
+                    PricingPlan.plan_code.ilike(pattern),
+                    PricingPlan.display_name.ilike(pattern),
+                )
+            )
+        if is_active is not None:
+            filters.append(PricingPlan.is_active.is_(bool(is_active)))
+
         async with get_async_session() as session:
-            total = int((await session.execute(select(func.count(PricingPlan.id)))).scalar_one() or 0)
+            count_stmt = select(func.count(PricingPlan.plan_code))
+            list_stmt = select(PricingPlan)
+            if filters:
+                count_stmt = count_stmt.where(*filters)
+                list_stmt = list_stmt.where(*filters)
+
+            total = int((await session.execute(count_stmt)).scalar_one() or 0)
             rows = (
                 await session.execute(
-                    select(PricingPlan)
+                    list_stmt
                     .order_by(PricingPlan.sort_order.asc(), PricingPlan.price_cents.asc())
                     .limit(limit)
                     .offset(offset)
@@ -171,6 +199,7 @@ class AdminPanelService:
         duration_days: Optional[int] = None,
         is_active: Optional[bool] = None,
         sort_order: Optional[int] = None,
+        current_admin=None,
         actor=None,
         ip_address: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -200,7 +229,7 @@ class AdminPanelService:
             new_value = serialize_pricing_plan(plan)
             await append_audit(
                 session,
-                actor=actor,
+                actor=actor or current_admin,
                 action="admin.update_plan",
                 target_type="plan",
                 target_id=plan_code,
