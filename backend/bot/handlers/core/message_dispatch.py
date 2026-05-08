@@ -6,6 +6,7 @@ from backend.bot.handlers.task.target_selection import handle_target_search_inpu
 from backend.bot.handlers.task.editing import (
     handle_buttons_input,
     handle_end_at_input,
+    handle_interval_input,
     handle_media_input,
     handle_shortcut_label_input,
     handle_start_at_input,
@@ -29,6 +30,7 @@ _SENSITIVE_INPUT_STATES = {
 _TEXT_STATE_HANDLERS = {
     FSMState.WAIT_TEXT: handle_text_input,
     FSMState.WAIT_BUTTONS: handle_buttons_input,
+    FSMState.WAIT_INTERVAL: handle_interval_input,
     FSMState.WAIT_START_AT: handle_start_at_input,
     FSMState.WAIT_END_AT: handle_end_at_input,
     FSMState.WAIT_SHORTCUT_LABEL: handle_shortcut_label_input,

@@ -216,6 +216,10 @@ class AdminLicenseService:
         from backend.h5_backend.services.admin.user_service import get_user_admin_service
         return await get_user_admin_service().list_user_accounts(user_id, **kwargs)
 
+    async def list_account_send_logs(self, user_id: int, account_id: str, **kwargs) -> Dict[str, Any]:
+        from backend.h5_backend.services.admin.user_service import get_user_admin_service
+        return await get_user_admin_service().list_account_send_logs(user_id, account_id, **kwargs)
+
     async def admin_delete_account(self, account_id: str, **kwargs) -> None:
         from backend.h5_backend.services.admin.user_service import get_user_admin_service
         return await get_user_admin_service().admin_delete_account(account_id, **kwargs)

@@ -130,7 +130,8 @@ async def _send_reauth_notice(item: ReauthNoticeItem) -> bool:
         f"相关任务：{item.disabled_task_count} 条\n"
         f"授权到期：{_format_end_at(item.authorization_end_at)}\n\n"
         "该账号已无法继续发送任务，需要重新绑定后才能继续使用。\n"
-        "重新绑定前请确认梯子/代理登录地点稳定，并尽量接近日常使用地区，避免 Telegram 拦截新登录。"
+        "即使只掉线 1 次，也可能是 Telegram 风控触发。"
+        "重新绑定前请确认主要账号日常登录区域与服务器/梯子/代理区域尽量一致且稳定，避免 Telegram 拦截新登录。"
     )
     try:
         await bot_client.send_message(

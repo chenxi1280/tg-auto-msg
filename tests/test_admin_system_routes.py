@@ -67,6 +67,45 @@ class AdminSystemRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.json()["detail"], "无权访问该后台资源")
 
+    def test_user_account_send_logs_returns_service_payload(self):
+        client = self._build_client(_build_admin("users.read"))
+        service = SimpleNamespace(
+            list_account_send_logs=AsyncMock(
+                return_value={
+                    "items": [
+                        {
+                            "id": 1,
+                            "task_id": "task_1",
+                            "task_title": "测试任务",
+                            "send_at": "2026-05-08T10:00:00",
+                            "result": "success",
+                            "trigger_source": "scheduler",
+                            "error_code": None,
+                            "error_message": None,
+                            "message_id": 123,
+                        }
+                    ],
+                    "total": 1,
+                    "limit": 20,
+                    "offset": 0,
+                }
+            )
+        )
+
+        with patch("backend.h5_backend.routers.admin_system.get_admin_license_service", return_value=service):
+            response = client.get("/api/admin/users/9/accounts/acc_1/send-logs?result=success&limit=20&offset=0")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["success"])
+        self.assertEqual(response.json()["data"]["items"][0]["task_title"], "测试任务")
+        service.list_account_send_logs.assert_awaited_once_with(
+            9,
+            "acc_1",
+            result="success",
+            limit=20,
+            offset=0,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,5 @@
 import { adminApi } from './client'
-import type { LegacyUser, LegacyUserAccount, LicenseAuthorization, PaginatedResponse } from './types'
+import type { LegacyUser, LegacyUserAccount, LegacyUserAccountSendLog, LicenseAuthorization, PaginatedResponse } from './types'
 
 export const adminListUsers = (params?: {
   search?: string
@@ -10,6 +10,17 @@ export const adminListUsers = (params?: {
 
 export const adminListUserAccounts = (userId: number): Promise<{ success: boolean; data: LegacyUserAccount[] }> =>
   adminApi.get(`/admin/users/${userId}/accounts`)
+
+export const adminListUserAccountSendLogs = (
+  userId: number,
+  accountId: string,
+  params?: {
+    result?: string
+    limit?: number
+    offset?: number
+  },
+): Promise<{ success: boolean; data: PaginatedResponse<LegacyUserAccountSendLog> }> =>
+  adminApi.get(`/admin/users/${userId}/accounts/${accountId}/send-logs`, { params })
 
 export const adminResetUserPassword = (userId: number, newPassword: string): Promise<{ success: boolean; message: string }> =>
   adminApi.post(`/admin/users/${userId}/reset-password`, { new_password: newPassword })

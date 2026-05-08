@@ -583,6 +583,28 @@ async def list_user_accounts(
     return {"success": True, "data": await service.list_user_accounts(user_id)}
 
 
+@router.get("/api/admin/users/{user_id}/accounts/{account_id}/send-logs")
+async def list_user_account_send_logs(
+    user_id: int,
+    account_id: str,
+    result: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    current_admin: AdminAccount = Depends(require_admin_permissions("users.read")),
+):
+    service = get_admin_license_service()
+    return {
+        "success": True,
+        "data": await service.list_account_send_logs(
+            user_id,
+            account_id,
+            result=result,
+            limit=limit,
+            offset=offset,
+        ),
+    }
+
+
 @router.post("/api/admin/users/{user_id}/reset-password")
 async def reset_user_password(
     user_id: int,

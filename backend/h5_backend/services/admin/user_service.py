@@ -11,6 +11,7 @@ from backend.database.schema.models import (
     Account,
     AppSetting,
     ScheduledMessageTask,
+    TaskLog,
     User,
     UserAuthorization,
 )
@@ -209,6 +210,17 @@ class UsersService:
                 account_id: {"task_count": 0, "enabled_task_count": 0}
                 for account_id in account_ids
             }
+            send_stats_by_account: Dict[str, Dict[str, Any]] = {
+                account_id: {
+                    "send_log_count": 0,
+                    "send_success_count": 0,
+                    "send_failed_count": 0,
+                    "last_send_at": None,
+                    "last_send_result": None,
+                    "last_send_error_message": None,
+                }
+                for account_id in account_ids
+            }
             if account_ids:
                 task_rows = (
                     await session.execute(
@@ -219,7 +231,10 @@ class UsersService:
                             .filter(ScheduledMessageTask.enabled.is_(True))
                             .label("enabled_task_count"),
                         )
-                        .where(ScheduledMessageTask.account_id.in_(account_ids))
+                        .where(
+                            ScheduledMessageTask.user_id == int(user_id),
+                            ScheduledMessageTask.account_id.in_(account_ids),
+                        )
                         .group_by(ScheduledMessageTask.account_id)
                     )
                 ).all()
@@ -229,11 +244,85 @@ class UsersService:
                         "enabled_task_count": int(task_row.enabled_task_count or 0),
                     }
 
+                send_rows = (
+                    await session.execute(
+                        select(
+                            ScheduledMessageTask.account_id,
+                            func.count(TaskLog.id).label("send_log_count"),
+                            func.count(TaskLog.id).filter(TaskLog.result == "success").label("send_success_count"),
+                            func.count(TaskLog.id).filter(TaskLog.result == "failed").label("send_failed_count"),
+                            func.max(TaskLog.send_at).label("last_send_at"),
+                        )
+                        .select_from(ScheduledMessageTask)
+                        .join(TaskLog, TaskLog.task_id == ScheduledMessageTask.task_id)
+                        .where(
+                            ScheduledMessageTask.user_id == int(user_id),
+                            ScheduledMessageTask.account_id.in_(account_ids),
+                        )
+                        .group_by(ScheduledMessageTask.account_id)
+                    )
+                ).all()
+                for send_row in send_rows:
+                    account_id = str(send_row.account_id)
+                    send_stats_by_account[account_id] = {
+                        **send_stats_by_account.get(account_id, {}),
+                        "send_log_count": int(send_row.send_log_count or 0),
+                        "send_success_count": int(send_row.send_success_count or 0),
+                        "send_failed_count": int(send_row.send_failed_count or 0),
+                        "last_send_at": send_row.last_send_at.isoformat() if send_row.last_send_at else None,
+                    }
+
+                latest_log_ranked = (
+                    select(
+                        ScheduledMessageTask.account_id.label("account_id"),
+                        TaskLog.result.label("result"),
+                        TaskLog.error_message.label("error_message"),
+                        func.row_number()
+                        .over(
+                            partition_by=ScheduledMessageTask.account_id,
+                            order_by=(TaskLog.send_at.desc(), TaskLog.id.desc()),
+                        )
+                        .label("rn"),
+                    )
+                    .select_from(ScheduledMessageTask)
+                    .join(TaskLog, TaskLog.task_id == ScheduledMessageTask.task_id)
+                    .where(
+                        ScheduledMessageTask.user_id == int(user_id),
+                        ScheduledMessageTask.account_id.in_(account_ids),
+                    )
+                    .subquery()
+                )
+                latest_rows = (
+                    await session.execute(
+                        select(
+                            latest_log_ranked.c.account_id,
+                            latest_log_ranked.c.result,
+                            latest_log_ranked.c.error_message,
+                        ).where(latest_log_ranked.c.rn == 1)
+                    )
+                ).all()
+                for latest_row in latest_rows:
+                    account_id = str(latest_row.account_id)
+                    send_stats_by_account.setdefault(account_id, {})
+                    send_stats_by_account[account_id]["last_send_result"] = latest_row.result
+                    send_stats_by_account[account_id]["last_send_error_message"] = latest_row.error_message
+
             items = []
             for a in accounts:
                 task_counts = task_counts_by_account.get(
                     str(a.account_id),
                     {"task_count": 0, "enabled_task_count": 0},
+                )
+                send_stats = send_stats_by_account.get(
+                    str(a.account_id),
+                    {
+                        "send_log_count": 0,
+                        "send_success_count": 0,
+                        "send_failed_count": 0,
+                        "last_send_at": None,
+                        "last_send_result": None,
+                        "last_send_error_message": None,
+                    },
                 )
                 items.append({
                     "account_id": a.account_id,
@@ -250,10 +339,81 @@ class UsersService:
                     "messages_sent": a.messages_sent,
                     "task_count": task_counts["task_count"],
                     "enabled_task_count": task_counts["enabled_task_count"],
+                    "send_log_count": send_stats["send_log_count"],
+                    "send_success_count": send_stats["send_success_count"],
+                    "send_failed_count": send_stats["send_failed_count"],
+                    "last_send_at": send_stats["last_send_at"],
+                    "last_send_result": send_stats["last_send_result"],
+                    "last_send_error_message": send_stats["last_send_error_message"],
                     "created_at": a.created_at.isoformat() if a.created_at else None,
                     **(await get_account_authorization_summary(a.account_id, session=session)).to_dict(),
                 })
             return items
+
+    async def list_account_send_logs(
+        self,
+        user_id: int,
+        account_id: str,
+        *,
+        result: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        limit = max(1, min(200, int(limit)))
+        offset = max(0, int(offset))
+        normalized_result = (result or "").strip().lower()
+        if normalized_result and normalized_result not in {"success", "failed"}:
+            raise HTTPException(status_code=400, detail="result 仅支持 success 或 failed")
+
+        async with get_async_session() as session:
+            account = await session.get(Account, str(account_id))
+            if account is None or int(account.user_id) != int(user_id):
+                raise HTTPException(status_code=404, detail="账号不存在")
+
+            conditions = [
+                ScheduledMessageTask.user_id == int(user_id),
+                ScheduledMessageTask.account_id == str(account_id),
+            ]
+            if normalized_result:
+                conditions.append(TaskLog.result == normalized_result)
+
+            count_stmt = (
+                select(func.count(TaskLog.id))
+                .select_from(ScheduledMessageTask)
+                .join(TaskLog, TaskLog.task_id == ScheduledMessageTask.task_id)
+                .where(*conditions)
+            )
+            rows_stmt = (
+                select(TaskLog, ScheduledMessageTask.task_id, ScheduledMessageTask.title)
+                .select_from(ScheduledMessageTask)
+                .join(TaskLog, TaskLog.task_id == ScheduledMessageTask.task_id)
+                .where(*conditions)
+                .order_by(TaskLog.send_at.desc(), TaskLog.id.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+            total = int((await session.execute(count_stmt)).scalar_one() or 0)
+            rows = (await session.execute(rows_stmt)).all()
+
+        return {
+            "items": [
+                {
+                    "id": log.id,
+                    "task_id": task_id,
+                    "task_title": task_title,
+                    "send_at": log.send_at.isoformat() if log.send_at else None,
+                    "result": log.result,
+                    "trigger_source": log.trigger_source,
+                    "error_code": log.error_code,
+                    "error_message": log.error_message,
+                    "message_id": log.message_id,
+                }
+                for log, task_id, task_title in rows
+            ],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
 
     async def admin_delete_account(
         self,

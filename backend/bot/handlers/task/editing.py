@@ -423,8 +423,20 @@ async def show_interval_selection(event, user_id: int, task_id: str):
     await event.edit(SELECT_INTERVAL, buttons=keyboard, parse_mode="markdown")
 
 
+async def start_custom_interval_input(event, user_id: int, task_id: str):
+    """开始输入自定义重复间隔。"""
+    fsm_storage.set_state(user_id, FSMState.WAIT_INTERVAL)
+    fsm_storage.update_data(user_id, task_id=task_id)
+    keyboard = get_cancel_keyboard(task_id)
+    await event.edit(CUSTOM_INTERVAL_PROMPT, buttons=keyboard, parse_mode="markdown")
+
+
 async def set_interval(event, user_id: int, task_id: str, interval: int):
     """设置重复间隔。"""
+    if int(interval) < 60:
+        await _notify_event(event, ERROR_INTERVAL_TOO_SHORT, alert=True)
+        return
+
     async with get_async_session() as session:
         task = await _get_user_task(session, task_id, user_id)
         if task:
@@ -437,8 +449,25 @@ async def set_interval(event, user_id: int, task_id: str, interval: int):
                 else:
                     task.next_run_at = now_ts + interval * 60
             await session.commit()
-            await event.answer(SUCCESS_INTERVAL_UPDATED.format(interval=interval))
+            await _notify_event(event, SUCCESS_INTERVAL_UPDATED.format(interval=interval))
             await _show_task_settings(event, user_id, task_id)
+
+
+async def handle_interval_input(event, user_id: int, task_id: str, text: str):
+    """处理自定义重复间隔输入。"""
+    raw_value = (text or "").strip()
+    try:
+        interval = int(raw_value)
+    except (TypeError, ValueError):
+        await event.respond(ERROR_INTERVAL_INVALID)
+        return
+
+    if interval <= 60:
+        await event.respond(ERROR_INTERVAL_TOO_SHORT)
+        return
+
+    await set_interval(event, user_id, task_id, interval)
+    fsm_storage.reset_state(user_id)
 
 
 async def start_edit_hours(event, user_id: int, task_id: str):

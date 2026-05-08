@@ -402,10 +402,28 @@ export interface LegacyUserAccount {
   messages_sent: number
   task_count?: number
   enabled_task_count?: number
+  send_log_count?: number
+  send_success_count?: number
+  send_failed_count?: number
+  last_send_at?: string | null
+  last_send_result?: string | null
+  last_send_error_message?: string | null
   created_at: string | null
   authorization_id?: string | null
   authorization_status?: string | null
   authorization_end_at?: string | null
+}
+
+export interface LegacyUserAccountSendLog {
+  id: number
+  task_id: string
+  task_title: string
+  send_at: string | null
+  result: string
+  trigger_source: string
+  error_code: string | null
+  error_message: string | null
+  message_id: number | null
 }
 
 export interface AccountOption {

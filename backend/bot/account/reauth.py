@@ -7,7 +7,8 @@ from typing import Any
 REAUTH_REQUIRED_TITLE = "系统已更新，请先重新绑定"
 REAUTH_REQUIRED_GUIDE = (
     "点击“重新绑定”或回到主菜单选择“绑定账号”继续。"
-    "重新绑定前请确认梯子/代理登录地点稳定，并尽量接近日常使用地区，避免 Telegram 拦截新登录。"
+    "即使只掉线 1 次，也可能是 Telegram 风控触发。"
+    "重新绑定前请确认主要账号日常登录区域与服务器/梯子/代理区域尽量一致且稳定，避免 Telegram 拦截新登录。"
 )
 
 _REAUTH_REASON_SET = {

@@ -198,7 +198,7 @@ def build_reply_shortcut_keyboard(labels: List[str]) -> list:
 
 # ============ 时间间隔选择 ============
 
-INTERVAL_OPTIONS = [5, 10, 15, 30, 60, 120, 180, 240, 360, 720, 1440]  # 分钟
+INTERVAL_OPTIONS = [60, 120, 180, 240, 360, 720, 1440]  # 分钟，Bot 定时任务最小 1 小时
 
 
 def get_interval_keyboard(task_id: str) -> list:
@@ -224,6 +224,8 @@ def get_interval_keyboard(task_id: str) -> list:
 
     if row:
         buttons.append(row)
+
+    buttons.append([Button.inline("✏️ 自定义分钟", data=f"edit_interval_custom:{task_id}")])
 
     # 返回按钮
     buttons.append([
