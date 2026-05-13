@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 from fastapi import HTTPException, status
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from backend.database.schema.models import Account, HealthStatus, Proxy
 
@@ -131,21 +131,39 @@ def format_observation_block_message(account: Any) -> str:
 
 
 def start_proxy_observation(account: Account, *, now: Optional[datetime] = None) -> None:
+    """Start the 24-hour observation window; caller owns flush/commit."""
     started_at = now or datetime.now()
     account.proxy_observation_started_at = started_at
     account.proxy_observation_until = started_at + timedelta(hours=OBSERVATION_HOURS)
     account.proxy_observation_success_count = 0
 
 
-async def mark_proxy_observation_success(session, account_id: str, *, now: Optional[datetime] = None) -> int:
-    account = await session.get(Account, str(account_id))
-    if account is None or not is_proxy_observation_active(account, now):
-        return 0
-    account.proxy_observation_success_count = min(
-        OBSERVATION_SUCCESS_LIMIT,
-        int(account.proxy_observation_success_count or 0) + 1,
+def reset_proxy_observation(account: Account) -> None:
+    """Clear the observation window while preserving the NOT NULL success counter."""
+    account.proxy_observation_started_at = None
+    account.proxy_observation_until = None
+    account.proxy_observation_success_count = 0
+
+
+async def claim_proxy_observation_send_budget(session, account_id: str, *, now: Optional[datetime] = None) -> bool:
+    """Atomically reserve the single send allowed during observation."""
+    current_time = now or datetime.now()
+    result = await session.execute(
+        update(Account)
+        .where(
+            Account.account_id == str(account_id),
+            Account.proxy_observation_until.is_not(None),
+            Account.proxy_observation_until > current_time,
+            Account.proxy_observation_success_count < OBSERVATION_SUCCESS_LIMIT,
+        )
+        .values(proxy_observation_success_count=OBSERVATION_SUCCESS_LIMIT)
     )
-    return int(account.proxy_observation_success_count or 0)
+    return int(getattr(result, "rowcount", 0) or 0) > 0
+
+
+async def mark_proxy_observation_success(session, account_id: str, *, now: Optional[datetime] = None) -> bool:
+    """Backward-compatible alias for the atomic observation send-budget claim."""
+    return await claim_proxy_observation_send_budget(session, account_id, now=now)
 
 
 async def select_reauth_proxy_for_account(
@@ -170,9 +188,7 @@ async def select_reauth_proxy_for_account(
     account.reauth_reason = REAUTH_PROXY_SELECTED_REASON
     account.reauth_required_at = datetime.now()
     account.health_status = HealthStatus.OFFLINE
-    account.proxy_observation_started_at = None
-    account.proxy_observation_until = None
-    account.proxy_observation_success_count = 0
+    reset_proxy_observation(account)
     await session.flush()
 
     logger.info(

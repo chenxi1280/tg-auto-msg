@@ -19,6 +19,7 @@ from backend.h5_backend.services.admin_panel.shared_helpers import (
     build_account_name_map,
 )
 from backend.h5_backend.services.shared.pagination import normalize_page
+from backend.h5_backend.services.shared.search import LIKE_ESCAPE_CHAR, contains_like_pattern
 from backend.h5_backend.services.admin_panel.batch_service import get_batch_service
 
 
@@ -47,10 +48,10 @@ class FundLedgerService:
                 count_stmt = count_stmt.where(AgentFundLedger.direction == normalized_direction)
             normalized_keyword = (keyword or "").strip()
             if normalized_keyword:
-                keyword_value = f"%{normalized_keyword}%"
+                keyword_value = contains_like_pattern(normalized_keyword)
                 keyword_condition = (
-                    AgentFundLedger.remark.ilike(keyword_value)
-                    | AgentFundLedger.related_batch_id.ilike(keyword_value)
+                    AgentFundLedger.remark.ilike(keyword_value, escape=LIKE_ESCAPE_CHAR)
+                    | AgentFundLedger.related_batch_id.ilike(keyword_value, escape=LIKE_ESCAPE_CHAR)
                 )
                 stmt = stmt.where(keyword_condition)
                 count_stmt = count_stmt.where(keyword_condition)
@@ -112,10 +113,10 @@ class FundLedgerService:
                 count_stmt = count_stmt.where(AgentFundLedger.direction == normalized_direction)
             normalized_keyword = (keyword or "").strip()
             if normalized_keyword:
-                keyword_value = f"%{normalized_keyword}%"
+                keyword_value = contains_like_pattern(normalized_keyword)
                 keyword_condition = (
-                    AgentFundLedger.remark.ilike(keyword_value)
-                    | AgentFundLedger.related_batch_id.ilike(keyword_value)
+                    AgentFundLedger.remark.ilike(keyword_value, escape=LIKE_ESCAPE_CHAR)
+                    | AgentFundLedger.related_batch_id.ilike(keyword_value, escape=LIKE_ESCAPE_CHAR)
                 )
                 stmt = stmt.where(keyword_condition)
                 count_stmt = count_stmt.where(keyword_condition)

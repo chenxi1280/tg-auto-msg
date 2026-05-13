@@ -23,12 +23,14 @@ from backend.bot.account.proxy_observation import (
     select_reauth_proxy_for_account,
 )
 from backend.bot.account.manager import get_account_manager
+from backend.bot.account.client_runtime import close_client
 from backend.h5_backend.services.auth.service import get_auth_service
 from backend.h5_backend.services.licensing.service import (
     get_account_authorization_summary,
-    list_user_authorizations,
+    list_user_authorizations_batch,
 )
 from backend.h5_backend.services.shared.audit import append_audit_log, mask_actor_name
+from backend.h5_backend.services.shared.search import LIKE_ESCAPE_CHAR, contains_like_pattern
 
 
 class UsersService:
@@ -69,8 +71,11 @@ class UsersService:
             )
 
             if search:
-                search_value = f"%{search.strip()}%"
-                search_condition = (User.username.ilike(search_value)) | (User.email.ilike(search_value))
+                search_value = contains_like_pattern(search.strip())
+                search_condition = (
+                    User.username.ilike(search_value, escape=LIKE_ESCAPE_CHAR)
+                    | User.email.ilike(search_value, escape=LIKE_ESCAPE_CHAR)
+                )
                 stmt = stmt.where(search_condition)
                 base_stmt = base_stmt.where(search_condition)
 
@@ -85,6 +90,10 @@ class UsersService:
                 for user_id in user_ids
             }
             if user_ids:
+                authorizations_by_user = await list_user_authorizations_batch(
+                    [int(user_id) for user_id in user_ids],
+                    session=session,
+                )
                 keys = [f"user_dev_app:{uid}" for uid in user_ids]
                 app_rows = (
                     await session.execute(
@@ -128,9 +137,12 @@ class UsersService:
                         "enabled_task_count": int(task_row.enabled_task_count or 0),
                     }
 
+            else:
+                authorizations_by_user = {}
+
             data: List[Dict[str, Any]] = []
             for row in rows:
-                authorizations = await list_user_authorizations(int(row.id), session=session)
+                authorizations = authorizations_by_user.get(int(row.id), [])
                 current = authorizations[0] if authorizations else None
                 user_accounts = accounts_by_user.get(int(row.id), [])
                 tg_account_names = [self._account_display_name(account) for account in user_accounts]
@@ -180,11 +192,11 @@ class UsersService:
                 .limit(limit)
             )
             if search:
-                q = f"%{search.strip()}%"
+                q = contains_like_pattern(search.strip())
                 stmt = stmt.where(
-                    (Account.username.ilike(q))
-                    | (Account.phone.ilike(q))
-                    | (User.username.ilike(q))
+                    (Account.username.ilike(q, escape=LIKE_ESCAPE_CHAR))
+                    | (Account.phone.ilike(q, escape=LIKE_ESCAPE_CHAR))
+                    | (User.username.ilike(q, escape=LIKE_ESCAPE_CHAR))
                 )
             rows = (await session.execute(stmt)).all()
             return [
@@ -230,6 +242,18 @@ class UsersService:
                 for account_id in account_ids
             }
             if account_ids:
+                proxy_ids = {
+                    int(account.proxy_id)
+                    for account in accounts
+                    if getattr(account, "proxy_id", None)
+                }
+                proxy_by_id: Dict[int, Proxy] = {}
+                if proxy_ids:
+                    proxy_rows = (
+                        await session.execute(select(Proxy).where(Proxy.proxy_id.in_(proxy_ids)))
+                    ).scalars().all()
+                    proxy_by_id = {int(proxy.proxy_id): proxy for proxy in proxy_rows}
+
                 task_rows = (
                     await session.execute(
                         select(
@@ -315,10 +339,13 @@ class UsersService:
                     send_stats_by_account[account_id]["last_send_result"] = latest_row.result
                     send_stats_by_account[account_id]["last_send_error_message"] = latest_row.error_message
 
+            else:
+                proxy_by_id = {}
+
             items = []
             for a in accounts:
                 account_proxy_id = getattr(a, "proxy_id", None)
-                proxy = await session.get(Proxy, int(account_proxy_id)) if account_proxy_id else None
+                proxy = proxy_by_id.get(int(account_proxy_id)) if account_proxy_id else None
                 task_counts = task_counts_by_account.get(
                     str(a.account_id),
                     {"task_count": 0, "enabled_task_count": 0},
@@ -422,7 +449,7 @@ class UsersService:
             )
             await session.commit()
 
-        await get_account_manager()._close_client(str(account_id))
+        await close_client(get_account_manager(), str(account_id))
         return result
 
     async def list_account_send_logs(

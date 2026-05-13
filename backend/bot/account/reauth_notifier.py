@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Optional
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import func, select
 from telethon import Button
 from telethon.errors import (
     ChatWriteForbiddenError,
@@ -46,7 +46,7 @@ class ReauthNoticeItem:
 @dataclass(frozen=True)
 class ReauthTransitionResult:
     account_id: str
-    user_id: int
+    user_id: Optional[int]
     was_reauth_required: bool
     disabled_task_count: int
     authorization_end_at: Optional[datetime]
@@ -148,8 +148,8 @@ async def _send_reauth_notice(item: ReauthNoticeItem) -> bool:
                 [Button.inline("📱 重新绑定", data=f"acc_relogin:{item.account_id}")],
             ],
         )
-        await _record_notice_sent(item.account_id)
-        return True
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
         error_type = _classify_delivery_exception(exc)
         if error_type in {"blocked", "deactivated", "unreachable"}:
@@ -170,6 +170,8 @@ async def _send_reauth_notice(item: ReauthNoticeItem) -> bool:
                 exc,
             )
         return False
+    await _record_notice_sent(item.account_id)
+    return True
 
 
 async def mark_account_reauth_required(account_id: str, reason: str) -> Optional[ReauthTransitionResult]:
@@ -232,7 +234,7 @@ async def mark_account_reauth_required(account_id: str, reason: str) -> Optional
 
     return ReauthTransitionResult(
         account_id=str(account_id),
-        user_id=notice_item.user_id if notice_item is not None else 0,
+        user_id=notice_item.user_id if notice_item is not None else None,
         was_reauth_required=was_reauth_required,
         disabled_task_count=disabled_task_count,
         authorization_end_at=authorization_end_at,
@@ -254,6 +256,8 @@ class ReauthReminderRuntime:
         while self.running:
             try:
                 await self.scan_once()
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
                 logger.exception(f"账号重绑提醒扫描失败: {type(exc).__name__}: {exc!r}")
             await asyncio.sleep(self.CHECK_INTERVAL_SECONDS)
@@ -300,6 +304,42 @@ class ReauthReminderRuntime:
                 )
             ).all()
 
+            account_ids: list[str] = []
+            for account, _authorization_end_at in rows:
+                account_id = str(account.account_id)
+                if account_id not in account_ids:
+                    account_ids.append(account_id)
+
+            notice_values: dict[str, str] = {}
+            task_counts_by_account: dict[str, int] = {}
+            if account_ids:
+                notice_rows = (
+                    await session.execute(
+                        select(AppSetting.key, AppSetting.value).where(
+                            AppSetting.key.in_([_notice_key(account_id) for account_id in account_ids])
+                        )
+                    )
+                ).all()
+                notice_values = {str(key): str(value or "") for key, value in notice_rows}
+
+                task_count_rows = (
+                    await session.execute(
+                        select(
+                            ScheduledMessageTask.account_id,
+                            func.count(ScheduledMessageTask.task_id).label("task_count"),
+                        )
+                        .where(
+                            ScheduledMessageTask.account_id.in_(account_ids),
+                            ScheduledMessageTask.enabled == True,
+                        )
+                        .group_by(ScheduledMessageTask.account_id)
+                    )
+                ).all()
+                task_counts_by_account = {
+                    str(account_id): int(task_count or 0)
+                    for account_id, task_count in task_count_rows
+                }
+
             items: list[ReauthNoticeItem] = []
             seen_accounts: set[str] = set()
             for account, authorization_end_at in rows:
@@ -312,17 +352,8 @@ class ReauthReminderRuntime:
                 if tg_user_id is None:
                     continue
 
-                notice_state = await session.get(AppSetting, _notice_key(account_id))
-                if notice_state is not None and str(notice_state.value or "").strip() == today:
+                if notice_values.get(_notice_key(account_id), "").strip() == today:
                     continue
-
-                task_count = (
-                    await session.execute(
-                        select(ScheduledMessageTask).where(
-                            ScheduledMessageTask.account_id == account_id
-                        )
-                    )
-                ).scalars().all()
 
                 items.append(
                     ReauthNoticeItem(
@@ -330,7 +361,7 @@ class ReauthReminderRuntime:
                         user_id=int(account.user_id),
                         tg_user_id=int(tg_user_id),
                         account_label=_format_account_label(account),
-                        disabled_task_count=len(task_count),
+                        disabled_task_count=task_counts_by_account.get(account_id, 0),
                         authorization_end_at=authorization_end_at,
                         reason=str(account.reauth_reason or "unknown"),
                     )

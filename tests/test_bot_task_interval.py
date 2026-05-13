@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from backend.bot.handlers.task.editing import handle_interval_input, set_interval
+from backend.bot.handlers.core.callback_dispatch import _handle_set_hour_callback, _handle_set_interval_callback
 from backend.bot.state.fsm import FSMState, fsm_storage
 from backend.bot.ui.keyboards import INTERVAL_OPTIONS, get_interval_keyboard
 
@@ -23,24 +24,24 @@ class BotTaskIntervalTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("✏️ 自定义分钟", labels)
         self.assertIn("edit_interval_custom:task_1", data_values)
 
-    async def test_custom_interval_input_requires_more_than_sixty_minutes(self):
+    async def test_custom_interval_input_accepts_sixty_minutes(self):
         event = SimpleNamespace(respond=AsyncMock())
         fsm_storage.set_state(100, FSMState.WAIT_INTERVAL)
         fsm_storage.update_data(100, task_id="task_1")
 
-        with patch("backend.bot.handlers.task.editing.set_interval", AsyncMock()) as set_interval_mock:
+        with patch("backend.bot.handlers.task.editing.set_interval", AsyncMock(return_value=True)) as set_interval_mock:
             await handle_interval_input(event, 100, "task_1", "60")
 
-        set_interval_mock.assert_not_awaited()
-        event.respond.assert_awaited_once()
-        self.assertEqual(fsm_storage.get_state(100), FSMState.WAIT_INTERVAL)
+        set_interval_mock.assert_awaited_once_with(event, 100, "task_1", 60)
+        event.respond.assert_not_awaited()
+        self.assertEqual(fsm_storage.get_state(100), FSMState.NONE)
 
     async def test_custom_interval_input_accepts_more_than_sixty_minutes(self):
         event = SimpleNamespace(respond=AsyncMock())
         fsm_storage.set_state(100, FSMState.WAIT_INTERVAL)
         fsm_storage.update_data(100, task_id="task_1")
 
-        with patch("backend.bot.handlers.task.editing.set_interval", AsyncMock()) as set_interval_mock:
+        with patch("backend.bot.handlers.task.editing.set_interval", AsyncMock(return_value=True)) as set_interval_mock:
             await handle_interval_input(event, 100, "task_1", "90")
 
         set_interval_mock.assert_awaited_once_with(event, 100, "task_1", 90)
@@ -54,6 +55,46 @@ class BotTaskIntervalTests(unittest.IsolatedAsyncioTestCase):
 
         session_factory.assert_not_called()
         event.respond.assert_awaited_once()
+
+    async def test_custom_interval_input_rejects_above_max_and_keeps_state(self):
+        event = SimpleNamespace(respond=AsyncMock())
+        fsm_storage.set_state(100, FSMState.WAIT_INTERVAL)
+        fsm_storage.update_data(100, task_id="task_1")
+
+        with patch("backend.bot.handlers.task.editing.set_interval", AsyncMock()) as set_interval_mock:
+            await handle_interval_input(event, 100, "task_1", "43201")
+
+        set_interval_mock.assert_not_awaited()
+        event.respond.assert_awaited_once()
+        self.assertEqual(fsm_storage.get_state(100), FSMState.WAIT_INTERVAL)
+
+    async def test_custom_interval_input_keeps_state_when_set_interval_fails(self):
+        event = SimpleNamespace(respond=AsyncMock())
+        fsm_storage.set_state(100, FSMState.WAIT_INTERVAL)
+        fsm_storage.update_data(100, task_id="task_1")
+
+        with patch("backend.bot.handlers.task.editing.set_interval", AsyncMock(return_value=False)):
+            await handle_interval_input(event, 100, "task_1", "90")
+
+        self.assertEqual(fsm_storage.get_state(100), FSMState.WAIT_INTERVAL)
+
+    async def test_malformed_interval_callback_returns_parameter_error(self):
+        event = SimpleNamespace(answer=AsyncMock())
+
+        with patch("backend.bot.handlers.core.callback_dispatch.set_interval", AsyncMock()) as set_interval_mock:
+            await _handle_set_interval_callback(event, 100, ["set_interval", "task_1", "bad"])
+
+        set_interval_mock.assert_not_awaited()
+        event.answer.assert_awaited_once_with("参数错误", alert=True)
+
+    async def test_malformed_hour_callback_returns_parameter_error(self):
+        event = SimpleNamespace(answer=AsyncMock())
+
+        with patch("backend.bot.handlers.core.callback_dispatch.set_hour", AsyncMock()) as set_hour_mock:
+            await _handle_set_hour_callback(event, 100, ["set_hour", "task_1", "True", "bad"])
+
+        set_hour_mock.assert_not_awaited()
+        event.answer.assert_awaited_once_with("参数错误", alert=True)
 
 
 if __name__ == "__main__":

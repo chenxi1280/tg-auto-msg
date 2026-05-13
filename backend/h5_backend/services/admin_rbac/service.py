@@ -19,6 +19,7 @@ from backend.database.schema.models import (
     AdminRolePermission,
 )
 from backend.h5_backend.services.auth.service import get_auth_service
+from backend.h5_backend.services.shared.search import LIKE_ESCAPE_CHAR, contains_like_pattern
 
 ROLE_SUPER_ADMIN = "super_admin"
 ROLE_MASTER_AGENT = "master_agent"
@@ -587,11 +588,11 @@ class AdminRbacService:
             count_stmt = select(func.count(AdminAccount.id))
             normalized_search = (search or "").strip()
             if normalized_search:
-                keyword = f"%{normalized_search}%"
+                keyword = contains_like_pattern(normalized_search)
                 condition = or_(
-                    AdminAccount.username.ilike(keyword),
-                    AdminAccount.display_name.ilike(keyword),
-                    AdminAccount.contact_name.ilike(keyword),
+                    AdminAccount.username.ilike(keyword, escape=LIKE_ESCAPE_CHAR),
+                    AdminAccount.display_name.ilike(keyword, escape=LIKE_ESCAPE_CHAR),
+                    AdminAccount.contact_name.ilike(keyword, escape=LIKE_ESCAPE_CHAR),
                 )
                 stmt = stmt.where(condition)
                 count_stmt = count_stmt.where(condition)

@@ -229,8 +229,9 @@ SUCCESS_TASK_DELETED = "✅ 任务已删除。\n下一步：可返回任务页�
 SELECT_START_HOUR = "⏰ **设置发送时间段**\n\n请选择开始小时，或点击「🌐 全天」。"
 SELECT_END_HOUR = "⏰ **设置发送时间段**\n\n请选择结束小时，或点击「🌐 全天」。"
 SELECT_INTERVAL = "⏰ **设置重复间隔**\n\n请选择任务的重复执行间隔，最小 1 小时。"
-CUSTOM_INTERVAL_PROMPT = "✏️ **自定义重复间隔**\n\n请输入分钟数，必须大于 60。示例：`90`、`180`。"
-ERROR_INTERVAL_TOO_SHORT = "❌ 重复间隔最小为 1 小时。自定义分钟数必须大于 60。"
+CUSTOM_INTERVAL_PROMPT = "✏️ **自定义重复间隔**\n\n请输入分钟数，范围为 60 到 43200。示例：`60`、`90`、`180`。"
+ERROR_INTERVAL_TOO_SHORT = "❌ 重复间隔最小为 1 小时。"
+ERROR_INTERVAL_TOO_LONG = "❌ 重复间隔最大为 43200 分钟（30 天）。"
 ERROR_INTERVAL_INVALID = "❌ 请输入有效的分钟数，例如 `90`。"
 
 # ============ 确认消息 ============

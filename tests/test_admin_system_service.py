@@ -255,6 +255,64 @@ class AdminSystemServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.status_code, 400)
         self.assertEqual(raised.exception.detail, "购买链接格式无效，仅支持 Telegram 链接或公网 HTTP/HTTPS 商铺链接")
 
+    async def test_list_users_uses_batch_authorization_loader(self):
+        service = UsersService()
+        row = SimpleNamespace(
+            id=9,
+            username="user9",
+            email="u9@example.com",
+            is_active=True,
+            created_at=datetime(2026, 5, 8, 9, 0, 0),
+            account_count=1,
+        )
+        account = SimpleNamespace(
+            account_id="acc_1",
+            user_id=9,
+            username="alice",
+            first_name="Alice",
+            phone="+100000000",
+        )
+        authorization = SimpleNamespace(
+            start_at=datetime(2026, 5, 1, 0, 0, 0),
+            end_at=datetime(2026, 6, 1, 0, 0, 0),
+            status="active",
+        )
+
+        class _ListUsersSession:
+            def __init__(self):
+                self.calls = 0
+
+            async def execute(self, _stmt):
+                self.calls += 1
+                if self.calls == 1:
+                    return _ScalarResult(1)
+                if self.calls == 2:
+                    return _RowsResult([row])
+                if self.calls == 3:
+                    return _RowsResult([])
+                if self.calls == 4:
+                    return _ScalarsResult([account])
+                return _RowsResult([
+                    SimpleNamespace(user_id=9, task_count=3, enabled_task_count=2)
+                ])
+
+        @asynccontextmanager
+        async def fake_get_async_session():
+            yield _ListUsersSession()
+
+        with (
+            patch("backend.h5_backend.services.admin.user_service.get_async_session", new=fake_get_async_session),
+            patch(
+                "backend.h5_backend.services.admin.user_service.list_user_authorizations_batch",
+                AsyncMock(return_value={9: [authorization]}),
+            ) as batch_mock,
+        ):
+            result = await service.list_users()
+
+        batch_mock.assert_awaited_once()
+        self.assertEqual(result["items"][0]["authorization_count"], 1)
+        self.assertEqual(result["items"][0]["enabled_task_count"], 2)
+
     async def test_list_user_accounts_includes_send_summary(self):
         service = UsersService()
         user = SimpleNamespace(id=9)
@@ -265,6 +323,7 @@ class AdminSystemServiceTests(unittest.IsolatedAsyncioTestCase):
             first_name="Alice",
             phone="+100000000",
             developer_app_id=3,
+            proxy_id=5,
             is_active=True,
             is_banned=False,
             health_status="online",
@@ -285,10 +344,21 @@ class AdminSystemServiceTests(unittest.IsolatedAsyncioTestCase):
                 if self.calls == 2:
                     return _ScalarsResult([account])
                 if self.calls == 3:
+                    return _ScalarsResult([
+                        SimpleNamespace(
+                            proxy_id=5,
+                            proxy_type="socks5",
+                            host="sing-box",
+                            port=10801,
+                            region_code="hk",
+                            display_name="香港",
+                        )
+                    ])
+                if self.calls == 4:
                     return _RowsResult([
                         SimpleNamespace(account_id="acc_1", task_count=3, enabled_task_count=2)
                     ])
-                if self.calls == 4:
+                if self.calls == 5:
                     return _RowsResult([
                         SimpleNamespace(
                             account_id="acc_1",
@@ -316,6 +386,8 @@ class AdminSystemServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["tg_account_name"], "@alice")
+        self.assertEqual(result[0]["proxy_display_name"], "香港")
+        self.assertEqual(result[0]["proxy_endpoint"], "socks5://sing-box:10801")
         self.assertEqual(result[0]["task_count"], 3)
         self.assertEqual(result[0]["enabled_task_count"], 2)
         self.assertEqual(result[0]["send_log_count"], 5)

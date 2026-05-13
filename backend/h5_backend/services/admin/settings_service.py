@@ -14,14 +14,18 @@ from sqlalchemy import func, select
 from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import AppSetting, TaskLog, ActivationCard, User, UserAuthorization, UserAuthorizationCard
 from backend.config.core.settings import settings
-from backend.utils.url_validation import is_valid_button_url, is_valid_purchase_button_url
+from backend.utils.url_validation import is_valid_button_url
+from backend.h5_backend.services.shared.purchase_buttons import (
+    DEFAULT_PURCHASE_BUTTON_TEXT,
+    DEFAULT_PURCHASE_URL,
+    PURCHASE_SETTING_KEYS,
+    load_purchase_buttons_json,
+    normalize_purchase_buttons,
+)
 from backend.h5_backend.services.shared.audit import append_audit_log, mask_actor_name
 
 _NOTICE_URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
-DEFAULT_PURCHASE_URL = "https://t.me/"
-DEFAULT_PURCHASE_BUTTON_TEXT = "联系 Telegram 购买"
 DEFAULT_BOT_NOTICE_ENTRY_BUTTON_TEXT = "📢 公告栏"
-PURCHASE_SETTING_KEYS = ["purchase_url", "purchase_button_text", "purchase_buttons"]
 
 
 class SettingsService:
@@ -40,6 +44,8 @@ class SettingsService:
 
     @staticmethod
     def _is_valid_purchase_url(url: str) -> bool:
+        from backend.utils.url_validation import is_valid_purchase_button_url
+
         return is_valid_purchase_button_url(url)
 
     @classmethod
@@ -50,43 +56,16 @@ class SettingsService:
         legacy_url: str,
         legacy_button_text: str,
     ) -> List[Dict[str, str]]:
-        buttons: List[Dict[str, str]] = []
-        for index, item in enumerate((raw_buttons or [])[:2]):
-            text = str(item.get("text") or item.get("button_text") or "").strip()
-            url = str(item.get("url") or "").strip()
-            if not text and not url:
-                continue
-            if not url:
-                raise HTTPException(status_code=400, detail=f"购买按钮 {index + 1} 链接不能为空")
-            if not cls._is_valid_purchase_url(url):
-                raise HTTPException(status_code=400, detail=f"购买按钮 {index + 1} 链接格式无效，仅支持 Telegram 链接或公网 HTTP/HTTPS 商铺链接")
-            buttons.append(
-                {
-                    "text": text or (DEFAULT_PURCHASE_BUTTON_TEXT if index == 0 else f"购买入口 {index + 1}"),
-                    "url": url,
-                }
-            )
-
-        if buttons:
-            return buttons
-
-        fallback_url = (legacy_url or DEFAULT_PURCHASE_URL).strip()
-        fallback_text = (legacy_button_text or DEFAULT_PURCHASE_BUTTON_TEXT).strip()
-        if not cls._is_valid_purchase_url(fallback_url):
-            fallback_url = DEFAULT_PURCHASE_URL
-        return [{"text": fallback_text or DEFAULT_PURCHASE_BUTTON_TEXT, "url": fallback_url}]
+        return normalize_purchase_buttons(
+            raw_buttons,
+            legacy_url=legacy_url,
+            legacy_button_text=legacy_button_text,
+            strict=True,
+        )
 
     @staticmethod
     def _load_purchase_buttons_json(raw_value: Optional[str]) -> Optional[List[Dict[str, Any]]]:
-        if not raw_value:
-            return None
-        try:
-            parsed = json.loads(raw_value)
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(parsed, list):
-            return None
-        return [item for item in parsed if isinstance(item, dict)]
+        return load_purchase_buttons_json(raw_value)
 
     async def get_purchase_settings(self) -> Dict[str, Any]:
         async with get_async_session() as session:

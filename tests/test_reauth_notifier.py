@@ -80,8 +80,12 @@ class _ReminderSession:
         self.execute_count += 1
         if self.execute_count == 1:
             return _RowResult(self.rows)
-        account_id = self.rows[0][0].account_id if self.rows else ""
-        return _ScalarResult(rows=self.enabled_tasks.get(str(account_id), []))
+        if self.execute_count == 2:
+            return _RowResult([(key, value.value) for key, value in self.settings.items()])
+        return _RowResult([
+            (account_id, len(tasks))
+            for account_id, tasks in self.enabled_tasks.items()
+        ])
 
 
 def _session_ctx(session):
@@ -152,6 +156,7 @@ class ReauthNotifierTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(result)
         self.assertTrue(result.was_reauth_required)
         self.assertFalse(result.notice_sent)
+        self.assertIsNone(result.user_id)
         send_mock.assert_not_awaited()
 
     async def test_collect_due_reminders_skips_today_notice_and_expired_auth_is_not_queried(self):
@@ -178,6 +183,36 @@ class ReauthNotifierTests(unittest.IsolatedAsyncioTestCase):
             items = await notifier._collect_due_reminders()
 
         self.assertEqual(items, [])
+
+    async def test_collect_due_reminders_counts_only_enabled_tasks_in_batch(self):
+        account = Account(
+            account_id="acc-1",
+            user_id=9,
+            tg_user_id=10001,
+            username="sender",
+            string_session_encrypted="encrypted",
+            reauth_required=True,
+            reauth_reason="session_unauthorized",
+        )
+        session = _ReminderSession(
+            rows=[(account, datetime.now() + timedelta(days=3))],
+            enabled_tasks={
+                "acc-1": [
+                    ScheduledMessageTask(task_id="task-1", user_id=9, account_id="acc-1", title="任务1", enabled=True),
+                ]
+            },
+        )
+        notifier = ReauthReminderRuntime()
+
+        with (
+            patch("backend.bot.account.reauth_notifier.get_async_session", _session_ctx(session)),
+            patch("backend.bot.account.reauth_notifier._load_user_links", AsyncMock(return_value={9: 987654321})),
+        ):
+            items = await notifier._collect_due_reminders()
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].disabled_task_count, 1)
+        self.assertEqual(session.execute_count, 3)
 
     async def test_scan_once_sends_daily_reminder(self):
         notifier = ReauthReminderRuntime()

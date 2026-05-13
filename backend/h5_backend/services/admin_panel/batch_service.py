@@ -35,6 +35,7 @@ from backend.h5_backend.services.admin_panel.shared_helpers import (
 )
 from backend.h5_backend.services.shared.card_utils import generate_card_code
 from backend.h5_backend.services.shared.pagination import normalize_page
+from backend.h5_backend.services.shared.search import LIKE_ESCAPE_CHAR, contains_like_pattern
 
 
 MAX_COPY_CARD_COUNT = 40
@@ -643,8 +644,11 @@ class CardBatchService:
                 count_stmt = count_stmt.where(CardBatch.settlement_status == normalized_settlement)
             normalized_keyword = (keyword or "").strip()
             if normalized_keyword:
-                keyword_value = f"%{normalized_keyword}%"
-                keyword_condition = CardBatch.batch_id.ilike(keyword_value) | CardBatch.plan_code.ilike(keyword_value)
+                keyword_value = contains_like_pattern(normalized_keyword)
+                keyword_condition = (
+                    CardBatch.batch_id.ilike(keyword_value, escape=LIKE_ESCAPE_CHAR)
+                    | CardBatch.plan_code.ilike(keyword_value, escape=LIKE_ESCAPE_CHAR)
+                )
                 stmt = stmt.where(keyword_condition)
                 count_stmt = count_stmt.where(keyword_condition)
             total = int((await session.execute(count_stmt)).scalar_one() or 0)
@@ -742,11 +746,11 @@ class CardBatchService:
                 count_stmt = count_stmt.where(ActivationCard.card_source_type == normalized_source)
             normalized_keyword = (keyword or "").strip()
             if normalized_keyword:
-                keyword_value = f"%{normalized_keyword}%"
+                keyword_value = contains_like_pattern(normalized_keyword)
                 keyword_condition = (
-                    ActivationCard.card_code.ilike(keyword_value)
-                    | ActivationCard.batch_id.ilike(keyword_value)
-                    | ActivationCard.plan_code.ilike(keyword_value)
+                    ActivationCard.card_code.ilike(keyword_value, escape=LIKE_ESCAPE_CHAR)
+                    | ActivationCard.batch_id.ilike(keyword_value, escape=LIKE_ESCAPE_CHAR)
+                    | ActivationCard.plan_code.ilike(keyword_value, escape=LIKE_ESCAPE_CHAR)
                 )
                 stmt = stmt.where(keyword_condition)
                 count_stmt = count_stmt.where(keyword_condition)

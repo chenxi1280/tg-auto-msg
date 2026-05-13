@@ -28,6 +28,7 @@ from backend.h5_backend.services.admin_panel.shared_helpers import (
     append_audit,
     serialize_pricing_plan,
 )
+from backend.h5_backend.services.shared.search import LIKE_ESCAPE_CHAR, contains_like_pattern
 
 # ---------------------------------------------------------------------------
 # Constants (kept for backward compat; router imports MAX_COPY_CARD_COUNT)
@@ -157,11 +158,11 @@ class AdminPanelService:
         filters = []
         keyword = (search or "").strip()
         if keyword:
-            pattern = f"%{keyword}%"
+            pattern = contains_like_pattern(keyword)
             filters.append(
                 or_(
-                    PricingPlan.plan_code.ilike(pattern),
-                    PricingPlan.display_name.ilike(pattern),
+                    PricingPlan.plan_code.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
+                    PricingPlan.display_name.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
                 )
             )
         if is_active is not None:

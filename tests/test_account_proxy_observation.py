@@ -10,8 +10,11 @@ from backend.bot.account.proxy_observation import (
     mark_proxy_observation_success,
     proxy_observation_has_send_budget,
     proxy_observation_remaining_seconds,
+    reset_proxy_observation,
     start_proxy_observation,
 )
+from backend.database.schema.models import Account
+from backend.scheduler.core.task_runner import _lock_and_recheck_observation_budget
 
 
 def test_fixed_sing_box_regions_are_stable():
@@ -57,17 +60,131 @@ def test_proxy_observation_expires_without_manual_unlock():
 
 @pytest.mark.asyncio
 async def test_proxy_observation_success_count_is_capped():
-    now = datetime(2026, 5, 9, 10, 0, 0)
+    class FakeSession:
+        async def execute(self, statement):
+            assert "UPDATE accounts" in str(statement)
+            return SimpleNamespace(rowcount=0)
+
+    marked = await mark_proxy_observation_success(FakeSession(), "acc-1", now=datetime(2026, 5, 9, 10, 0, 0))
+
+    assert marked is False
+
+
+@pytest.mark.asyncio
+async def test_proxy_observation_success_mark_uses_atomic_update():
+    class FakeSession:
+        async def execute(self, statement):
+            text = str(statement)
+            assert "UPDATE accounts" in text
+            assert "proxy_observation_success_count" in text
+            return SimpleNamespace(rowcount=1)
+
+    marked = await mark_proxy_observation_success(FakeSession(), "acc-1", now=datetime(2026, 5, 9, 10, 0, 0))
+
+    assert marked is True
+
+
+def test_reset_proxy_observation_clears_window_but_keeps_counter_not_null():
     account = SimpleNamespace(
-        proxy_observation_until=now + timedelta(hours=1),
+        proxy_observation_started_at=datetime(2026, 5, 9, 10, 0, 0),
+        proxy_observation_until=datetime(2026, 5, 10, 10, 0, 0),
         proxy_observation_success_count=1,
     )
 
+    reset_proxy_observation(account)
+
+    assert account.proxy_observation_started_at is None
+    assert account.proxy_observation_until is None
+    assert account.proxy_observation_success_count == 0
+
+
+@pytest.mark.asyncio
+async def test_task_runner_claims_observation_budget_before_sending():
+    account = SimpleNamespace(
+        proxy_observation_until=datetime(2026, 5, 10, 10, 0, 0),
+        proxy_observation_success_count=0,
+    )
+    task = SimpleNamespace(
+        task_id="task-1",
+        title="task",
+        text="hello",
+        media_type="none",
+        buttons=None,
+        account_id="acc-1",
+        next_run_at=None,
+    )
+
     class FakeSession:
-        async def get(self, model, account_id):
+        def __init__(self):
+            self.executed = []
+
+        async def get(self, model, key):
+            assert model is Account
+            assert key == "acc-1"
             return account
 
-    count = await mark_proxy_observation_success(FakeSession(), "acc-1", now=now)
+        async def execute(self, statement, *_args, **_kwargs):
+            self.executed.append(str(statement))
+            return SimpleNamespace(rowcount=1)
 
-    assert count == 1
-    assert account.proxy_observation_success_count == 1
+    skipped, targets = await _lock_and_recheck_observation_budget(
+        task=task,
+        target_specs=[{"target": 1}, {"target": 2}],
+        session=FakeSession(),
+        now=1000,
+        advance_schedule=True,
+        trigger_source="scheduler",
+        account_display="@acc",
+    )
+
+    assert skipped is None
+    assert targets == [{"target": 1}]
+
+
+@pytest.mark.asyncio
+async def test_task_runner_skips_when_observation_budget_claim_loses_race():
+    account = SimpleNamespace(
+        proxy_observation_until=datetime(2026, 5, 10, 10, 0, 0),
+        proxy_observation_success_count=0,
+    )
+    task = SimpleNamespace(
+        task_id="task-1",
+        title="task",
+        text="hello",
+        media_type="none",
+        buttons=None,
+        account_id="acc-1",
+        next_run_at=None,
+    )
+
+    class FakeSession:
+        def __init__(self):
+            self.committed = False
+
+        async def get(self, model, key):
+            assert model is Account
+            assert key == "acc-1"
+            return account
+
+        async def execute(self, *_args, **_kwargs):
+            return SimpleNamespace(rowcount=0)
+
+        async def commit(self):
+            self.committed = True
+
+    session = FakeSession()
+    skipped, targets = await _lock_and_recheck_observation_budget(
+        task=task,
+        target_specs=[{"target": 1}, {"target": 2}],
+        session=session,
+        now=1000,
+        advance_schedule=True,
+        trigger_source="scheduler",
+        account_display="@acc",
+    )
+
+    assert skipped is not None
+    assert skipped.status == "skipped"
+    assert targets == []
+    assert task.next_run_at == int(account.proxy_observation_until.timestamp())
+    assert session.committed is True

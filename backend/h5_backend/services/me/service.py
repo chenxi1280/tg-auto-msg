@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import re
-import json
 import secrets
 import string
 from datetime import datetime, timedelta
@@ -25,7 +24,13 @@ from backend.database.schema.models import (
 )
 from backend.h5_backend.services.auth.service import get_auth_service
 from backend.utils.security.crypto import get_crypto_manager
-from backend.utils.url_validation import is_valid_purchase_button_url
+from backend.h5_backend.services.shared.purchase_buttons import (
+    DEFAULT_PURCHASE_BUTTON_TEXT,
+    DEFAULT_PURCHASE_URL,
+    PURCHASE_SETTING_KEYS,
+    load_purchase_buttons_json,
+    normalize_purchase_buttons,
+)
 from backend.h5_backend.services.licensing.service import (
     activate_card_for_user,
     ensure_can_add_tg_account,
@@ -34,10 +39,7 @@ from backend.h5_backend.services.licensing.service import (
     list_user_authorizations,
 )
 
-DEFAULT_PURCHASE_URL = "https://t.me/"
-DEFAULT_PURCHASE_BUTTON_TEXT = "联系 Telegram 购买"
 DEFAULT_BOT_NOTICE_ENTRY_BUTTON_TEXT = "📢 公告栏"
-PURCHASE_SETTING_KEYS = ["purchase_url", "purchase_button_text", "purchase_buttons"]
 _NOTICE_URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
 
 
@@ -116,15 +118,7 @@ class MeService:
 
     @staticmethod
     def _load_purchase_buttons_json(raw_value: Optional[str]) -> Optional[List[Dict[str, Any]]]:
-        if not raw_value:
-            return None
-        try:
-            parsed = json.loads(raw_value)
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(parsed, list):
-            return None
-        return [item for item in parsed if isinstance(item, dict)]
+        return load_purchase_buttons_json(raw_value)
 
     @staticmethod
     def _normalize_purchase_buttons(
@@ -133,29 +127,12 @@ class MeService:
         legacy_url: str,
         legacy_button_text: str,
     ) -> List[Dict[str, str]]:
-        buttons: List[Dict[str, str]] = []
-        for index, item in enumerate((raw_buttons or [])[:2]):
-            text = str(item.get("text") or item.get("button_text") or "").strip()
-            url = str(item.get("url") or "").strip()
-            if not url or not is_valid_purchase_button_url(url):
-                continue
-            buttons.append(
-                {
-                    "text": text or (DEFAULT_PURCHASE_BUTTON_TEXT if index == 0 else f"购买入口 {index + 1}"),
-                    "url": url,
-                }
-            )
-        if buttons:
-            return buttons
-        fallback_url = (legacy_url or DEFAULT_PURCHASE_URL).strip()
-        if not is_valid_purchase_button_url(fallback_url):
-            fallback_url = DEFAULT_PURCHASE_URL
-        return [
-            {
-                "text": (legacy_button_text or DEFAULT_PURCHASE_BUTTON_TEXT).strip() or DEFAULT_PURCHASE_BUTTON_TEXT,
-                "url": fallback_url,
-            }
-        ]
+        return normalize_purchase_buttons(
+            raw_buttons,
+            legacy_url=legacy_url,
+            legacy_button_text=legacy_button_text,
+            strict=False,
+        )
 
     async def get_current_authorization(self, user_id: int) -> Optional[Dict[str, Any]]:
         status = await self.get_authorization_status(user_id)

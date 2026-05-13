@@ -21,6 +21,7 @@ from sqlalchemy import Select, and_, func, select
 from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import AdminAuditLog
 from backend.h5_backend.services.shared.audit import append_audit_log, mask_actor_name
+from backend.h5_backend.services.shared.search import LIKE_ESCAPE_CHAR, contains_like_pattern
 
 # ---------------------------------------------------------------------------
 # Constants (kept here for backward compatibility; other modules may import)
@@ -294,10 +295,11 @@ class AdminLicenseService:
             conditions.append(AdminAuditLog.developer_app_id == int(developer_app_id))
         normalized_keyword = (keyword or "").strip()
         if normalized_keyword:
+            keyword_value = contains_like_pattern(normalized_keyword)
             keyword_condition = (
-                AdminAuditLog.actor.ilike(f"%{normalized_keyword}%")
-                | AdminAuditLog.action.ilike(f"%{normalized_keyword}%")
-                | AdminAuditLog.target_id.ilike(f"%{normalized_keyword}%")
+                AdminAuditLog.actor.ilike(keyword_value, escape=LIKE_ESCAPE_CHAR)
+                | AdminAuditLog.action.ilike(keyword_value, escape=LIKE_ESCAPE_CHAR)
+                | AdminAuditLog.target_id.ilike(keyword_value, escape=LIKE_ESCAPE_CHAR)
             )
             conditions.append(keyword_condition)
         if conditions:

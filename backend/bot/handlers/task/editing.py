@@ -29,6 +29,9 @@ from backend.bot.ui.messages import *
 from backend.database.schema.models import MediaType, ScheduledMessageTask, TaskTriggerMode
 from backend.database.runtime.session import get_async_session
 
+MIN_REPEAT_INTERVAL_MINUTES = 60
+MAX_REPEAT_INTERVAL_MINUTES = 43200
+
 
 async def _show_task_settings(event, user_id: int, task_id: str):
     from backend.bot.handlers.task.management import show_task_settings
@@ -433,24 +436,30 @@ async def start_custom_interval_input(event, user_id: int, task_id: str):
 
 async def set_interval(event, user_id: int, task_id: str, interval: int):
     """设置重复间隔。"""
-    if int(interval) < 60:
+    if interval < MIN_REPEAT_INTERVAL_MINUTES:
         await _notify_event(event, ERROR_INTERVAL_TOO_SHORT, alert=True)
-        return
+        return False
+    if interval > MAX_REPEAT_INTERVAL_MINUTES:
+        await _notify_event(event, ERROR_INTERVAL_TOO_LONG, alert=True)
+        return False
 
     async with get_async_session() as session:
         task = await _get_user_task(session, task_id, user_id)
-        if task:
-            task.repeat_interval_min = interval
-            if task.enabled:
-                now_ts = int(datetime.now().timestamp())
-                start_at_ts = int(task.start_at or 0)
-                if start_at_ts > 0:
-                    task.next_run_at = max(now_ts + interval * 60, start_at_ts)
-                else:
-                    task.next_run_at = now_ts + interval * 60
-            await session.commit()
-            await _notify_event(event, SUCCESS_INTERVAL_UPDATED.format(interval=interval))
-            await _show_task_settings(event, user_id, task_id)
+        if not task:
+            await _notify_event(event, "任务不存在或无权限", alert=True)
+            return False
+        task.repeat_interval_min = interval
+        if task.enabled:
+            now_ts = int(datetime.now().timestamp())
+            start_at_ts = int(task.start_at or 0)
+            if start_at_ts > 0:
+                task.next_run_at = max(now_ts + interval * 60, start_at_ts)
+            else:
+                task.next_run_at = now_ts + interval * 60
+        await session.commit()
+        await _notify_event(event, SUCCESS_INTERVAL_UPDATED.format(interval=interval))
+        await _show_task_settings(event, user_id, task_id)
+        return True
 
 
 async def handle_interval_input(event, user_id: int, task_id: str, text: str):
@@ -462,12 +471,16 @@ async def handle_interval_input(event, user_id: int, task_id: str, text: str):
         await event.respond(ERROR_INTERVAL_INVALID)
         return
 
-    if interval <= 60:
+    if interval < MIN_REPEAT_INTERVAL_MINUTES:
         await event.respond(ERROR_INTERVAL_TOO_SHORT)
         return
+    if interval > MAX_REPEAT_INTERVAL_MINUTES:
+        await event.respond(ERROR_INTERVAL_TOO_LONG)
+        return
 
-    await set_interval(event, user_id, task_id, interval)
-    fsm_storage.reset_state(user_id)
+    updated = await set_interval(event, user_id, task_id, interval)
+    if updated:
+        fsm_storage.reset_state(user_id)
 
 
 async def start_edit_hours(event, user_id: int, task_id: str):

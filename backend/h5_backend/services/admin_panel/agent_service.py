@@ -32,6 +32,7 @@ from backend.h5_backend.services.admin_panel.shared_helpers import (
     visible_account_ids,
 )
 from backend.h5_backend.services.shared.pagination import normalize_page
+from backend.h5_backend.services.shared.search import LIKE_ESCAPE_CHAR, contains_like_pattern
 
 
 class AgentHierarchyService:
@@ -243,12 +244,12 @@ class AgentHierarchyService:
             )
             normalized_search = (search or "").strip()
             if normalized_search:
-                search_value = f"%{normalized_search}%"
+                search_value = contains_like_pattern(normalized_search)
                 search_condition = (
-                    AdminAccount.username.ilike(search_value)
-                    | AdminAccount.display_name.ilike(search_value)
-                    | AdminAccount.contact_name.ilike(search_value)
-                    | AdminAccount.contact_phone.ilike(search_value)
+                    AdminAccount.username.ilike(search_value, escape=LIKE_ESCAPE_CHAR)
+                    | AdminAccount.display_name.ilike(search_value, escape=LIKE_ESCAPE_CHAR)
+                    | AdminAccount.contact_name.ilike(search_value, escape=LIKE_ESCAPE_CHAR)
+                    | AdminAccount.contact_phone.ilike(search_value, escape=LIKE_ESCAPE_CHAR)
                 )
                 stmt = stmt.where(search_condition)
                 count_stmt = count_stmt.where(search_condition)

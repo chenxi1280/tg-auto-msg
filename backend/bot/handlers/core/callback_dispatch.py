@@ -96,7 +96,11 @@ async def _handle_set_interval_callback(event, user_id: int, parts: list[str]):
         await event.answer("参数错误", alert=True)
         return
     task_id = parts[1]
-    interval = int(parts[2])
+    try:
+        interval = int(parts[2])
+    except (TypeError, ValueError):
+        await event.answer("参数错误", alert=True)
+        return
     await set_interval(event, user_id, task_id, interval)
 
 
@@ -106,7 +110,11 @@ async def _handle_set_hour_callback(event, user_id: int, parts: list[str]):
         return
     task_id = parts[1]
     is_start = parts[2] == "True"
-    hour = int(parts[3])
+    try:
+        hour = int(parts[3])
+    except (TypeError, ValueError):
+        await event.answer("参数错误", alert=True)
+        return
     await set_hour(event, user_id, task_id, is_start, hour)
 
 

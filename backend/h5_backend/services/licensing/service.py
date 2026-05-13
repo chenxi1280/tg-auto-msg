@@ -296,6 +296,27 @@ async def _sync_expired_slots(session: AsyncSession, *, user_id: Optional[int] =
         await session.flush()
 
 
+async def _sync_expired_slots_for_users(session: AsyncSession, user_ids: List[int]) -> None:
+    normalized_user_ids = [int(user_id) for user_id in user_ids]
+    if not normalized_user_ids:
+        return
+
+    now = datetime.now()
+    rows = (
+        await session.execute(
+            select(UserAuthorization).where(
+                UserAuthorization.user_id.in_(normalized_user_ids),
+                UserAuthorization.status == "active",
+                UserAuthorization.end_at <= now,
+            )
+        )
+    ).scalars().all()
+    for row in rows:
+        row.status = "expired"
+    if rows:
+        await session.flush()
+
+
 def _slot_priority(slot: UserAuthorization, *, now: datetime, accounts_by_id: Dict[str, Account]) -> tuple:
     account = accounts_by_id.get(str(slot.current_account_id or ""))
     return (
@@ -673,6 +694,116 @@ async def list_user_authorizations(user_id: int, session: Optional[AsyncSession]
         return await _list_user_authorizations(user_id, session)
     async with get_async_session() as own_session:
         return await _list_user_authorizations(user_id, own_session)
+
+
+async def list_user_authorizations_batch(
+    user_ids: List[int],
+    session: AsyncSession,
+) -> Dict[int, List[AuthorizationRecord]]:
+    """Load one current authorization record per user without per-user queries."""
+    normalized_user_ids = [int(user_id) for user_id in user_ids]
+    if not normalized_user_ids:
+        return {}
+
+    await _sync_expired_slots_for_users(session, normalized_user_ids)
+    now = datetime.now()
+    authorization_rows = (
+        await session.execute(
+            select(UserAuthorization)
+            .where(UserAuthorization.user_id.in_(normalized_user_ids))
+            .order_by(UserAuthorization.user_id.asc(), UserAuthorization.created_at.asc())
+        )
+    ).scalars().all()
+    if not authorization_rows:
+        return {user_id: [] for user_id in normalized_user_ids}
+
+    account_rows = (
+        await session.execute(
+            select(Account)
+            .where(Account.user_id.in_(normalized_user_ids))
+            .order_by(Account.user_id.asc(), Account.created_at.asc())
+        )
+    ).scalars().all()
+    accounts_by_id = {str(account.account_id): account for account in account_rows}
+    accounts_by_user: Dict[int, List[Account]] = {}
+    for account in account_rows:
+        accounts_by_user.setdefault(int(account.user_id), []).append(account)
+
+    selected_by_user: Dict[int, UserAuthorization] = {}
+    for authorization in authorization_rows:
+        user_id = int(authorization.user_id)
+        current = selected_by_user.get(user_id)
+        if current is None or _slot_priority(
+            authorization,
+            now=now,
+            accounts_by_id=accounts_by_id,
+        ) > _slot_priority(
+            current,
+            now=now,
+            accounts_by_id=accounts_by_id,
+        ):
+            selected_by_user[user_id] = authorization
+
+    authorization_ids = [str(item.authorization_id) for item in selected_by_user.values()]
+    primary_accounts_by_user: Dict[int, Optional[Account]] = {}
+    for user_id in normalized_user_ids:
+        selected = selected_by_user.get(user_id)
+        primary_account = accounts_by_id.get(str(selected.current_account_id or "")) if selected is not None else None
+        if primary_account is None and accounts_by_user.get(user_id):
+            primary_account = max(accounts_by_user[user_id], key=_account_priority)
+        primary_accounts_by_user[user_id] = primary_account
+
+    card_counts = {authorization_id: 0 for authorization_id in authorization_ids}
+    if authorization_ids:
+        count_rows = (
+            await session.execute(
+                select(
+                    UserAuthorizationCard.authorization_id,
+                    func.count(UserAuthorizationCard.id).label("card_count"),
+                )
+                .where(UserAuthorizationCard.authorization_id.in_(authorization_ids))
+                .group_by(UserAuthorizationCard.authorization_id)
+            )
+        ).all()
+        for authorization_id, card_count in count_rows:
+            card_counts[str(authorization_id)] = int(card_count or 0)
+
+    card_codes_by_authorization: Dict[str, list[str]] = {authorization_id: [] for authorization_id in authorization_ids}
+    if authorization_ids:
+        card_rows = (
+            await session.execute(
+                select(UserAuthorizationCard.authorization_id, ActivationCard.card_code)
+                .join(ActivationCard, ActivationCard.id == UserAuthorizationCard.activation_card_id)
+                .where(UserAuthorizationCard.authorization_id.in_(authorization_ids))
+                .order_by(UserAuthorizationCard.authorization_id.asc(), UserAuthorizationCard.applied_at.asc(), UserAuthorizationCard.id.asc())
+            )
+        ).all()
+        for authorization_id, card_code in card_rows:
+            card_codes_by_authorization.setdefault(str(authorization_id), []).append(card_code)
+
+    result: Dict[int, List[AuthorizationRecord]] = {user_id: [] for user_id in normalized_user_ids}
+    for user_id, authorization in selected_by_user.items():
+        authorization_id = str(authorization.authorization_id)
+        codes = card_codes_by_authorization.get(authorization_id, [])
+        remaining_days = max(0, int((authorization.end_at - now).total_seconds() // 86400)) if authorization.end_at else 0
+        account = primary_accounts_by_user.get(user_id)
+        result[user_id] = [
+            AuthorizationRecord(
+                authorization_id=authorization_id,
+                account_id=str(account.account_id) if account is not None else authorization.current_account_id,
+                account_name=_account_display_name(account),
+                status=authorization.status,
+                duration_days=int(authorization.total_duration_days or 0),
+                start_at=authorization.start_at,
+                end_at=authorization.end_at,
+                card_count=card_counts.get(authorization_id, 0),
+                remaining_days=remaining_days,
+                grant_source=getattr(authorization, "grant_source", None),
+                source_card_code_masked=_mask_card_code(codes[0]) if codes else None,
+                latest_card_code_masked=_mask_card_code(codes[-1]) if codes else None,
+            )
+        ]
+    return result
 
 
 async def _list_user_authorizations(user_id: int, session: AsyncSession) -> List[AuthorizationRecord]:

@@ -14,6 +14,7 @@ from backend.bot.account.manager import AccountManager, get_account_manager
 from backend.bot.account.reauth import is_reauth_required_account
 from backend.bot.account.reauth_notifier import mark_account_reauth_required
 from backend.bot.account.proxy_observation import (
+    claim_proxy_observation_send_budget,
     is_proxy_observation_active,
     proxy_observation_has_send_budget,
 )
@@ -157,6 +158,28 @@ def _build_summary(
     )
 
 
+def _defer_task_until_observation_end(task: ScheduledMessageTask, *, now: int, account) -> None:
+    until = getattr(account, "proxy_observation_until", None)
+    task.next_run_at = max(now + 60, int(until.timestamp())) if until is not None else now + 60
+
+
+async def _mark_reauth_required_and_defer(
+    *,
+    task: ScheduledMessageTask,
+    account,
+    session,
+    now: int,
+    advance_schedule: bool,
+) -> None:
+    await mark_account_reauth_required(
+        task.account_id,
+        str(getattr(account, "reauth_reason", "") or "session_unauthorized"),
+    )
+    if advance_schedule:
+        task.next_run_at = now + max(1, int(task.repeat_interval_min or 1)) * 60
+        await session.commit()
+
+
 def _target_label(spec: dict) -> str:
     title = spec.get("title")
     if title:
@@ -213,13 +236,10 @@ async def _validate_and_resolve(
         account = await account_manager.get_account(task.account_id)
         account_display = _account_display_name(account, task.account_id)
         if account and is_reauth_required_account(account):
-            await mark_account_reauth_required(
-                task.account_id,
-                str(getattr(account, "reauth_reason", "") or "session_unauthorized"),
+            await _mark_reauth_required_and_defer(
+                task=task, account=account, session=session,
+                now=now, advance_schedule=advance_schedule,
             )
-            if advance_schedule:
-                task.next_run_at = now + max(1, int(task.repeat_interval_min or 1)) * 60
-                await session.commit()
             return _build_summary(
                 task=task, trigger_source=trigger_source,
                 status="skipped", total_targets=0, success_count=0, failed_count=0,
@@ -228,10 +248,8 @@ async def _validate_and_resolve(
             )
         if account and is_proxy_observation_active(account) and not proxy_observation_has_send_budget(account):
             if advance_schedule:
-                until = getattr(account, "proxy_observation_until", None)
-                if until is not None:
-                    task.next_run_at = max(now + 60, int(until.timestamp()))
-                    await session.commit()
+                _defer_task_until_observation_end(task, now=now, account=account)
+                await session.commit()
             return _build_summary(
                 task=task, trigger_source=trigger_source,
                 status="skipped", total_targets=0, success_count=0, failed_count=0,
@@ -459,15 +477,27 @@ async def _lock_and_recheck_observation_budget(
 
     if not proxy_observation_has_send_budget(account):
         if advance_schedule:
-            until = getattr(account, "proxy_observation_until", None)
-            if until is not None:
-                task.next_run_at = max(now + 60, int(until.timestamp()))
-                await session.commit()
+            _defer_task_until_observation_end(task, now=now, account=account)
+            await session.commit()
         return (
             _build_summary(
                 task=task, trigger_source=trigger_source,
                 status="skipped", total_targets=0, success_count=0, failed_count=0,
                 error_summary="账号正在代理观察期内，已达到 24 小时观察期发送上限",
+                account_display=account_display,
+            ),
+            [],
+        )
+
+    if not await claim_proxy_observation_send_budget(session, account_id):
+        if advance_schedule:
+            _defer_task_until_observation_end(task, now=now, account=account)
+            await session.commit()
+        return (
+            _build_summary(
+                task=task, trigger_source=trigger_source,
+                status="skipped", total_targets=0, success_count=0, failed_count=0,
+                error_summary="账号正在代理观察期内，发送预算已被其他任务占用",
                 account_display=account_display,
             ),
             [],

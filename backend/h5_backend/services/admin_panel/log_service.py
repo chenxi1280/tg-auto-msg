@@ -24,6 +24,7 @@ from backend.h5_backend.services.admin_panel.shared_helpers import (
     serialize_operation_log,
 )
 from backend.h5_backend.services.shared.pagination import normalize_page
+from backend.h5_backend.services.shared.search import LIKE_ESCAPE_CHAR, contains_like_pattern
 
 
 class OperationLogService:
@@ -216,11 +217,11 @@ class OperationLogService:
                 count_stmt = count_stmt.where(AdminAuditLog.target_type == normalized_target)
             normalized_keyword = (keyword or "").strip()
             if normalized_keyword:
-                keyword_value = f"%{normalized_keyword}%"
+                keyword_value = contains_like_pattern(normalized_keyword)
                 keyword_condition = (
-                    AdminAuditLog.actor.ilike(keyword_value)
-                    | AdminAuditLog.action.ilike(keyword_value)
-                    | AdminAuditLog.target_id.ilike(keyword_value)
+                    AdminAuditLog.actor.ilike(keyword_value, escape=LIKE_ESCAPE_CHAR)
+                    | AdminAuditLog.action.ilike(keyword_value, escape=LIKE_ESCAPE_CHAR)
+                    | AdminAuditLog.target_id.ilike(keyword_value, escape=LIKE_ESCAPE_CHAR)
                 )
                 stmt = stmt.where(keyword_condition)
                 count_stmt = count_stmt.where(keyword_condition)

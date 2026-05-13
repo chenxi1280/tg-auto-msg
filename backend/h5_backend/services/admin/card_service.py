@@ -21,6 +21,7 @@ from backend.database.schema.models import (
 from backend.h5_backend.services.shared.audit import append_audit_log, mask_actor_name
 from backend.h5_backend.services.shared.card_utils import CARD_ALPHABET, generate_card_code
 from backend.h5_backend.services.shared.pagination import paginate_items
+from backend.h5_backend.services.shared.search import LIKE_ESCAPE_CHAR, contains_like_pattern
 from backend.h5_backend.services.shared.serializers import serialize_pricing_plan
 
 MAX_CARD_EXPORT_ROWS = 5000
@@ -224,10 +225,10 @@ class CardsService:
         if is_active is not None:
             conditions.append(ActivationCard.is_active.is_(is_active))
         if keyword:
-            keyword_value = f"%{keyword.strip()}%"
+            keyword_value = contains_like_pattern(keyword.strip())
             conditions.append(
-                ActivationCard.card_code.ilike(keyword_value)
-                | ActivationCard.plan_code.ilike(keyword_value)
+                ActivationCard.card_code.ilike(keyword_value, escape=LIKE_ESCAPE_CHAR)
+                | ActivationCard.plan_code.ilike(keyword_value, escape=LIKE_ESCAPE_CHAR)
             )
         if conditions:
             stmt = stmt.where(and_(*conditions))
