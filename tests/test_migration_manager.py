@@ -1,8 +1,11 @@
+import io
 import unittest
 from contextlib import asynccontextmanager
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from backend.database.runtime import migration_cli
 from backend.database.runtime.migration_manager import MigrationFile, apply_pending_migrations, rollback_migrations
 
 
@@ -10,6 +13,7 @@ class _FakeConnection:
     def __init__(self):
         self.calls = []
         self.query_rows = []
+        self.run_sync_calls = []
 
     async def execute(self, statement, params=None):
         self.calls.append((str(statement), params))
@@ -17,6 +21,9 @@ class _FakeConnection:
         if "from schema_migrations" in sql:
             return _FakeMappingsResult(self.query_rows)
         return None
+
+    async def run_sync(self, fn):
+        self.run_sync_calls.append(fn)
 
 
 class _FakeMappingsResult:
@@ -40,6 +47,32 @@ class _FakeEngine:
 
 
 class MigrationManagerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_migration_cli_apply_bootstraps_model_tables_before_migrations(self):
+        connection = _FakeConnection()
+        engine = _FakeEngine(connection)
+        calls = []
+
+        async def fake_run_sync(fn):
+            connection.run_sync_calls.append(fn)
+            calls.append("create_all")
+
+        async def fake_apply_pending_migrations(received_engine):
+            self.assertIs(received_engine, engine)
+            calls.append("apply_migrations")
+            return {"total": 1, "applied": 1, "skipped": 0}
+
+        connection.run_sync = fake_run_sync
+        with patch.object(migration_cli, "engine", engine), patch.object(
+            migration_cli,
+            "apply_pending_migrations",
+            fake_apply_pending_migrations,
+        ):
+            with redirect_stdout(io.StringIO()):
+                await migration_cli._run_apply()
+
+        self.assertEqual(calls, ["create_all", "apply_migrations"])
+        self.assertEqual(connection.run_sync_calls, [migration_cli.Base.metadata.create_all])
+
     async def test_apply_pending_migrations_accepts_legacy_checksum_for_023(self):
         connection = _FakeConnection()
         engine = _FakeEngine(connection)

@@ -13,6 +13,7 @@ from backend.database.runtime.migration_manager import (
     rollback_migrations,
 )
 from backend.database.runtime.session import engine
+from backend.database.schema.models import Base
 
 
 def _json_default(obj: Any) -> Any:
@@ -22,6 +23,9 @@ def _json_default(obj: Any) -> Any:
 
 
 async def _run_apply() -> None:
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
     result = await apply_pending_migrations(engine)
     print(json.dumps(result, ensure_ascii=False, indent=2, default=_json_default))
 
