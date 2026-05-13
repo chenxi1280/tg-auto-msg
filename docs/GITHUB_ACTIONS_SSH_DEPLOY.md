@@ -112,6 +112,7 @@ ADMIN_BOOTSTRAP_PASSWORD=
 
 - [.github/workflows/python-checks.yml](/Users/xida/PycharmProjects/tg-auto-msg/.github/workflows/python-checks.yml)
 - [.github/workflows/deploy-production.yml](/Users/xida/PycharmProjects/tg-auto-msg/.github/workflows/deploy-production.yml)
+- [.github/workflows/deploy-secondary-production.yml](/Users/xida/PycharmProjects/tg-auto-msg/.github/workflows/deploy-secondary-production.yml)
 
 ### `Python Checks`
 
@@ -144,6 +145,42 @@ ADMIN_BOOTSTRAP_PASSWORD=
 ```bash
 bash deploy/release.sh --host production-server --base-dir "${PRODUCTION_BASE_DIR:-/data/tgmsg}"
 ```
+
+### `Deploy Secondary Production`
+
+触发：
+
+- `workflow_dispatch`
+
+用途：
+
+- 发布到第二台业务服务器
+- 使用同一套 GHCR 镜像名与代码版本
+- 通过独立 GitHub Environment `production-secondary` 读取第二套 SSH 和目录变量
+
+第二套必填 Secrets：
+
+- `SECONDARY_PRODUCTION_SSH_PRIVATE_KEY`
+- `SECONDARY_PRODUCTION_HOST`
+  - 当前第二套服务器：`47.251.126.134`
+- `SECONDARY_PRODUCTION_USER`
+- `GHCR_TOKEN`
+
+第二套可选 Secret：
+
+- `SECONDARY_PRODUCTION_PORT`
+- `GHCR_USERNAME`
+
+第二套 Variables：
+
+- `SECONDARY_PRODUCTION_BASE_DIR`
+  - 默认 `/data/tgmsg`
+  - 新服务器独立运行时可以继续使用默认值
+- `SECONDARY_RELEASE_BRANCHES`
+  - 默认 `release main master`
+- `SECONDARY_TGMSG_FRONTEND_STATIC_BASE_DIR`
+  - 默认 `/data/infra/www/tgmsgus.telema.cn`
+  - 发布脚本会把前端静态文件释放到该目录下的 `current`
 
 ## 5. 服务器侧实际执行什么
 
