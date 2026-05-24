@@ -92,6 +92,24 @@ class _ReminderSession:
         ])
 
 
+class _NoticeJoinSession(_ReminderSession):
+    async def execute(self, statement):
+        self.execute_count += 1
+        if self.execute_count == 1:
+            return _RowResult(self.rows)
+        if self.execute_count == 2:
+            return _RowResult([(key, value.value) for key, value in self.settings.items()])
+        if self.execute_count == 3:
+            compiled_sql = str(statement.compile(compile_kwargs={"literal_binds": True})).upper()
+            if "LEFT OUTER JOIN" in compiled_sql:
+                return _RowResult(self.notice_accounts)
+            return _RowResult([])
+        return _RowResult([
+            (account_id, len(tasks))
+            for account_id, tasks in self.enabled_tasks.items()
+        ])
+
+
 def _session_ctx(session):
     @asynccontextmanager
     async def _ctx():
@@ -257,6 +275,41 @@ class ReauthNotifierTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].account_id, "acc-expired")
         self.assertEqual(items[0].authorization_end_at, datetime(2026, 5, 1, 12, 0, 0))
+
+    async def test_collect_due_reminders_includes_notice_state_without_authorization_row(self):
+        account = Account(
+            account_id="acc-no-auth",
+            user_id=9,
+            tg_user_id=10001,
+            username="sender",
+            string_session_encrypted="encrypted",
+            reauth_required=True,
+            reauth_reason="session_unauthorized",
+        )
+        session = _NoticeJoinSession(
+            rows=[],
+            settings={
+                "reauth_notice:acc-no-auth": AppSetting(
+                    key="reauth_notice:acc-no-auth",
+                    value='{"count":1,"first_sent_date":"2026-05-01","last_sent_date":"2026-05-01"}',
+                )
+            },
+            enabled_tasks={"acc-no-auth": []},
+            notice_accounts=[(account, None)],
+        )
+        notifier = ReauthReminderRuntime()
+
+        with (
+            patch("backend.bot.account.reauth_notifier.get_async_session", _session_ctx(session)),
+            patch("backend.bot.account.reauth_notifier._load_user_links", AsyncMock(return_value={9: 987654321})),
+            patch("backend.bot.account.reauth_notifier.datetime") as datetime_mock,
+        ):
+            datetime_mock.now.return_value = datetime(2026, 5, 2, 9, 0, 0)
+            items = await notifier._collect_due_reminders()
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].account_id, "acc-no-auth")
+        self.assertIsNone(items[0].authorization_end_at)
 
     async def test_collect_due_reminders_ignores_old_notice_after_account_recovers(self):
         account = Account(

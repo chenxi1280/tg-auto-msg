@@ -105,6 +105,71 @@ class DeveloperAppCredentialRotationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(update_kwargs["reauth_reason"])
         self.assertEqual(update_kwargs["developer_app_version"], 2)
 
+    async def test_account_without_developer_app_uses_environment_credentials_version(self):
+        account = SimpleNamespace(
+            account_id="acc-env",
+            developer_app_id=None,
+            developer_app_version=1,
+            proxy_id=None,
+            string_session_encrypted="encrypted-session",
+            reauth_required=False,
+            reauth_reason=None,
+        )
+        manager = SimpleNamespace(
+            _clients={},
+            _locks={},
+            get_account=AsyncMock(return_value=account),
+            get_client_lock=AsyncMock(),
+            update_health_status=AsyncMock(),
+            update_account=AsyncMock(),
+        )
+
+        class _Lock:
+            async def __aenter__(self):
+                return None
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        manager.get_client_lock.return_value = _Lock()
+
+        class _Client:
+            def __init__(self, *_args, **kwargs):
+                self.api_id = kwargs["api_id"]
+                self.api_hash = kwargs["api_hash"]
+                self.connected = False
+
+            def is_connected(self):
+                return self.connected
+
+            async def connect(self):
+                self.connected = True
+
+            async def is_user_authorized(self):
+                return True
+
+        developer_service = SimpleNamespace(
+            resolve_credentials_for_account=AsyncMock(side_effect=RuntimeError("no developer app"))
+        )
+
+        with (
+            patch("backend.bot.account.client_runtime.decrypt_string_session", return_value="session"),
+            patch("backend.bot.account.client_runtime.get_developer_app_service", return_value=developer_service),
+            patch("backend.bot.account.client_runtime.settings", SimpleNamespace(api_id=123456, api_hash="env-hash")),
+            patch("backend.bot.account.client_runtime.StringSession", lambda value: value),
+            patch("backend.bot.account.client_runtime.TelegramClient", _Client),
+            patch("backend.bot.account.client_runtime.mark_account_reauth_required", AsyncMock()) as mark_mock,
+        ):
+            client = await get_client(manager, "acc-env")
+
+        self.assertIsNotNone(client)
+        self.assertEqual(client.api_id, 123456)
+        self.assertEqual(client.api_hash, "env-hash")
+        mark_mock.assert_not_awaited()
+        update_kwargs = manager.update_account.await_args.kwargs
+        self.assertEqual(update_kwargs["developer_app_version"], 1)
+        self.assertEqual(update_kwargs["health_status"].value, "online")
+
 
 if __name__ == "__main__":
     unittest.main()

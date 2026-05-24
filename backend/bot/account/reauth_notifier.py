@@ -451,7 +451,7 @@ class ReauthReminderRuntime:
                 notice_accounts = (
                     await session.execute(
                         select(Account, UserAuthorization.end_at)
-                        .join(UserAuthorization, UserAuthorization.current_account_id == Account.account_id)
+                        .outerjoin(UserAuthorization, UserAuthorization.current_account_id == Account.account_id)
                         .where(
                             Account.account_id.in_(notice_account_ids),
                             Account.is_active.is_(True),

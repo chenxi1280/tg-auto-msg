@@ -128,11 +128,13 @@ async def get_client(manager, account_id: str) -> Optional[TelegramClient]:
 
         api_id = int(settings.api_id) if settings.api_id else 0
         api_hash = str(settings.api_hash or "")
+        developer_app_version = 1
         try:
             developer_service = get_developer_app_service()
             credentials = await developer_service.resolve_credentials_for_account(account_id)
             api_id = int(credentials.api_id)
             api_hash = str(credentials.api_hash)
+            developer_app_version = int(getattr(credentials, "credentials_version", None) or 1)
         except Exception as e:
             if account.developer_app_id is not None:
                 logger.error(
@@ -169,7 +171,7 @@ async def get_client(manager, account_id: str) -> Optional[TelegramClient]:
 
         await manager.update_account(
             account_id,
-            developer_app_version=int(credentials.credentials_version or 1),
+            developer_app_version=developer_app_version,
             reauth_required=False,
             reauth_reason=None,
             reauth_required_at=None,
