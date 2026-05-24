@@ -77,6 +77,24 @@ async def get_client(manager, account_id: str) -> Optional[TelegramClient]:
         logger.error(f"账号不存在: {account_id}")
         return None
 
+    if bool(getattr(account, "reauth_required", False)) and str(getattr(account, "reauth_reason", "") or "") == "api_hash_rotated":
+        logger.warning(
+            "账号 {} 带有历史 api_hash_rotated 标记，按兼容策略尝试继续连接并刷新凭证版本",
+            account_id,
+        )
+        try:
+            await manager.update_account(
+                account_id,
+                reauth_required=False,
+                reauth_reason=None,
+                reauth_required_at=None,
+            )
+            account.reauth_required = False
+            account.reauth_reason = None
+            account.reauth_required_at = None
+        except Exception as status_err:
+            logger.warning(f"清理账号 api_hash_rotated 状态失败，将继续尝试连接: {status_err}")
+
     if is_reauth_required_account(account):
         reason = getattr(account, "reauth_reason", "") or "unknown"
         logger.warning(f"账号 {account_id} 需要重新绑定后才能继续使用: reason={reason}")
@@ -91,7 +109,8 @@ async def get_client(manager, account_id: str) -> Optional[TelegramClient]:
     except Exception as e:
         logger.error(
             f"解密 StringSession 失败: {e} | account_id={account_id}。"
-            "可能是 ENCRYPTION_KEY 变更或历史会话使用了旧密钥，请重新在 Bot 中绑定该账号。"
+            "可能是 ENCRYPTION_KEY 变更且未配置 ENCRYPTION_KEY_FALLBACKS，"
+            "或历史会话密文已损坏，请先恢复旧密钥回退配置再判断是否需要重新绑定。"
         )
         try:
             await manager.update_health_status(account_id, HealthStatus.OFFLINE)
@@ -126,18 +145,6 @@ async def get_client(manager, account_id: str) -> Optional[TelegramClient]:
                     logger.warning(f"更新账号健康状态失败: {status_err}")
                 return None
             logger.warning(f"账号未绑定开发者凭证，回退环境凭证: account_id={account_id}, error={e}")
-
-        if (
-            account.developer_app_id is not None
-            and int(credentials.credentials_version or 1) > int(getattr(account, "developer_app_version", 1) or 1)
-        ):
-            logger.warning(
-                f"账号 {account_id} 绑定的开发者凭证已轮换，要求重新绑定: "
-                f"account_version={getattr(account, 'developer_app_version', 1)}, "
-                f"app_version={credentials.credentials_version}"
-            )
-            await mark_account_reauth_required(account_id, "api_hash_rotated")
-            return None
 
         if api_id <= 0 or not api_hash:
             logger.error(f"账号 {account_id} 缺少可用 API_ID/API_HASH，无法创建客户端")

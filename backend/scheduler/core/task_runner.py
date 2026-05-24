@@ -12,7 +12,10 @@ from telethon.errors import FloodWaitError, PeerFloodError
 
 from backend.bot.account.manager import AccountManager, get_account_manager
 from backend.bot.account.reauth import is_reauth_required_account
-from backend.bot.account.reauth_notifier import mark_account_reauth_required
+from backend.bot.account.reauth_notifier import (
+    mark_account_reauth_required,
+    notify_account_authorization_required,
+)
 from backend.bot.account.proxy_observation import (
     claim_proxy_observation_send_budget,
     is_proxy_observation_active,
@@ -226,6 +229,8 @@ async def _validate_and_resolve(
             disabled_count = await disable_tasks_for_account_if_unlicensed(
                 account_id=task.account_id, session=session,
             )
+            await session.commit()
+            await notify_account_authorization_required(task.account_id, "authorization_expired")
             raise HTTPException(
                 status_code=400,
                 detail=f"当前执行账号已无有效授权，已停用该账号下任务 {disabled_count} 条",

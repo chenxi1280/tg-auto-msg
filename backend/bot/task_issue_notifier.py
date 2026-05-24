@@ -28,6 +28,7 @@ class TaskIssueNotifier:
 
     CHECK_INTERVAL_SECONDS = 300
     MUTE_HOURS = 24
+    MAX_ACTIVE_NOTICE_DAYS = 3
     RECENT_WINDOW_MINUTES = 10
 
     def __init__(self) -> None:
@@ -204,9 +205,16 @@ class TaskIssueNotifier:
         last_seen_at = getattr(issue, "last_seen_at", None)
         if last_seen_at is None or last_seen_at < recent_cutoff:
             return False
+        first_seen_at = getattr(issue, "first_seen_at", None) or last_seen_at
+        if isinstance(first_seen_at, _REAL_DATETIME):
+            notice_day_index = max(0, (now.date() - first_seen_at.date()).days)
+            if notice_day_index >= self.MAX_ACTIVE_NOTICE_DAYS:
+                return False
         last_notified_at = getattr(issue, "last_notified_at", None)
         if last_notified_at is None:
             return True
+        if isinstance(last_notified_at, _REAL_DATETIME) and last_notified_at.date() >= now.date():
+            return False
         muted_until = getattr(issue, "muted_until", None)
         return muted_until is not None and muted_until <= now
 

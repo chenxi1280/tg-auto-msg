@@ -1,10 +1,12 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from backend.bot.developer_apps.service import (
     DeveloperAppHealthCheckResult,
     DeveloperAppService,
 )
+from backend.bot.account.client_runtime import get_client
 
 
 class DeveloperAppNotificationTests(unittest.IsolatedAsyncioTestCase):
@@ -37,6 +39,71 @@ class DeveloperAppNotificationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(sent, [])
         send_mock.assert_not_awaited()
+
+
+class DeveloperAppCredentialRotationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_account_with_rotated_api_hash_reason_is_not_blocked_before_connect(self):
+        account = SimpleNamespace(
+            account_id="acc-1",
+            developer_app_id=1,
+            developer_app_version=1,
+            proxy_id=None,
+            string_session_encrypted="encrypted-session",
+            reauth_required=True,
+            reauth_reason="api_hash_rotated",
+        )
+        manager = SimpleNamespace(
+            _clients={},
+            _locks={},
+            get_account=AsyncMock(return_value=account),
+            get_client_lock=AsyncMock(),
+            update_health_status=AsyncMock(),
+            update_account=AsyncMock(),
+        )
+
+        class _Lock:
+            async def __aenter__(self):
+                return None
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        manager.get_client_lock.return_value = _Lock()
+
+        class _Client:
+            def __init__(self, *_args, **_kwargs):
+                self.connected = False
+
+            def is_connected(self):
+                return self.connected
+
+            async def connect(self):
+                self.connected = True
+
+            async def is_user_authorized(self):
+                return True
+
+        credentials = SimpleNamespace(api_id=123456, api_hash="new-hash", credentials_version=2)
+        developer_service = SimpleNamespace(
+            resolve_credentials_for_account=AsyncMock(return_value=credentials)
+        )
+
+        with (
+            patch("backend.bot.account.client_runtime.decrypt_string_session", return_value="session"),
+            patch("backend.bot.account.client_runtime.get_developer_app_service", return_value=developer_service),
+            patch("backend.bot.account.client_runtime.StringSession", lambda value: value),
+            patch("backend.bot.account.client_runtime.TelegramClient", _Client),
+            patch("backend.bot.account.client_runtime.mark_account_reauth_required", AsyncMock()) as mark_mock,
+        ):
+            client = await get_client(manager, "acc-1")
+
+        self.assertIsNotNone(client)
+        mark_mock.assert_not_awaited()
+        self.assertGreaterEqual(manager.update_account.await_count, 1)
+        update_kwargs = manager.update_account.await_args.kwargs
+        self.assertFalse(update_kwargs["reauth_required"])
+        self.assertIsNone(update_kwargs["reauth_reason"])
+        self.assertEqual(update_kwargs["developer_app_version"], 2)
 
 
 if __name__ == "__main__":

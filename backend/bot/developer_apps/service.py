@@ -10,7 +10,7 @@ from typing import Optional, Any, Dict, List, Iterable, Sequence
 
 from fastapi import HTTPException
 from loguru import logger
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import and_, func, select
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.functions.help import GetConfigRequest
@@ -961,17 +961,11 @@ class DeveloperAppService:
                     now = datetime.now()
                     row.credentials_version = int(row.credentials_version or 1) + 1
                     row.last_rotated_at = now
-                    result = await session.execute(
-                        update(Account)
-                        .where(Account.developer_app_id == int(row.id))
-                        .values(
-                            reauth_required=True,
-                            reauth_reason="api_hash_rotated",
-                            reauth_required_at=now,
-                            health_status="offline",
-                        )
+                    logger.warning(
+                        "developer_app_api_hash_updated_without_forcing_reauth: app_id={}, app_name={}",
+                        row.id,
+                        row.app_name,
                     )
-                    rotated_accounts = int(result.rowcount or 0)
             if is_active is not None:
                 row.is_active = bool(is_active)
                 if not row.is_active:

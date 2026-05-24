@@ -32,7 +32,12 @@ class CryptoManager:
     # 密钥长度（AES-256 需要 32 字节）
     KEY_LENGTH = 32
 
-    def __init__(self, encryption_key: str | None = None):
+    def __init__(
+        self,
+        encryption_key: str | None = None,
+        *,
+        fallback_encryption_keys: list[str] | None = None,
+    ):
         """
         初始化加密管理器
 
@@ -41,17 +46,12 @@ class CryptoManager:
                            如果为 None，则从环境变量读取或生成新密钥
         """
         if encryption_key:
-            # 从 Base64 解码密钥
-            self._key = base64.b64decode(encryption_key.encode())
-            if len(self._key) != self.KEY_LENGTH:
-                raise ValueError(f"加密密钥必须是 {self.KEY_LENGTH} 字节")
+            self._key = self._decode_key(encryption_key, label="加密密钥")
         else:
             # 从环境变量读取或生成新密钥
             key_str = os.getenv("ENCRYPTION_KEY") or settings.encryption_key
             if key_str:
-                self._key = base64.b64decode(key_str.encode())
-                if len(self._key) != self.KEY_LENGTH:
-                    raise ValueError(f"ENCRYPTION_KEY 必须是 {self.KEY_LENGTH} 字节的 Base64 编码")
+                self._key = self._decode_key(key_str, label="ENCRYPTION_KEY")
             else:
                 # 稳定回退：基于 JWT_SECRET_KEY 派生固定 32 字节密钥，避免重启后无法解密
                 seed = f"tg-auto-msg::{settings.secret_key}".encode("utf-8")
@@ -62,6 +62,33 @@ class CryptoManager:
                 )
 
         self._aesgcm = AESGCM(self._key)
+        fallback_keys = (
+            fallback_encryption_keys
+            if fallback_encryption_keys is not None
+            else self._load_fallback_keys_from_env()
+        )
+        self._fallback_aesgcm = [
+            AESGCM(self._decode_key(key, label="ENCRYPTION_KEY_FALLBACKS"))
+            for key in fallback_keys
+            if str(key or "").strip()
+        ]
+
+    @classmethod
+    def _decode_key(cls, key: str, *, label: str) -> bytes:
+        decoded = base64.b64decode(str(key).strip().encode())
+        if len(decoded) != cls.KEY_LENGTH:
+            raise ValueError(f"{label} 必须是 {cls.KEY_LENGTH} 字节的 Base64 编码")
+        return decoded
+
+    @staticmethod
+    def _load_fallback_keys_from_env() -> list[str]:
+        raw_value = os.getenv("ENCRYPTION_KEY_FALLBACKS") or settings.encryption_key_fallbacks
+        keys: list[str] = []
+        for chunk in str(raw_value or "").replace("\n", ",").split(","):
+            key = chunk.strip()
+            if key:
+                keys.append(key)
+        return keys
 
     def encrypt(self, plaintext: str) -> str:
         """
@@ -115,9 +142,15 @@ class CryptoManager:
             nonce = data[:self.NONCE_LENGTH]
             ciphertext = data[self.NONCE_LENGTH:]
 
-            # 解密
-            plaintext = self._aesgcm.decrypt(nonce, ciphertext, None)
-            return plaintext.decode('utf-8')
+            for index, aesgcm in enumerate([self._aesgcm, *self._fallback_aesgcm]):
+                try:
+                    plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+                    if index > 0:
+                        logger.warning("使用历史 ENCRYPTION_KEY 成功解密旧数据，请尽快完成密钥回写或保持回退配置。")
+                    return plaintext.decode('utf-8')
+                except InvalidTag:
+                    continue
+            raise InvalidTag()
 
         except InvalidTag:
             msg = "解密失败: 密钥不匹配或密文损坏"

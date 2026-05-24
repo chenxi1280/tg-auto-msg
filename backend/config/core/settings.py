@@ -29,6 +29,11 @@ class Settings(BaseSettings):
 
     # 安全配置
     encryption_key: Optional[str] = Field(None, alias="ENCRYPTION_KEY", description="数据加密密钥（Base64 编码）")
+    encryption_key_fallbacks: str = Field(
+        default="",
+        alias="ENCRYPTION_KEY_FALLBACKS",
+        description="历史数据加密密钥回退列表，多个 Base64 32 字节密钥用英文逗号分隔",
+    )
     jwt_secret_key: str = Field(default=_DEFAULT_JWT_SECRET, alias="JWT_SECRET_KEY", description="JWT 签名密钥")
     admin_api_token: str = Field(default="", alias="ADMIN_API_TOKEN", description="管理员后台 API 令牌")
     admin_bootstrap_username: str = Field(default="", alias="ADMIN_BOOTSTRAP_USERNAME", description="启动时自动初始化的超管账号")

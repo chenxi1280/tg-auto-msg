@@ -91,6 +91,8 @@ PROVINCE_CODE=<province_code>
 ADMIN_BOOTSTRAP_USERNAME=admin
 ADMIN_BOOTSTRAP_PASSWORD=<strong_password>
 ADMIN_BOOTSTRAP_DISPLAY_NAME=超级管理员
+ENCRYPTION_KEY=<base64_32byte_key>
+ENCRYPTION_KEY_FALLBACKS=<old_base64_32byte_key_comma_separated>
 ```
 
 含义：
@@ -103,6 +105,7 @@ ADMIN_BOOTSTRAP_DISPLAY_NAME=超级管理员
 - `H5_BASE_URL` 应使用公网子域名
 - `PROVINCE_CODE` 表示当前这套服务所属省份，超管账号按省份隔离初始化
 - `ADMIN_BOOTSTRAP_*` 用于首次启动时自动创建当前省份的首个 `super_admin`
+- `ENCRYPTION_KEY` 必须长期稳定保存；如需轮换，先把旧密钥放入 `ENCRYPTION_KEY_FALLBACKS`，确认历史账号会话可解密后再发布，避免线上用户被迫重新绑定。
 
 ## 5. 当前实际 vs 目标架构
 

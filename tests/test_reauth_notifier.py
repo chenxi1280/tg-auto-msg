@@ -8,6 +8,7 @@ from backend.bot.account.reauth_notifier import (
     ReauthNoticeItem,
     ReauthReminderRuntime,
     mark_account_reauth_required,
+    notify_account_authorization_required,
 )
 from backend.database.schema.models import Account, AppSetting, ScheduledMessageTask
 
@@ -65,10 +66,11 @@ class _MarkSession:
 
 
 class _ReminderSession:
-    def __init__(self, *, rows, settings=None, enabled_tasks=None):
+    def __init__(self, *, rows, settings=None, enabled_tasks=None, notice_accounts=None):
         self.rows = rows
         self.settings = settings or {}
         self.enabled_tasks = enabled_tasks or {}
+        self.notice_accounts = notice_accounts or []
         self.execute_count = 0
 
     async def get(self, model, key):
@@ -82,6 +84,8 @@ class _ReminderSession:
             return _RowResult(self.rows)
         if self.execute_count == 2:
             return _RowResult([(key, value.value) for key, value in self.settings.items()])
+        if self.execute_count == 3 and self.notice_accounts:
+            return _RowResult(self.notice_accounts)
         return _RowResult([
             (account_id, len(tasks))
             for account_id, tasks in self.enabled_tasks.items()
@@ -183,6 +187,135 @@ class ReauthNotifierTests(unittest.IsolatedAsyncioTestCase):
             items = await notifier._collect_due_reminders()
 
         self.assertEqual(items, [])
+
+    async def test_collect_due_reminders_stops_after_three_notices(self):
+        account = Account(
+            account_id="acc-1",
+            user_id=9,
+            tg_user_id=10001,
+            username="sender",
+            string_session_encrypted="encrypted",
+            reauth_required=True,
+            reauth_reason="session_unauthorized",
+        )
+        session = _ReminderSession(
+            rows=[(account, datetime(2026, 5, 15, 12, 0, 0))],
+            settings={
+                "reauth_notice:acc-1": AppSetting(
+                    key="reauth_notice:acc-1",
+                    value='{"count":3,"first_sent_date":"2026-05-01","last_sent_date":"2026-05-03"}',
+                )
+            },
+        )
+        notifier = ReauthReminderRuntime()
+
+        with (
+            patch("backend.bot.account.reauth_notifier.get_async_session", _session_ctx(session)),
+            patch("backend.bot.account.reauth_notifier._load_user_links", AsyncMock(return_value={9: 987654321})),
+            patch("backend.bot.account.reauth_notifier.datetime") as datetime_mock,
+        ):
+            datetime_mock.now.return_value = datetime(2026, 5, 4, 9, 0, 0)
+            items = await notifier._collect_due_reminders()
+
+        self.assertEqual(items, [])
+
+    async def test_collect_due_reminders_includes_authorization_expired_notice_state(self):
+        account = Account(
+            account_id="acc-expired",
+            user_id=9,
+            tg_user_id=10001,
+            username="sender",
+            string_session_encrypted="encrypted",
+            reauth_required=False,
+            reauth_reason=None,
+        )
+        session = _ReminderSession(
+            rows=[],
+            settings={
+                "reauth_notice:acc-expired": AppSetting(
+                    key="reauth_notice:acc-expired",
+                    value='{"count":1,"first_sent_date":"2026-05-01","last_sent_date":"2026-05-01"}',
+                )
+            },
+            enabled_tasks={
+                "acc-expired": [
+                    ScheduledMessageTask(task_id="task-1", user_id=9, account_id="acc-expired", title="任务1", enabled=True),
+                ]
+            },
+            notice_accounts=[(account, datetime(2026, 5, 1, 12, 0, 0))],
+        )
+        notifier = ReauthReminderRuntime()
+
+        with (
+            patch("backend.bot.account.reauth_notifier.get_async_session", _session_ctx(session)),
+            patch("backend.bot.account.reauth_notifier._load_user_links", AsyncMock(return_value={9: 987654321})),
+            patch("backend.bot.account.reauth_notifier.datetime") as datetime_mock,
+        ):
+            datetime_mock.now.return_value = datetime(2026, 5, 2, 9, 0, 0)
+            items = await notifier._collect_due_reminders()
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].account_id, "acc-expired")
+        self.assertEqual(items[0].authorization_end_at, datetime(2026, 5, 1, 12, 0, 0))
+
+    async def test_collect_due_reminders_ignores_old_notice_after_account_recovers(self):
+        account = Account(
+            account_id="acc-recovered",
+            user_id=9,
+            tg_user_id=10001,
+            username="sender",
+            string_session_encrypted="encrypted",
+            reauth_required=False,
+            reauth_reason=None,
+        )
+        session = _ReminderSession(
+            rows=[],
+            settings={
+                "reauth_notice:acc-recovered": AppSetting(
+                    key="reauth_notice:acc-recovered",
+                    value='{"count":1,"first_sent_date":"2026-05-01","last_sent_date":"2026-05-01"}',
+                )
+            },
+            notice_accounts=[(account, datetime(2026, 6, 1, 12, 0, 0))],
+        )
+        notifier = ReauthReminderRuntime()
+
+        with (
+            patch("backend.bot.account.reauth_notifier.get_async_session", _session_ctx(session)),
+            patch("backend.bot.account.reauth_notifier._load_user_links", AsyncMock(return_value={9: 987654321})),
+            patch("backend.bot.account.reauth_notifier.datetime") as datetime_mock,
+        ):
+            datetime_mock.now.return_value = datetime(2026, 5, 2, 9, 0, 0)
+            items = await notifier._collect_due_reminders()
+
+        self.assertEqual(items, [])
+
+    async def test_notify_account_authorization_required_sends_immediate_notice_to_bound_user(self):
+        account = Account(
+            account_id="acc-1",
+            user_id=9,
+            tg_user_id=10001,
+            username="sender",
+            string_session_encrypted="encrypted",
+            reauth_required=False,
+        )
+        tasks = [
+            ScheduledMessageTask(task_id="task-1", user_id=9, account_id="acc-1", title="任务1", enabled=True),
+        ]
+        session = _MarkSession(account, tasks, datetime(2026, 5, 1, 12, 0, 0))
+
+        with (
+            patch("backend.bot.account.reauth_notifier.get_async_session", _session_ctx(session)),
+            patch("backend.bot.account.reauth_notifier._load_user_links", AsyncMock(return_value={9: 987654321})),
+            patch("backend.bot.account.reauth_notifier.ensure_manager_bot_ready", AsyncMock(return_value=True)),
+            patch("backend.bot.account.reauth_notifier.bot_client.send_message", AsyncMock()) as send_mock,
+        ):
+            sent = await notify_account_authorization_required("acc-1", "authorization_expired")
+
+        self.assertTrue(sent)
+        send_mock.assert_awaited_once()
+        self.assertIn("账号授权已失效", send_mock.await_args.args[1])
+        self.assertIn("reauth_notice:acc-1", session.settings)
 
     async def test_collect_due_reminders_counts_only_enabled_tasks_in_batch(self):
         account = Account(

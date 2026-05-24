@@ -12,16 +12,13 @@ REAUTH_REQUIRED_GUIDE = (
 )
 
 _REAUTH_REASON_SET = {
-    "api_hash_rotated",
     "session_unauthorized",
 }
 
 _REAUTH_KEYWORDS = (
     "系统已更新，请先重新绑定",
     "StringSession 解密失败",
-    "开发者应用凭证已轮换",
     "需要重新绑定",
-    "api_hash_rotated",
     "session_unauthorized",
 )
 

@@ -274,6 +274,38 @@ class TaskTargetIssueStateTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TaskIssueNotifierTests(unittest.IsolatedAsyncioTestCase):
+    def test_active_issue_ready_only_for_first_three_days(self):
+        notifier = TaskIssueNotifier()
+        issue = TaskTargetSendIssue(
+            id=1,
+            user_id=9,
+            task_id="task-1",
+            account_id="acc-1",
+            peer_id=1001,
+            peer_type="channel",
+            peer_title="频道 A",
+            current_error_type="ChatWriteForbiddenError",
+            current_error_message="You can't write in this chat",
+            issue_category="permission_denied",
+            status="active",
+            first_seen_at=datetime(2026, 5, 1, 10, 0, 0),
+            last_seen_at=datetime(2026, 5, 2, 10, 0, 0),
+            last_notified_at=datetime(2026, 5, 1, 10, 1, 0),
+            muted_until=datetime(2026, 5, 2, 10, 1, 0),
+        )
+
+        self.assertTrue(notifier._is_active_issue_ready(issue, datetime(2026, 5, 2, 10, 2, 0)))
+
+        issue.last_seen_at = datetime(2026, 5, 3, 10, 0, 0)
+        issue.last_notified_at = datetime(2026, 5, 2, 10, 2, 0)
+        issue.muted_until = datetime(2026, 5, 3, 10, 2, 0)
+        self.assertTrue(notifier._is_active_issue_ready(issue, datetime(2026, 5, 3, 10, 3, 0)))
+
+        issue.last_seen_at = datetime(2026, 5, 4, 10, 0, 0)
+        issue.last_notified_at = datetime(2026, 5, 3, 10, 3, 0)
+        issue.muted_until = datetime(2026, 5, 4, 10, 3, 0)
+        self.assertFalse(notifier._is_active_issue_ready(issue, datetime(2026, 5, 4, 10, 4, 0)))
+
     async def test_scan_once_aggregates_active_issue_notifications(self):
         notifier = TaskIssueNotifier()
         now = datetime(2026, 4, 11, 12, 0, 0)

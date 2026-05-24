@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
@@ -29,7 +30,8 @@ from backend.database.schema.models import (
 )
 
 REAUTH_NOTICE_KEY_PREFIX = "reauth_notice:"
-REAUTH_REMINDER_REASONS = {"api_hash_rotated", "session_unauthorized"}
+REAUTH_REMINDER_REASONS = {"session_unauthorized"}
+MAX_NOTICE_SENDS = 3
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,61 @@ def _notice_key(account_id: str) -> str:
 
 def _today_key(now: Optional[datetime] = None) -> str:
     return (now or datetime.now()).date().isoformat()
+
+
+def _empty_notice_state() -> dict[str, object]:
+    return {
+        "count": 0,
+        "first_sent_date": None,
+        "last_sent_date": None,
+    }
+
+
+def _parse_notice_state(value: str | None) -> dict[str, object]:
+    raw = str(value or "").strip()
+    state = _empty_notice_state()
+    if not raw:
+        return state
+
+    if raw.startswith("{"):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = {}
+        if isinstance(parsed, dict):
+            try:
+                state["count"] = max(0, int(parsed.get("count") or 0))
+            except Exception:
+                state["count"] = 0
+            state["first_sent_date"] = parsed.get("first_sent_date") or None
+            state["last_sent_date"] = parsed.get("last_sent_date") or None
+            return state
+
+    # Backward compatibility with the old value format: "YYYY-MM-DD".
+    state["count"] = 1
+    state["first_sent_date"] = raw
+    state["last_sent_date"] = raw
+    return state
+
+
+def _serialize_notice_state(state: dict[str, object]) -> str:
+    return json.dumps(
+        {
+            "count": int(state.get("count") or 0),
+            "first_sent_date": state.get("first_sent_date") or None,
+            "last_sent_date": state.get("last_sent_date") or None,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _notice_state_due(state: dict[str, object], *, now: datetime) -> bool:
+    if int(state.get("count") or 0) >= MAX_NOTICE_SENDS:
+        return False
+    if str(state.get("last_sent_date") or "").strip() == _today_key(now):
+        return False
+    return True
 
 
 def _format_account_label(account: Account) -> str:
@@ -103,6 +160,18 @@ async def _load_active_authorization_end_at(session, account_id: str, now: datet
     return authorization.end_at if authorization is not None else None
 
 
+async def _load_latest_authorization_end_at(session, account_id: str) -> Optional[datetime]:
+    authorization = (
+        await session.execute(
+            select(UserAuthorization)
+            .where(UserAuthorization.current_account_id == str(account_id))
+            .order_by(UserAuthorization.end_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return authorization.end_at if authorization is not None else None
+
+
 async def _load_user_links(session) -> dict[int, int]:
     from backend.bot.handlers.core.user_link import load_latest_linked_tg_user_ids
 
@@ -110,13 +179,19 @@ async def _load_user_links(session) -> dict[int, int]:
 
 
 async def _record_notice_sent(account_id: str, *, now: Optional[datetime] = None) -> None:
-    today = _today_key(now)
+    sent_at = now or datetime.now()
+    today = _today_key(sent_at)
     async with get_async_session() as session:
         row = await session.get(AppSetting, _notice_key(account_id))
+        state = _parse_notice_state(row.value if row is not None else None)
+        state["count"] = min(MAX_NOTICE_SENDS, int(state.get("count") or 0) + 1)
+        state["first_sent_date"] = state.get("first_sent_date") or today
+        state["last_sent_date"] = today
+        value = _serialize_notice_state(state)
         if row is None:
-            session.add(AppSetting(key=_notice_key(account_id), value=today))
+            session.add(AppSetting(key=_notice_key(account_id), value=value))
         else:
-            row.value = today
+            row.value = value
         await session.commit()
 
 
@@ -242,6 +317,49 @@ async def mark_account_reauth_required(account_id: str, reason: str) -> Optional
     )
 
 
+async def notify_account_authorization_required(account_id: str, reason: str) -> bool:
+    """Notify the bound system user that this account cannot send without authorization."""
+    normalized_reason = str(reason or "").strip() or "authorization_required"
+    now = datetime.now()
+    notice_item: Optional[ReauthNoticeItem] = None
+
+    async with get_async_session() as session:
+        account = await session.get(Account, str(account_id))
+        if account is None:
+            return False
+
+        notice_row = await session.get(AppSetting, _notice_key(str(account_id)))
+        notice_state = _parse_notice_state(notice_row.value if notice_row is not None else None)
+        if not _notice_state_due(notice_state, now=now):
+            return False
+
+        enabled_tasks = (
+            await session.execute(
+                select(ScheduledMessageTask).where(
+                    ScheduledMessageTask.account_id == str(account_id),
+                    ScheduledMessageTask.enabled == True,
+                )
+            )
+        ).scalars().all()
+        authorization_end_at = await _load_latest_authorization_end_at(session, str(account_id))
+        user_links = await _load_user_links(session)
+        tg_user_id = user_links.get(int(account.user_id))
+        if tg_user_id is None:
+            return False
+
+        notice_item = ReauthNoticeItem(
+            account_id=str(account.account_id),
+            user_id=int(account.user_id),
+            tg_user_id=int(tg_user_id),
+            account_label=_format_account_label(account),
+            disabled_task_count=len(enabled_tasks),
+            authorization_end_at=authorization_end_at,
+            reason=normalized_reason,
+        )
+
+    return await _send_reauth_notice(notice_item)
+
+
 class ReauthReminderRuntime:
     """Background daily reminders for accounts waiting for rebind."""
 
@@ -284,7 +402,6 @@ class ReauthReminderRuntime:
 
     async def _collect_due_reminders(self) -> list[ReauthNoticeItem]:
         now = datetime.now()
-        today = _today_key(now)
         async with get_async_session() as session:
             user_links = await _load_user_links(session)
             if not user_links:
@@ -304,24 +421,56 @@ class ReauthReminderRuntime:
                 )
             ).all()
 
-            account_ids: list[str] = []
-            for account, _authorization_end_at in rows:
-                account_id = str(account.account_id)
-                if account_id not in account_ids:
-                    account_ids.append(account_id)
+            account_rows: dict[str, tuple[Account, Optional[datetime]]] = {}
+            for account, authorization_end_at in rows:
+                account_rows.setdefault(str(account.account_id), (account, authorization_end_at))
 
-            notice_values: dict[str, str] = {}
-            task_counts_by_account: dict[str, int] = {}
-            if account_ids:
-                notice_rows = (
+            notice_rows = (
+                await session.execute(
+                    select(AppSetting.key, AppSetting.value).where(
+                        AppSetting.key.like(f"{REAUTH_NOTICE_KEY_PREFIX}%")
+                    )
+                )
+            ).all()
+            notice_values = {str(key): str(value or "") for key, value in notice_rows}
+
+            notice_account_ids: list[str] = []
+            for key, value in notice_values.items():
+                if not key.startswith(REAUTH_NOTICE_KEY_PREFIX):
+                    continue
+                account_id = key[len(REAUTH_NOTICE_KEY_PREFIX):]
+                notice_state = _parse_notice_state(value)
+                if int(notice_state.get("count") or 0) <= 0:
+                    continue
+                if not _notice_state_due(notice_state, now=now):
+                    continue
+                if account_id not in account_rows and account_id not in notice_account_ids:
+                    notice_account_ids.append(account_id)
+
+            if notice_account_ids:
+                notice_accounts = (
                     await session.execute(
-                        select(AppSetting.key, AppSetting.value).where(
-                            AppSetting.key.in_([_notice_key(account_id) for account_id in account_ids])
+                        select(Account, UserAuthorization.end_at)
+                        .join(UserAuthorization, UserAuthorization.current_account_id == Account.account_id)
+                        .where(
+                            Account.account_id.in_(notice_account_ids),
+                            Account.is_active.is_(True),
                         )
+                        .order_by(Account.account_id.asc(), UserAuthorization.end_at.desc())
                     )
                 ).all()
-                notice_values = {str(key): str(value or "") for key, value in notice_rows}
+                for account, authorization_end_at in notice_accounts:
+                    if (
+                        not is_reauth_required_account(account)
+                        and authorization_end_at is not None
+                        and authorization_end_at > now
+                    ):
+                        continue
+                    account_rows.setdefault(str(account.account_id), (account, authorization_end_at))
 
+            account_ids = list(account_rows.keys())
+            task_counts_by_account: dict[str, int] = {}
+            if account_ids:
                 task_count_rows = (
                     await session.execute(
                         select(
@@ -342,7 +491,7 @@ class ReauthReminderRuntime:
 
             items: list[ReauthNoticeItem] = []
             seen_accounts: set[str] = set()
-            for account, authorization_end_at in rows:
+            for account_id, (account, authorization_end_at) in account_rows.items():
                 account_id = str(account.account_id)
                 if account_id in seen_accounts:
                     continue
@@ -352,7 +501,8 @@ class ReauthReminderRuntime:
                 if tg_user_id is None:
                     continue
 
-                if notice_values.get(_notice_key(account_id), "").strip() == today:
+                notice_state = _parse_notice_state(notice_values.get(_notice_key(account_id), ""))
+                if not _notice_state_due(notice_state, now=now):
                     continue
 
                 items.append(
@@ -363,7 +513,7 @@ class ReauthReminderRuntime:
                         account_label=_format_account_label(account),
                         disabled_task_count=task_counts_by_account.get(account_id, 0),
                         authorization_end_at=authorization_end_at,
-                        reason=str(account.reauth_reason or "unknown"),
+                        reason=str(account.reauth_reason or "authorization_expired"),
                     )
                 )
             return items
