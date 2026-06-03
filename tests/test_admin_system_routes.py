@@ -59,6 +59,28 @@ class AdminSystemRouteTests(unittest.TestCase):
         self.assertEqual(response.json()["data"]["today_sent_messages"], 12)
         service.get_today_system_stats.assert_awaited_once()
 
+    def test_scheduler_health_returns_snapshot(self):
+        client = self._build_client(_build_admin("system.stats.read"))
+        snapshot = {
+            "status": "unhealthy",
+            "issues": ["due_tasks_not_queued"],
+            "due_scheduled": 2,
+            "pending_count": 0,
+            "processing_count": 0,
+        }
+
+        with patch(
+            "backend.h5_backend.routers.admin_system.collect_scheduler_health_snapshot",
+            AsyncMock(return_value=snapshot),
+        ) as health_mock:
+            response = client.get("/api/admin/system/scheduler-health")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["success"])
+        self.assertEqual(response.json()["data"]["status"], "unhealthy")
+        self.assertEqual(response.json()["data"]["last_task_timeout_id"], None)
+        health_mock.assert_awaited_once()
+
     def test_system_audit_logs_require_system_audit_permission(self):
         client = self._build_client(_build_admin("operation_logs.scope.read"))
 

@@ -53,6 +53,11 @@ return 0
     def __init__(self):
         self.redis_client: Optional[redis.Redis] = None
         self.running = False
+        self.last_task_timeout_id: Optional[str] = None
+        self.last_task_timeout_at: Optional[datetime] = None
+        self.last_tick_started_at: Optional[datetime] = None
+        self.last_tick_finished_at: Optional[datetime] = None
+        self.last_tick_error: Optional[str] = None
 
         # 获取各模块实例
         self._account_manager = get_account_manager()
@@ -148,30 +153,40 @@ return 0
 
     async def tick(self, mode: str = "all"):
         """执行一次扫描和发送（支持 producer/consumer 分离模式）"""
-        await self._ensure_redis_connection()
-        now = int(datetime.now().timestamp())
-        current_hour = datetime.now().hour
+        self.last_tick_started_at = datetime.now()
+        try:
+            await self._ensure_redis_connection()
+            now = int(datetime.now().timestamp())
+            current_hour = datetime.now().hour
 
-        logger.debug("执行调度扫描，当前时间: {}", datetime.now())
+            logger.debug("执行调度扫描，当前时间: {}", datetime.now())
 
-        if mode in ("all", "producer"):
-            # 1. 从数据库获取待执行任务，加入 Redis 队列
-            await self._enqueue_tasks(now)
+            if mode in ("all", "producer"):
+                # 1. 从数据库获取待执行任务，加入 Redis 队列
+                await self._enqueue_tasks(now)
 
-        if mode not in ("all", "consumer"):
-            return
+            if mode not in ("all", "consumer"):
+                self.last_tick_error = None
+                return
 
-        # 2. 从 Redis 队列获取需要执行的任务
-        tasks_to_execute = await self._get_pending_tasks(now)
+            # 2. 从 Redis 队列获取需要执行的任务
+            tasks_to_execute = await self._get_pending_tasks(now)
 
-        if not tasks_to_execute:
-            return
+            if not tasks_to_execute:
+                self.last_tick_error = None
+                return
 
-        logger.info("本次扫描待执行任务数: {}", len(tasks_to_execute))
+            logger.info("本次扫描待执行任务数: {}", len(tasks_to_execute))
 
-        # 3. 并发执行任务（受速率限制控制）
-        for task_data in tasks_to_execute:
-            await self._execute_task_from_queue(task_data, now, current_hour)
+            # 3. 并发执行任务（受速率限制控制）
+            for task_data in tasks_to_execute:
+                await self._execute_task_from_queue(task_data, now, current_hour)
+            self.last_tick_error = None
+        except Exception as exc:
+            self.last_tick_error = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            self.last_tick_finished_at = datetime.now()
 
     async def _enqueue_tasks(self, now: int):
         """
@@ -250,12 +265,28 @@ return 0
                     logger.debug("任务 {} 不存在或已禁用", task_id)
                     return
             try:
-                summary = await _execute_task_once(
-                    task_id,
-                    trigger_source="scheduler",
-                    advance_schedule=True,
-                    respect_schedule_constraints=True,
+                timeout_seconds = max(
+                    1,
+                    int(getattr(settings, "scheduler_task_timeout_seconds", 240) or 240),
                 )
+                summary = await asyncio.wait_for(
+                    _execute_task_once(
+                        task_id,
+                        trigger_source="scheduler",
+                        advance_schedule=True,
+                        respect_schedule_constraints=True,
+                    ),
+                    timeout=timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                self.last_task_timeout_id = str(task_id)
+                self.last_task_timeout_at = datetime.now()
+                logger.error(
+                    "任务 {} 执行超过 {} 秒，已中断本次执行并释放调度锁，避免阻塞后续任务",
+                    task_id,
+                    timeout_seconds,
+                )
+                return
             except HTTPException as exc:
                 logger.debug("任务 {} 跳过执行: {}", task_id, exc.detail)
                 return

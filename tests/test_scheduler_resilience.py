@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -9,6 +10,7 @@ from backend.bot.account.health_selection import select_account
 from backend.bot.account.manager import AccountSelectionStrategy
 from backend.database.schema.models import HealthStatus, TaskTriggerMode
 from backend.scheduler.core.task_runner import execute_task_once
+from backend.scheduler.core.health import collect_scheduler_health_snapshot
 from backend.scheduler.core.queue_ops import get_pending_tasks
 from backend.scheduler.core.worker import TaskScheduler
 
@@ -125,6 +127,77 @@ class WorkerLockingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(kwargs["nx"])
         self.assertEqual(kwargs["ex"], scheduler.PROCESSING_TTL)
         scheduler.redis_client.eval.assert_awaited_once()
+
+    async def test_execute_task_from_queue_times_out_and_releases_lock(self):
+        scheduler = TaskScheduler()
+        scheduler.redis_client = SimpleNamespace(
+            set=AsyncMock(return_value=True),
+            eval=AsyncMock(return_value=1),
+        )
+        db_task = SimpleNamespace(task_id="task-timeout", enabled=True)
+
+        @asynccontextmanager
+        async def fake_session_ctx():
+            yield _FakeQueueSession(db_task)
+
+        async def never_finishes(*_args, **_kwargs):
+            await asyncio.sleep(60)
+
+        with patch(
+            "backend.scheduler.core.worker.get_async_session",
+            fake_session_ctx,
+        ), patch(
+            "backend.scheduler.core.worker._execute_task_once",
+            never_finishes,
+        ), patch(
+            "backend.scheduler.core.worker.settings",
+            SimpleNamespace(scheduler_task_timeout_seconds=1),
+        ):
+            await scheduler._execute_task_from_queue(
+                SimpleNamespace(task_id="task-timeout"),
+                now=123,
+                current_hour=8,
+            )
+
+        self.assertEqual(scheduler.last_task_timeout_id, "task-timeout")
+        scheduler.redis_client.eval.assert_awaited_once()
+
+
+class SchedulerHealthSnapshotTests(unittest.IsolatedAsyncioTestCase):
+    async def test_health_snapshot_marks_due_tasks_without_queue_unhealthy(self):
+        class _Rows:
+            def first(self):
+                return SimpleNamespace(
+                    _mapping={
+                        "now_epoch": 1000,
+                        "due_scheduled": 2,
+                        "enabled_scheduled": 2,
+                        "earliest_next_run": None,
+                    }
+                )
+
+        class _Session:
+            async def execute(self, _statement):
+                return _Rows()
+
+        @asynccontextmanager
+        async def fake_session_ctx():
+            yield _Session()
+
+        fake_redis = SimpleNamespace(
+            zrange=AsyncMock(return_value=[]),
+            scan=AsyncMock(return_value=(0, [])),
+        )
+
+        snapshot = await collect_scheduler_health_snapshot(
+            redis_client=fake_redis,
+            session_factory=fake_session_ctx,
+            now_epoch=1000,
+        )
+
+        self.assertEqual(snapshot["status"], "unhealthy")
+        self.assertIn("due_tasks_not_queued", snapshot["issues"])
+        self.assertEqual(snapshot["due_scheduled"], 2)
 
 
 class CircuitBreakerRecoveryTests(unittest.IsolatedAsyncioTestCase):

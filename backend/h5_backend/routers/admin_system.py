@@ -11,6 +11,8 @@ from pydantic import BaseModel, Field
 from backend.database.schema.models import AdminAccount
 from backend.h5_backend.dependencies import require_admin_permissions
 from backend.h5_backend.services.admin.service import get_admin_license_service
+from backend.scheduler.core.health import collect_scheduler_health_snapshot
+from backend.scheduler.core.worker import scheduler
 
 router = APIRouter(tags=["后台系统配置"])
 
@@ -145,6 +147,36 @@ async def get_today_system_stats(
 ):
     service = get_admin_license_service()
     return {"success": True, "data": await service.get_today_system_stats()}
+
+
+@router.get("/api/admin/system/scheduler-health")
+async def get_scheduler_health(
+    current_admin: AdminAccount = Depends(require_admin_permissions("system.stats.read")),
+):
+    data = await collect_scheduler_health_snapshot(redis_client=scheduler.redis_client)
+    data.update(
+        {
+            "scheduler_running": bool(scheduler.running),
+            "last_task_timeout_id": scheduler.last_task_timeout_id,
+            "last_task_timeout_at": (
+                scheduler.last_task_timeout_at.isoformat()
+                if scheduler.last_task_timeout_at is not None
+                else None
+            ),
+            "last_tick_started_at": (
+                scheduler.last_tick_started_at.isoformat()
+                if scheduler.last_tick_started_at is not None
+                else None
+            ),
+            "last_tick_finished_at": (
+                scheduler.last_tick_finished_at.isoformat()
+                if scheduler.last_tick_finished_at is not None
+                else None
+            ),
+            "last_tick_error": scheduler.last_tick_error,
+        }
+    )
+    return {"success": True, "data": data}
 
 
 @router.put("/api/admin/system/bot-notice")
