@@ -64,6 +64,11 @@ class Settings(BaseSettings):
         alias="SCHEDULER_MODE",
         description="调度模式: all/producer/consumer"
     )
+    scheduler_task_timeout_seconds: int = Field(
+        default=240,
+        alias="SCHEDULER_TASK_TIMEOUT_SECONDS",
+        description="单个调度任务最大执行秒数，防止一个任务卡死整个调度器"
+    )
 
     # 绑定安全配置
     bind_max_failures: int = Field(
@@ -117,6 +122,11 @@ class Settings(BaseSettings):
         if self.max_failure_count < 1:
             raise ValueError(
                 f"MAX_FAILURE_COUNT 必须 >= 1，当前值: {self.max_failure_count}"
+            )
+        if self.scheduler_task_timeout_seconds < 1:
+            raise ValueError(
+                "SCHEDULER_TASK_TIMEOUT_SECONDS 必须 >= 1，"
+                f"当前值: {self.scheduler_task_timeout_seconds}"
             )
         return self
 

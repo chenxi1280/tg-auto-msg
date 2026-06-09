@@ -93,6 +93,7 @@ ADMIN_BOOTSTRAP_PASSWORD=<strong_password>
 ADMIN_BOOTSTRAP_DISPLAY_NAME=超级管理员
 ENCRYPTION_KEY=<base64_32byte_key>
 ENCRYPTION_KEY_FALLBACKS=<old_base64_32byte_key_comma_separated>
+SCHEDULER_TASK_TIMEOUT_SECONDS=240
 ```
 
 含义：
@@ -106,6 +107,23 @@ ENCRYPTION_KEY_FALLBACKS=<old_base64_32byte_key_comma_separated>
 - `PROVINCE_CODE` 表示当前这套服务所属省份，超管账号按省份隔离初始化
 - `ADMIN_BOOTSTRAP_*` 用于首次启动时自动创建当前省份的首个 `super_admin`
 - `ENCRYPTION_KEY` 必须长期稳定保存；如需轮换，先把旧密钥放入 `ENCRYPTION_KEY_FALLBACKS`，确认历史账号会话可解密后再发布，避免线上用户被迫重新绑定。
+- `SCHEDULER_TASK_TIMEOUT_SECONDS` 控制单个定时任务最大执行时长。超过后调度器会释放 processing 锁并继续后续任务，避免一个任务卡住所有定时发送。
+
+### 4.1 调度器即时检测
+
+后台管理员可调用：
+
+```bash
+curl -fsS -H "Authorization: Bearer <admin_jwt>" \
+  https://msg.telema.cn/api/admin/system/scheduler-health
+```
+
+关键判断：
+
+- `status=healthy` 表示当前没有发现调度积压异常。
+- `issues` 包含 `due_tasks_not_queued` 表示数据库已有到点 scheduled 任务，但 Redis pending/processing 都为空，调度器可能已经停摆。
+- `issues` 包含 `pending_tasks_stale` 表示 Redis 中有到点任务长时间未被 consumer 消费。
+- `last_task_timeout_id` 不为空表示最近有单个任务执行超过 `SCHEDULER_TASK_TIMEOUT_SECONDS`，调度器已中断该次执行并继续处理后续任务。
 
 ## 5. 当前实际 vs 目标架构
 
