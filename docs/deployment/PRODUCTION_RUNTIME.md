@@ -94,6 +94,7 @@ ADMIN_BOOTSTRAP_DISPLAY_NAME=超级管理员
 ENCRYPTION_KEY=<base64_32byte_key>
 ENCRYPTION_KEY_FALLBACKS=<old_base64_32byte_key_comma_separated>
 SCHEDULER_TASK_TIMEOUT_SECONDS=240
+SCHEDULER_TASK_CONCURRENCY=3
 ```
 
 含义：
@@ -108,6 +109,7 @@ SCHEDULER_TASK_TIMEOUT_SECONDS=240
 - `ADMIN_BOOTSTRAP_*` 用于首次启动时自动创建当前省份的首个 `super_admin`
 - `ENCRYPTION_KEY` 必须长期稳定保存；如需轮换，先把旧密钥放入 `ENCRYPTION_KEY_FALLBACKS`，确认历史账号会话可解密后再发布，避免线上用户被迫重新绑定。
 - `SCHEDULER_TASK_TIMEOUT_SECONDS` 控制单个定时任务最大执行时长。超过后调度器会释放 processing 锁并继续后续任务，避免一个任务卡住所有定时发送。
+- `SCHEDULER_TASK_CONCURRENCY` 控制单轮最多并发执行的到点任务数。默认 `3`，用于避免多个慢任务按 240 秒串行拖住整个发送队列。
 
 ### 4.1 调度器即时检测
 

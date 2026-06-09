@@ -162,6 +162,42 @@ class WorkerLockingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(scheduler.last_task_timeout_id, "task-timeout")
         scheduler.redis_client.eval.assert_awaited_once()
 
+    async def test_execute_pending_tasks_runs_with_bounded_concurrency(self):
+        scheduler = TaskScheduler()
+        started = asyncio.Event()
+        first_can_finish = asyncio.Event()
+        running_count = 0
+        max_running_count = 0
+
+        async def execute_task(_task, _now, _current_hour):
+            nonlocal running_count, max_running_count
+            running_count += 1
+            max_running_count = max(max_running_count, running_count)
+            if running_count == 2:
+                started.set()
+            await first_can_finish.wait()
+            running_count -= 1
+
+        with patch.object(
+            scheduler,
+            "_execute_task_from_queue",
+            execute_task,
+        ), patch(
+            "backend.scheduler.core.worker.settings",
+            SimpleNamespace(scheduler_task_concurrency=2),
+        ):
+            task = asyncio.create_task(
+                scheduler._execute_pending_tasks(
+                    [SimpleNamespace(task_id=str(idx)) for idx in range(3)],
+                    now=123,
+                    current_hour=8,
+                )
+            )
+            await asyncio.wait_for(started.wait(), timeout=1)
+            self.assertEqual(max_running_count, 2)
+            first_can_finish.set()
+            await task
+
 
 class SchedulerHealthSnapshotTests(unittest.IsolatedAsyncioTestCase):
     async def test_health_snapshot_marks_due_tasks_without_queue_unhealthy(self):

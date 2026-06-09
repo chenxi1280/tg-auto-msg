@@ -178,15 +178,32 @@ return 0
 
             logger.info("本次扫描待执行任务数: {}", len(tasks_to_execute))
 
-            # 3. 并发执行任务（受速率限制控制）
-            for task_data in tasks_to_execute:
-                await self._execute_task_from_queue(task_data, now, current_hour)
+            await self._execute_pending_tasks(tasks_to_execute, now, current_hour)
             self.last_tick_error = None
         except Exception as exc:
             self.last_tick_error = f"{type(exc).__name__}: {exc}"
             raise
         finally:
             self.last_tick_finished_at = datetime.now()
+
+    async def _execute_pending_tasks(
+        self,
+        tasks_to_execute: list,
+        now: int,
+        current_hour: int,
+    ):
+        """Execute due tasks with bounded concurrency."""
+        concurrency = max(
+            1,
+            int(getattr(settings, "scheduler_task_concurrency", 3) or 3),
+        )
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def run_one(task_data):
+            async with semaphore:
+                await self._execute_task_from_queue(task_data, now, current_hour)
+
+        await asyncio.gather(*(run_one(task_data) for task_data in tasks_to_execute))
 
     async def _enqueue_tasks(self, now: int):
         """

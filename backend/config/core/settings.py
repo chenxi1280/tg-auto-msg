@@ -69,6 +69,11 @@ class Settings(BaseSettings):
         alias="SCHEDULER_TASK_TIMEOUT_SECONDS",
         description="单个调度任务最大执行秒数，防止一个任务卡死整个调度器"
     )
+    scheduler_task_concurrency: int = Field(
+        default=3,
+        alias="SCHEDULER_TASK_CONCURRENCY",
+        description="调度器单轮最多并发执行的任务数，避免慢任务串行阻塞所有到点任务"
+    )
 
     # 绑定安全配置
     bind_max_failures: int = Field(
@@ -127,6 +132,11 @@ class Settings(BaseSettings):
             raise ValueError(
                 "SCHEDULER_TASK_TIMEOUT_SECONDS 必须 >= 1，"
                 f"当前值: {self.scheduler_task_timeout_seconds}"
+            )
+        if self.scheduler_task_concurrency < 1:
+            raise ValueError(
+                "SCHEDULER_TASK_CONCURRENCY 必须 >= 1，"
+                f"当前值: {self.scheduler_task_concurrency}"
             )
         return self
 
