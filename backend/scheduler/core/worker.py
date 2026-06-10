@@ -170,7 +170,11 @@ return 0
                 return
 
             # 2. 从 Redis 队列获取需要执行的任务
-            tasks_to_execute = await self._get_pending_tasks(now)
+            concurrency = self._task_concurrency()
+            tasks_to_execute = await self._get_pending_tasks(
+                now,
+                batch_size=concurrency,
+            )
 
             if not tasks_to_execute:
                 self.last_tick_error = None
@@ -193,10 +197,7 @@ return 0
         current_hour: int,
     ):
         """Execute due tasks with bounded concurrency."""
-        concurrency = max(
-            1,
-            int(getattr(settings, "scheduler_task_concurrency", 3) or 3),
-        )
+        concurrency = self._task_concurrency()
         semaphore = asyncio.Semaphore(concurrency)
 
         async def run_one(task_data):
@@ -204,6 +205,12 @@ return 0
                 await self._execute_task_from_queue(task_data, now, current_hour)
 
         await asyncio.gather(*(run_one(task_data) for task_data in tasks_to_execute))
+
+    def _task_concurrency(self) -> int:
+        return max(
+            1,
+            int(getattr(settings, "scheduler_task_concurrency", 3) or 3),
+        )
 
     async def _enqueue_tasks(self, now: int):
         """
@@ -221,7 +228,7 @@ return 0
             urgent_priority_threshold=self.URGENT_PRIORITY_THRESHOLD,
         )
 
-    async def _get_pending_tasks(self, now: int) -> list:
+    async def _get_pending_tasks(self, now: int, *, batch_size: int) -> list:
         """
         从 Redis 队列获取需要执行的任务
 
@@ -235,7 +242,7 @@ return 0
             now=now,
             redis_client=self.redis_client,
             queue_key=self.TASK_QUEUE_KEY,
-            batch_size=50,
+            batch_size=batch_size,
         )
 
     async def _execute_task_from_queue(
