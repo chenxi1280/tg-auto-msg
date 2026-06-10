@@ -33,9 +33,13 @@ class _FakeQueueSession:
     def __init__(self, task):
         self._task = task
         self.commits = 0
+        self.added = []
 
     async def execute(self, _statement):
         return _FakeQueueScalarResult(self._task)
+
+    def add(self, item):
+        self.added.append(item)
 
     async def commit(self):
         self.commits += 1
@@ -363,6 +367,63 @@ class AccountSelectionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TaskRunnerReauthTests(unittest.IsolatedAsyncioTestCase):
+    async def test_execute_task_once_skips_offline_account_before_connecting(self):
+        task = SimpleNamespace(
+            task_id="task-offline",
+            title="离线任务",
+            user_id=9,
+            account_id="acc-offline",
+            enabled=True,
+            next_run_at=1,
+            start_at=None,
+            end_at=None,
+            repeat_interval_min=10,
+            text=None,
+            media_type="none",
+            buttons=None,
+            target_peers=[],
+            target_peer_id=1001,
+            target_peer_type="channel",
+            target_access_hash=None,
+            chat_id=None,
+            failure_count=0,
+        )
+        account = SimpleNamespace(
+            account_id="acc-offline",
+            username="sender",
+            phone="",
+            first_name="",
+            health_status=HealthStatus.OFFLINE,
+            reauth_required=False,
+            reauth_reason=None,
+        )
+        session = _FakeQueueSession(task)
+        account_manager = SimpleNamespace(
+            get_account=AsyncMock(return_value=account),
+            ensure_account_proxy=AsyncMock(),
+            get_client=AsyncMock(return_value=None),
+        )
+        auth_summary = SimpleNamespace(can_create_tasks=True)
+
+        @asynccontextmanager
+        async def fake_session_ctx():
+            yield session
+
+        with (
+            patch("backend.scheduler.core.task_runner.get_async_session", fake_session_ctx),
+            patch("backend.scheduler.core.task_runner.get_account_manager", return_value=account_manager),
+            patch("backend.scheduler.core.task_runner.get_account_authorization_summary", AsyncMock(return_value=auth_summary)),
+        ):
+            summary = await execute_task_once("task-offline")
+
+        self.assertEqual(summary.status, "skipped")
+        self.assertIn("离线", summary.error_summary)
+        self.assertTrue(task.enabled)
+        self.assertGreater(task.next_run_at, 1)
+        self.assertEqual(session.commits, 1)
+        account_manager.ensure_account_proxy.assert_not_awaited()
+        account_manager.get_client.assert_not_awaited()
+
     async def test_execute_task_once_stops_reauth_required_account_before_sending(self):
         task = SimpleNamespace(
             task_id="task-reauth",
