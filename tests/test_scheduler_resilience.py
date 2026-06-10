@@ -198,6 +198,38 @@ class WorkerLockingTests(unittest.IsolatedAsyncioTestCase):
             first_can_finish.set()
             await task
 
+    async def test_tick_claims_only_available_concurrency_slots(self):
+        scheduler = TaskScheduler()
+        scheduler.redis_client = SimpleNamespace()
+        claimed_batch_sizes = []
+
+        async def get_pending_tasks(**kwargs):
+            claimed_batch_sizes.append(kwargs["batch_size"])
+            return [SimpleNamespace(task_id="task-1")]
+
+        with patch.object(
+            scheduler,
+            "_ensure_redis_connection",
+            AsyncMock(),
+        ), patch.object(
+            scheduler,
+            "_enqueue_tasks",
+            AsyncMock(),
+        ), patch(
+            "backend.scheduler.core.worker._get_pending_tasks",
+            get_pending_tasks,
+        ), patch.object(
+            scheduler,
+            "_execute_pending_tasks",
+            AsyncMock(),
+        ), patch(
+            "backend.scheduler.core.worker.settings",
+            SimpleNamespace(scheduler_task_concurrency=2),
+        ):
+            await scheduler.tick()
+
+        self.assertEqual(claimed_batch_sizes, [2])
+
 
 class SchedulerHealthSnapshotTests(unittest.IsolatedAsyncioTestCase):
     async def test_health_snapshot_marks_due_tasks_without_queue_unhealthy(self):
