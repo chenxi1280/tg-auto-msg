@@ -24,7 +24,7 @@ from backend.bot.account.proxy_observation import (
 from backend.bot.circuit.breaker import FloodWaitAction, get_circuit_breaker
 from backend.config.core.settings import settings
 from backend.database.runtime.session import get_async_session
-from backend.database.schema.models import Account, ScheduledMessageTask, TaskTriggerSource
+from backend.database.schema.models import Account, HealthStatus, ScheduledMessageTask, TaskTriggerSource
 from backend.h5_backend.services.licensing.service import (
     disable_tasks_for_account_if_unlicensed,
     get_account_authorization_summary,
@@ -183,6 +183,42 @@ async def _mark_reauth_required_and_defer(
         await session.commit()
 
 
+def _account_health_value(account) -> str:
+    raw_status = getattr(account, "health_status", "") or ""
+    if hasattr(raw_status, "value"):
+        raw_status = raw_status.value
+    return str(raw_status).strip().lower()
+
+
+def _is_account_unavailable(account) -> bool:
+    status = _account_health_value(account)
+    return bool(status) and status != HealthStatus.ONLINE.value
+
+
+async def _defer_unavailable_account(
+    *,
+    task: ScheduledMessageTask,
+    session,
+    now: int,
+    advance_schedule: bool,
+    trigger_source: str,
+    account_display: str,
+) -> TaskExecutionSummary:
+    if advance_schedule:
+        task.next_run_at = now + max(1, int(task.repeat_interval_min or 1)) * 60
+        await session.commit()
+    return _build_summary(
+        task=task,
+        trigger_source=trigger_source,
+        status="skipped",
+        total_targets=0,
+        success_count=0,
+        failed_count=0,
+        error_summary="当前执行账号离线，已暂缓任务发送",
+        account_display=account_display,
+    )
+
+
 def _target_label(spec: dict) -> str:
     title = spec.get("title")
     if title:
@@ -249,6 +285,15 @@ async def _validate_and_resolve(
                 task=task, trigger_source=trigger_source,
                 status="skipped", total_targets=0, success_count=0, failed_count=0,
                 error_summary="当前执行账号需要重新绑定后才能发送，相关任务已暂缓",
+                account_display=account_display,
+            )
+        if account and _is_account_unavailable(account):
+            return await _defer_unavailable_account(
+                task=task,
+                session=session,
+                now=now,
+                advance_schedule=advance_schedule,
+                trigger_source=trigger_source,
                 account_display=account_display,
             )
         if account and is_proxy_observation_active(account) and not proxy_observation_has_send_budget(account):
