@@ -191,11 +191,6 @@ async def ensure_account_proxy(manager, account_id: str) -> Optional[int]:
         return None
 
     proxy_pool = get_proxy_pool()
-    if account.proxy_id:
-        current_proxy = await proxy_pool.get_proxy(account.proxy_id)
-        if current_proxy and bool(getattr(current_proxy, "is_system_gateway", False)):
-            return account.proxy_id
-
     async def _assign_replacement() -> Optional[int]:
         replacement = await proxy_pool.get_available_proxy()
         if not replacement:
@@ -207,6 +202,25 @@ async def ensure_account_proxy(manager, account_id: str) -> Optional[int]:
         await close_client(manager, account_id)
         logger.info(f"账号 {account_id} 已切换代理 -> {replacement.proxy_id}")
         return replacement.proxy_id
+
+    if account.proxy_id:
+        current_proxy = await proxy_pool.get_proxy(account.proxy_id)
+        if current_proxy and bool(getattr(current_proxy, "is_system_gateway", False)):
+            proxy_active = bool(getattr(current_proxy, "is_active", False))
+            proxy_healthy = bool(getattr(current_proxy, "is_healthy", False))
+            if proxy_active and proxy_healthy:
+                return account.proxy_id
+            logger.warning(
+                "账号 {} 的系统代理 {} 不可用(active={}, healthy={})，解除绑定",
+                account_id,
+                account.proxy_id,
+                proxy_active,
+                proxy_healthy,
+            )
+            await proxy_pool.unassign_proxy(account_id)
+            await manager.update_account(account_id, proxy_id=None)
+            await close_client(manager, account_id)
+            return await _assign_replacement()
 
     if not account.proxy_id:
         return await _assign_replacement()
