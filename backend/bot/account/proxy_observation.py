@@ -84,11 +84,12 @@ async def upsert_sing_box_proxy_region(session, region: ProxyRegion) -> Proxy:
         session.add(row)
         await session.flush()
     else:
+        if not bool(row.is_active) or not bool(row.is_healthy):
+            raise HTTPException(status_code=409, detail="该代理地区当前不可用，请选择其他地区或使用直连账号")
         row.display_name = region.label
         row.region_code = region.code
         row.is_system_gateway = True
         row.is_shared = True
-        row.is_active = True
         row.assigned_account_id = None
         row.username = None
         row.password_encrypted = None
