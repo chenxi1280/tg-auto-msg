@@ -191,17 +191,6 @@ async def ensure_account_proxy(manager, account_id: str) -> Optional[int]:
         return None
 
     proxy_pool = get_proxy_pool()
-    async def _assign_replacement() -> Optional[int]:
-        replacement = await proxy_pool.get_available_proxy()
-        if not replacement:
-            return None
-        assigned = await proxy_pool.assign_proxy(account_id, replacement.proxy_id)
-        if not assigned:
-            return None
-        await manager.update_account(account_id, proxy_id=replacement.proxy_id)
-        await close_client(manager, account_id)
-        logger.info(f"账号 {account_id} 已切换代理 -> {replacement.proxy_id}")
-        return replacement.proxy_id
 
     if account.proxy_id:
         current_proxy = await proxy_pool.get_proxy(account.proxy_id)
@@ -220,27 +209,22 @@ async def ensure_account_proxy(manager, account_id: str) -> Optional[int]:
             await proxy_pool.unassign_proxy(account_id)
             await manager.update_account(account_id, proxy_id=None)
             await close_client(manager, account_id)
-            return await _assign_replacement()
+            return None
 
     if not account.proxy_id:
-        return await _assign_replacement()
+        return None
 
     status = await proxy_pool.check_health(account.proxy_id)
     if status.is_healthy:
         return account.proxy_id
 
     logger.warning(
-        f"账号 {account_id} 的代理 {account.proxy_id} 不健康({status.error or 'unknown'})，尝试替换"
+        f"账号 {account_id} 的代理 {account.proxy_id} 不健康({status.error or 'unknown'})，解除绑定后使用直连"
     )
     await proxy_pool.unassign_proxy(account_id)
     await manager.update_account(account_id, proxy_id=None)
 
-    replacement_id = await _assign_replacement()
-    if replacement_id is not None:
-        return replacement_id
-
     await close_client(manager, account_id)
-    logger.warning(f"账号 {account_id} 未找到可用代理，将使用直连")
     return None
 
 
