@@ -18,6 +18,7 @@ from backend.scheduler.core.queue_ops import (
     get_pending_tasks as _get_pending_tasks,
 )
 from backend.scheduler.core.task_runner import execute_task_once as _execute_task_once
+from backend.scheduler.core.task_lifecycle import handle_task_failure
 
 
 class TaskScheduler:
@@ -305,6 +306,7 @@ return 0
             except asyncio.TimeoutError:
                 self.last_task_timeout_id = str(task_id)
                 self.last_task_timeout_at = datetime.now()
+                await self._record_task_timeout(str(task_id), timeout_seconds=timeout_seconds)
                 logger.error(
                     "任务 {} 执行超过 {} 秒，已中断本次执行并释放调度锁，避免阻塞后续任务",
                     task_id,
@@ -331,6 +333,30 @@ return 0
                 1,
                 processing_key,
                 processing_token,
+            )
+
+    async def _record_task_timeout(self, task_id: str, *, timeout_seconds: int) -> None:
+        """Persist timeout as a task failure so it cannot loop immediately."""
+        async with get_async_session() as session:
+            from sqlalchemy import select
+
+            result = await session.execute(
+                select(ScheduledMessageTask).where(
+                    ScheduledMessageTask.task_id == str(task_id),
+                    ScheduledMessageTask.enabled == True,
+                )
+            )
+            task = result.scalar_one_or_none()
+            if task is None:
+                return
+            await handle_task_failure(
+                session=session,
+                task=task,
+                error_message=f"任务执行超过 {timeout_seconds} 秒",
+                max_failure_count=settings.max_failure_count,
+                trigger_source="scheduler",
+                advance_schedule=True,
+                apply_disable_policy=True,
             )
 
 # 全局调度器实例

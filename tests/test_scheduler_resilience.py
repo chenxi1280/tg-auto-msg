@@ -156,7 +156,11 @@ class WorkerLockingTests(unittest.IsolatedAsyncioTestCase):
         ), patch(
             "backend.scheduler.core.worker.settings",
             SimpleNamespace(scheduler_task_timeout_seconds=1),
-        ):
+        ), patch.object(
+            scheduler,
+            "_record_task_timeout",
+            AsyncMock(),
+        ) as record_timeout:
             await scheduler._execute_task_from_queue(
                 SimpleNamespace(task_id="task-timeout"),
                 now=123,
@@ -164,6 +168,7 @@ class WorkerLockingTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(scheduler.last_task_timeout_id, "task-timeout")
+        record_timeout.assert_awaited_once_with("task-timeout", timeout_seconds=1)
         scheduler.redis_client.eval.assert_awaited_once()
 
     async def test_execute_pending_tasks_runs_with_bounded_concurrency(self):
