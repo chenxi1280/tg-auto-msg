@@ -11,10 +11,21 @@ from backend.bot.account.proxy_observation import (
     proxy_observation_has_send_budget,
     proxy_observation_remaining_seconds,
     reset_proxy_observation,
+    select_reauth_proxy_for_account,
     start_proxy_observation,
 )
-from backend.database.schema.models import Account
+from fastapi import HTTPException
+
+from backend.database.schema.models import Account, Proxy
 from backend.scheduler.core.task_runner import _lock_and_recheck_observation_budget
+
+
+class _ScalarResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar_one_or_none(self):
+        return self._value
 
 
 class TestAccountProxyObservation(unittest.IsolatedAsyncioTestCase):
@@ -178,3 +189,58 @@ class TestAccountProxyObservation(unittest.IsolatedAsyncioTestCase):
         assert targets == []
         assert task.next_run_at == int(account.proxy_observation_until.timestamp())
         assert session.committed is True
+
+    async def test_select_reauth_proxy_rejects_unavailable_existing_region(self):
+        account = Account(
+            account_id="acc-1",
+            user_id=9,
+            username="sender",
+            string_session_encrypted="encrypted",
+            proxy_id=None,
+            reauth_required=False,
+            health_status="online",
+        )
+        proxy = Proxy(
+            proxy_id=1,
+            proxy_type="socks5",
+            host="sing-box",
+            port=10801,
+            display_name="香港",
+            region_code="hk",
+            is_system_gateway=True,
+            is_shared=True,
+            is_active=False,
+            is_healthy=False,
+        )
+
+        class FakeSession:
+            flushed = False
+
+            async def get(self, model, key):
+                if model is Account and key == "acc-1":
+                    return account
+                return None
+
+            async def execute(self, statement):
+                assert "FROM proxies" in str(statement)
+                return _ScalarResult(proxy)
+
+            async def flush(self):
+                self.flushed = True
+
+        session = FakeSession()
+
+        with self.assertRaises(HTTPException) as raised:
+            await select_reauth_proxy_for_account(
+                session,
+                user_id=9,
+                account_id="acc-1",
+                region_code="hk",
+            )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertFalse(proxy.is_active)
+        self.assertFalse(proxy.is_healthy)
+        self.assertIsNone(account.proxy_id)
+        self.assertFalse(account.reauth_required)
+        self.assertFalse(session.flushed)
