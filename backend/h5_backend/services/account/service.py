@@ -15,6 +15,7 @@ from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import HealthStatus
 from backend.h5_backend.dependencies import check_account_permission
 from backend.h5_backend.services.account.auto_sync import (
+    SYNC_TRIGGER_AUTO_TIMER,
     SYNC_TRIGGER_MANUAL,
     account_auto_sync_runtime,
 )
@@ -29,6 +30,23 @@ class AccountService:
     """Account and resource business service."""
     PROFILE_SYNC_TIMEOUT_SECONDS = 30
     RESOURCE_SYNC_TIMEOUT_SECONDS = 5 * 60
+
+    async def _mark_account_offline_for_sync_failure(
+        self,
+        account_manager,
+        account_id: str,
+        *,
+        trigger_source: str,
+        reason: str,
+    ) -> None:
+        if trigger_source == SYNC_TRIGGER_AUTO_TIMER:
+            logger.warning(
+                "auto account sync failed without changing send health: account_id={}, reason={}",
+                account_id,
+                reason,
+            )
+            return
+        await account_manager.update_account(account_id, health_status=HealthStatus.OFFLINE.value)
 
     async def list_accounts(self, user_id: int, probe: bool = False) -> List[Dict[str, Any]]:
         account_manager = get_account_manager()
@@ -138,7 +156,12 @@ class AccountService:
         client = await account_manager.get_client(account_id)
         if not client:
             error = await diagnose_client_unavailable(account_manager, account_id)
-            await account_manager.update_account(account_id, health_status=HealthStatus.OFFLINE.value)
+            await self._mark_account_offline_for_sync_failure(
+                account_manager,
+                account_id,
+                trigger_source=trigger_source,
+                reason=error,
+            )
             return {
                 "account_id": account_id,
                 "user_id": int(account.user_id),
@@ -173,7 +196,12 @@ class AccountService:
                 trigger_source,
                 self.PROFILE_SYNC_TIMEOUT_SECONDS,
             )
-            await account_manager.update_account(account_id, health_status=HealthStatus.OFFLINE.value)
+            await self._mark_account_offline_for_sync_failure(
+                account_manager,
+                account_id,
+                trigger_source=trigger_source,
+                reason=error,
+            )
         except Exception as exc:
             error = f"账号资料同步失败: {type(exc).__name__}: {exc}"
             logger.warning(
@@ -183,7 +211,12 @@ class AccountService:
                 trigger_source,
                 exc,
             )
-            await account_manager.update_account(account_id, health_status=HealthStatus.OFFLINE.value)
+            await self._mark_account_offline_for_sync_failure(
+                account_manager,
+                account_id,
+                trigger_source=trigger_source,
+                reason=error,
+            )
 
         if profile_sync_ok:
             try:

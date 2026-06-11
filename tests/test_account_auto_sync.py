@@ -110,10 +110,9 @@ class AccountAutoSyncTests(unittest.IsolatedAsyncioTestCase):
             skip_reauth_required=True,
         )
 
-    async def test_worker_marks_account_offline_after_sync_timeout(self):
+    async def test_worker_does_not_mark_account_offline_after_sync_timeout(self):
         runtime = AccountAutoSyncRuntime()
         runtime.ACCOUNT_SYNC_TIMEOUT_SECONDS = 0.01
-        runtime.mark_account_offline_after_timeout = AsyncMock()
         await runtime._queue.put(("acc-timeout", 1, SYNC_TRIGGER_AUTO_TIMER))
 
         class SlowAccountService:
@@ -123,15 +122,11 @@ class AccountAutoSyncTests(unittest.IsolatedAsyncioTestCase):
         with patch(
             "backend.h5_backend.services.account.service.get_account_service",
             return_value=SlowAccountService(),
-        ):
+        ), patch("backend.h5_backend.services.account.auto_sync.get_async_session") as session_factory:
             worker = asyncio.create_task(runtime._worker_loop())
             await asyncio.wait_for(runtime._queue.join(), timeout=1)
             worker.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await worker
 
-        runtime.mark_account_offline_after_timeout.assert_awaited_once_with(
-            "acc-timeout",
-            trigger_source=SYNC_TRIGGER_AUTO_TIMER,
-            timeout_seconds=0.01,
-        )
+        session_factory.assert_not_called()

@@ -328,11 +328,6 @@ class AccountAutoSyncRuntime:
         user_id: int,
         trigger_source: str,
     ) -> None:
-        await self.mark_account_offline_after_timeout(
-            account_id,
-            trigger_source=trigger_source,
-            timeout_seconds=self.ACCOUNT_SYNC_TIMEOUT_SECONDS,
-        )
         logger.error(
             "account sync timed out: account_id={}, user_id={}, trigger_source={}, timeout_seconds={}",
             account_id,
@@ -350,26 +345,6 @@ class AccountAutoSyncRuntime:
             if user_id is not None:
                 stmt = stmt.where(Account.user_id == int(user_id))
             return (await session.execute(stmt.limit(1))).scalar_one_or_none()
-
-    async def mark_account_offline_after_timeout(
-        self,
-        account_id: str,
-        *,
-        trigger_source: str,
-        timeout_seconds: float,
-    ) -> None:
-        async with get_async_session() as session:
-            account = await session.get(Account, str(account_id))
-            if account is None:
-                return
-            account.health_status = HealthStatus.OFFLINE.value
-            await session.commit()
-        logger.warning(
-            "account sync timeout marked account offline: account_id={}, trigger_source={}, timeout_seconds={}",
-            account_id,
-            trigger_source,
-            timeout_seconds,
-        )
 
 
 account_auto_sync_runtime = AccountAutoSyncRuntime()
