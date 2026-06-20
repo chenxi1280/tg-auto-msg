@@ -9,7 +9,7 @@ from backend.bot.circuit.breaker import CircuitBreaker
 from backend.bot.account.health_selection import select_account
 from backend.bot.account.manager import AccountSelectionStrategy
 from backend.database.schema.models import HealthStatus, TaskTriggerMode
-from backend.scheduler.core.task_runner import execute_task_once
+from backend.scheduler.core.task_runner import _ValidationResult, _validate_and_resolve, execute_task_once
 from backend.scheduler.core.health import collect_scheduler_health_snapshot
 from backend.scheduler.core.queue_ops import get_pending_tasks
 from backend.scheduler.core.worker import TaskScheduler
@@ -428,6 +428,73 @@ class TaskRunnerReauthTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.commits, 1)
         account_manager.ensure_account_proxy.assert_not_awaited()
         account_manager.get_client.assert_not_awaited()
+
+    async def test_validate_recovers_developer_app_outage_account_before_skip(self):
+        task = SimpleNamespace(
+            task_id="task-dev-app-recovered",
+            title="恢复任务",
+            user_id=9,
+            account_id="acc-recover",
+            enabled=True,
+            next_run_at=1,
+            start_at=None,
+            end_at=None,
+            repeat_interval_min=10,
+            text="hello",
+            media_type="none",
+            buttons=None,
+            target_peers=[],
+            target_peer_id=1001,
+            target_peer_type="channel",
+            target_access_hash=None,
+            chat_id=None,
+            failure_count=0,
+        )
+        offline_account = SimpleNamespace(
+            account_id="acc-recover",
+            username="sender",
+            phone="",
+            first_name="",
+            health_status=HealthStatus.OFFLINE,
+            reauth_required=False,
+            reauth_reason="developer_app_unhealthy",
+        )
+        online_account = SimpleNamespace(
+            account_id="acc-recover",
+            username="sender",
+            phone="",
+            first_name="",
+            health_status=HealthStatus.ONLINE,
+            reauth_required=False,
+            reauth_reason=None,
+        )
+        session = _FakeQueueSession(task)
+        account_manager = SimpleNamespace(
+            get_account=AsyncMock(side_effect=[offline_account, online_account]),
+            health_check=AsyncMock(return_value=HealthStatus.ONLINE),
+            ensure_account_proxy=AsyncMock(),
+            get_client=AsyncMock(return_value=object()),
+        )
+        auth_summary = SimpleNamespace(can_create_tasks=True)
+
+        with patch(
+            "backend.scheduler.core.task_runner.get_account_authorization_summary",
+            AsyncMock(return_value=auth_summary),
+        ):
+            result = await _validate_and_resolve(
+                task_id="task-dev-app-recovered",
+                now=100,
+                advance_schedule=True,
+                trigger_source="scheduler",
+                session=session,
+                account_manager=account_manager,
+            )
+
+        self.assertIsInstance(result, _ValidationResult)
+        account_manager.health_check.assert_awaited_once_with("acc-recover")
+        account_manager.ensure_account_proxy.assert_awaited_once_with("acc-recover")
+        account_manager.get_client.assert_awaited_once_with("acc-recover")
+        self.assertEqual(session.commits, 0)
 
     async def test_execute_task_once_stops_reauth_required_account_before_sending(self):
         task = SimpleNamespace(

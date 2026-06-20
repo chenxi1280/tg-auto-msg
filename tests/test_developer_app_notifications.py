@@ -1,7 +1,9 @@
 import unittest
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from backend.database.schema.models import DeveloperAppHealthStatus, HealthStatus
 from backend.bot.developer_apps.service import (
     DeveloperAppHealthCheckResult,
     DeveloperAppService,
@@ -39,6 +41,103 @@ class DeveloperAppNotificationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(sent, [])
         send_mock.assert_not_awaited()
+
+
+class DeveloperAppRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_recovered_app_probes_stalled_accounts_before_marking_recovered(self):
+        service = DeveloperAppService()
+
+        class _Rows:
+            def scalars(self):
+                return self
+
+            def all(self):
+                return ["acc-ok", "acc-still-offline"]
+
+        class _Session:
+            async def execute(self, _statement):
+                return _Rows()
+
+        @asynccontextmanager
+        async def fake_session_ctx():
+            yield _Session()
+
+        manager = SimpleNamespace(
+            health_check=AsyncMock(
+                side_effect=[HealthStatus.ONLINE, HealthStatus.OFFLINE]
+            )
+        )
+
+        with (
+            patch("backend.bot.developer_apps.service.get_async_session", fake_session_ctx),
+            patch("backend.bot.account.manager.get_account_manager", return_value=manager),
+        ):
+            recovered, unrecovered = await service._recover_stalled_accounts_from_recovered_app(3)
+
+        self.assertEqual(recovered, ["acc-ok"])
+        self.assertEqual(unrecovered, ["acc-still-offline"])
+        manager.health_check.assert_any_await("acc-ok")
+        manager.health_check.assert_any_await("acc-still-offline")
+
+    async def test_health_recovery_returns_account_recovery_results(self):
+        service = DeveloperAppService()
+        row = SimpleNamespace(
+            id=3,
+            app_name="app",
+            api_id=123,
+            api_hash_encrypted="encrypted",
+            is_active=True,
+            max_accounts=0,
+            selection_weight=100,
+            health_status=DeveloperAppHealthStatus.UNHEALTHY.value,
+            last_health_check_at=None,
+            last_health_error="boom",
+            last_health_latency_ms=None,
+            health_fail_count=2,
+            credentials_version=1,
+            last_rotated_at=None,
+            notes=None,
+        )
+
+        class _Session:
+            def __init__(self):
+                self.added = []
+                self.commits = 0
+
+            async def get(self, _model, _id):
+                return row
+
+            def add(self, item):
+                self.added.append(item)
+
+            async def commit(self):
+                self.commits += 1
+
+        session = _Session()
+
+        @asynccontextmanager
+        async def fake_session_ctx():
+            yield session
+
+        with (
+            patch("backend.bot.developer_apps.service.get_async_session", fake_session_ctx),
+            patch.object(
+                service,
+                "_probe_app",
+                AsyncMock(return_value=(DeveloperAppHealthStatus.HEALTHY.value, None, 50)),
+            ),
+            patch.object(
+                service,
+                "_recover_stalled_accounts_from_recovered_app",
+                AsyncMock(return_value=(["acc-ok"], ["acc-still-offline"])),
+            ) as recover_mock,
+        ):
+            result = await service.check_app_health(3, notify_admins=False)
+
+        recover_mock.assert_awaited_once_with(3)
+        self.assertEqual(result["current_status"], DeveloperAppHealthStatus.HEALTHY.value)
+        self.assertEqual(result["recovered_account_ids"], ["acc-ok"])
+        self.assertEqual(result["unrecovered_account_ids"], ["acc-still-offline"])
 
 
 class DeveloperAppCredentialRotationTests(unittest.IsolatedAsyncioTestCase):

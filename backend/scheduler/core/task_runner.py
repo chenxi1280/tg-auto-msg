@@ -16,6 +16,7 @@ from backend.bot.account.reauth_notifier import (
     mark_account_reauth_required,
     notify_account_authorization_required,
 )
+from backend.bot.developer_apps.service import DEVELOPER_APP_UNHEALTHY_REASON
 from backend.bot.account.proxy_observation import (
     claim_proxy_observation_send_budget,
     is_proxy_observation_active,
@@ -195,6 +196,27 @@ def _is_account_unavailable(account) -> bool:
     return bool(status) and status != HealthStatus.ONLINE.value
 
 
+def _is_recoverable_developer_app_outage_account(account) -> bool:
+    reason = str(getattr(account, "reauth_reason", "") or "").strip().lower()
+    return (
+        _account_health_value(account) == HealthStatus.OFFLINE.value
+        and not bool(getattr(account, "reauth_required", False))
+        and reason == DEVELOPER_APP_UNHEALTHY_REASON
+    )
+
+
+async def _try_recover_developer_app_outage_account(account_manager, account):
+    account_id = str(getattr(account, "account_id", "") or "").strip()
+    if not account_id:
+        return account
+    status = await account_manager.health_check(account_id)
+    value = status.value if hasattr(status, "value") else status
+    if str(value or "").strip().lower() != HealthStatus.ONLINE.value:
+        return account
+    refreshed = await account_manager.get_account(account_id)
+    return refreshed or account
+
+
 async def _defer_unavailable_account(
     *,
     task: ScheduledMessageTask,
@@ -287,6 +309,12 @@ async def _validate_and_resolve(
                 error_summary="当前执行账号需要重新绑定后才能发送，相关任务已暂缓",
                 account_display=account_display,
             )
+        if account and _is_recoverable_developer_app_outage_account(account):
+            account = await _try_recover_developer_app_outage_account(
+                account_manager,
+                account,
+            )
+            account_display = _account_display_name(account, task.account_id)
         if account and _is_account_unavailable(account):
             return await _defer_unavailable_account(
                 task=task,

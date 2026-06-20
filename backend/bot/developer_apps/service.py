@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, Any, Dict, List, Iterable, Sequence
 
@@ -36,6 +36,7 @@ DEFAULT_ASSIGNMENT_MODE = "round_robin"
 DEFAULT_SELECTION_WEIGHT = 100
 HEALTH_CHECK_TIMEOUT_SECONDS = 20
 HEALTH_FAILURE_THRESHOLD = 2
+DEVELOPER_APP_UNHEALTHY_REASON = "developer_app_unhealthy"
 ASSIGNMENT_CONTEXT_NEW = "new_account_initial_assign"
 ASSIGNMENT_CONTEXT_EXISTING_REASSIGN = "existing_account_reassign"
 
@@ -70,6 +71,8 @@ class DeveloperAppHealthCheckResult:
     status_changed: bool
     migration_executed: bool
     probe_failed_without_downgrade: bool
+    recovered_account_ids: List[str] = field(default_factory=list)
+    unrecovered_account_ids: List[str] = field(default_factory=list)
 
 
 def _user_app_key(user_id: int) -> str:
@@ -1130,7 +1133,7 @@ class DeveloperAppService:
             if target_app_id is None:
                 account.health_status = HealthStatus.OFFLINE.value
                 account.reauth_required = False
-                account.reauth_reason = "developer_app_unhealthy"
+                account.reauth_reason = DEVELOPER_APP_UNHEALTHY_REASON
                 account.reauth_required_at = None
                 stalled.append(account.account_id)
                 continue
@@ -1143,6 +1146,53 @@ class DeveloperAppService:
             account.reauth_required_at = None
             migrated.append(account.account_id)
         return migrated, stalled
+
+    async def _recoverable_stalled_account_ids(self, *, app_id: int) -> List[str]:
+        async with get_async_session() as session:
+            rows = (
+                await session.execute(
+                    select(Account.account_id).where(
+                        Account.developer_app_id == int(app_id),
+                        Account.health_status == HealthStatus.OFFLINE.value,
+                        Account.reauth_required == False,
+                        Account.reauth_reason == DEVELOPER_APP_UNHEALTHY_REASON,
+                    )
+                )
+            ).scalars().all()
+        return [str(account_id) for account_id in rows]
+
+    @staticmethod
+    def _is_online_health_status(status: Any) -> bool:
+        value = status.value if hasattr(status, "value") else status
+        return str(value or "").strip().lower() == HealthStatus.ONLINE.value
+
+    async def _recover_stalled_accounts_from_recovered_app(
+        self,
+        app_id: int,
+    ) -> tuple[List[str], List[str]]:
+        from backend.bot.account.manager import get_account_manager
+
+        account_ids = await self._recoverable_stalled_account_ids(app_id=int(app_id))
+        manager = get_account_manager()
+        recovered: List[str] = []
+        unrecovered: List[str] = []
+        for account_id in account_ids:
+            try:
+                status = await manager.health_check(account_id)
+            except Exception as exc:
+                logger.warning(
+                    "开发者应用恢复后账号探测失败: app_id={}, account_id={}, error={}",
+                    app_id,
+                    account_id,
+                    exc,
+                )
+                unrecovered.append(account_id)
+                continue
+            if self._is_online_health_status(status):
+                recovered.append(account_id)
+            else:
+                unrecovered.append(account_id)
+        return recovered, unrecovered
 
     async def _close_cached_clients(self, account_ids: Sequence[str]) -> None:
         if not account_ids:
@@ -1240,7 +1290,10 @@ class DeveloperAppService:
         checked_at = datetime.now()
         migrated_account_ids: List[str] = []
         stalled_account_ids: List[str] = []
+        recovered_account_ids: List[str] = []
+        unrecovered_account_ids: List[str] = []
         is_manual_check = actor != "system"
+        should_recover_stalled_accounts = False
 
         async with get_async_session() as session:
             row = await session.get(TelegramDeveloperApp, int(app_id))
@@ -1272,6 +1325,11 @@ class DeveloperAppService:
                     session,
                     app_id=int(app_id),
                 )
+            should_recover_stalled_accounts = (
+                previous_status == DeveloperAppHealthStatus.UNHEALTHY.value
+                and current_status == DeveloperAppHealthStatus.HEALTHY.value
+                and probe_status == DeveloperAppHealthStatus.HEALTHY.value
+            )
 
             new_snapshot = self._snapshot_app(row)
             changed = previous_status != current_status
@@ -1305,6 +1363,28 @@ class DeveloperAppService:
             await session.commit()
 
         await self._close_cached_clients([*migrated_account_ids, *stalled_account_ids])
+        if should_recover_stalled_accounts:
+            recovered_account_ids, unrecovered_account_ids = (
+                await self._recover_stalled_accounts_from_recovered_app(int(app_id))
+            )
+            if recovered_account_ids or unrecovered_account_ids:
+                async with get_async_session() as session:
+                    row = await session.get(TelegramDeveloperApp, int(app_id))
+                    if row is not None:
+                        await self._append_health_audit(
+                            session,
+                            actor=actor,
+                            action="system.developer_app_accounts_recovered",
+                            app_id=int(app_id),
+                            old_value=previous,
+                            new_value=self._snapshot_app(row),
+                            detail={
+                                "recovered_account_ids": recovered_account_ids,
+                                "unrecovered_account_ids": unrecovered_account_ids,
+                            },
+                            ip_address=ip_address,
+                        )
+                        await session.commit()
         migration_executed = bool(migrated_account_ids or stalled_account_ids)
         result = DeveloperAppHealthCheckResult(
             app_id=int(app_id),
@@ -1322,6 +1402,8 @@ class DeveloperAppService:
             status_changed=previous.get("health_status") != current_status,
             migration_executed=migration_executed,
             probe_failed_without_downgrade=probe_failed_without_downgrade,
+            recovered_account_ids=recovered_account_ids,
+            unrecovered_account_ids=unrecovered_account_ids,
         )
         if is_manual_check:
             self._log_manual_health_check(
@@ -1357,6 +1439,8 @@ class DeveloperAppService:
             "status_changed": result.status_changed,
             "migration_executed": result.migration_executed,
             "probe_failed_without_downgrade": result.probe_failed_without_downgrade,
+            "recovered_account_ids": result.recovered_account_ids,
+            "unrecovered_account_ids": result.unrecovered_account_ids,
         }
 
     async def run_health_check_cycle(self) -> List[Dict[str, Any]]:
