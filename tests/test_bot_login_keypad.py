@@ -298,6 +298,43 @@ class BotLoginKeypadTests(unittest.IsolatedAsyncioTestCase):
         self._assert_registered_menu_is_two_columns(rows)
         self.assertNotIn("📱 绑定账号", [label for row in rows for label in row])
 
+    async def test_account_scoped_phone_login_targets_scoped_account(self):
+        service = BotOnboardingService()
+        event = _FakeCallbackEvent()
+        login_service = SimpleNamespace(
+            create_phone_login_session=AsyncMock(
+                return_value={
+                    "login_id": "login_scoped",
+                    "status": LoginStatus.PHONE_INPUT_REQUIRED.value,
+                }
+            )
+        )
+        me_service = SimpleNamespace(ensure_can_add_tg_account=AsyncMock())
+
+        with patch.object(
+            service,
+            "_get_actor_access_context",
+            AsyncMock(return_value=SimpleNamespace(system_user_id=9, mode="account_scoped", scoped_account_id="acc_1")),
+        ), patch(
+            "backend.bot.onboarding.service.get_me_service",
+            return_value=me_service,
+        ), patch(
+            "backend.bot.onboarding.service.get_login_service",
+            return_value=login_service,
+        ), patch(
+            "backend.bot.onboarding.service.bot_client.send_message",
+            new=AsyncMock(return_value=SimpleNamespace(id=1)),
+        ), patch(
+            "backend.bot.onboarding.service._track_login_message",
+        ):
+            await service.start_phone_account_login(event, 100)
+
+        login_service.create_phone_login_session.assert_awaited_once_with(
+            9,
+            existing_tg_user_id=100,
+            target_account_id="acc_1",
+        )
+
 
 class LoginServicePhoneCodeLoggingTests(unittest.IsolatedAsyncioTestCase):
     async def test_submit_phone_code_data_logs_callback_keypad_input_mode(self):

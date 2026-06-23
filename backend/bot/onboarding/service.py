@@ -1475,8 +1475,11 @@ class BotOnboardingService:
         if db_user_id is None:
             await self.show_home(event, tg_user_id)
             return
-        if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED and existing_tg_user_id is None:
-            existing_tg_user_id = int(tg_user_id)
+        if access_ctx.mode == USER_MODE_ACCOUNT_SCOPED:
+            if existing_tg_user_id is None:
+                existing_tg_user_id = int(tg_user_id)
+            if target_account_id is None and access_ctx.scoped_account_id:
+                target_account_id = str(access_ctx.scoped_account_id)
 
         me_service = get_me_service()
         try:
