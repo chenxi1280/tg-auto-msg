@@ -41,6 +41,7 @@ def should_enqueue_auto_timer_sync(
 class AccountAutoSyncRuntime:
     INTERVAL_SECONDS = 60 * 60
     ACCOUNT_SYNC_TIMEOUT_SECONDS = 6 * 60
+    AUTO_TIMER_ACCOUNT_SYNC_TIMEOUT_SECONDS = 45
 
     def __init__(self) -> None:
         self._running = False
@@ -273,10 +274,11 @@ class AccountAutoSyncRuntime:
         user_id: int,
         trigger_source: str,
     ) -> None:
+        timeout_seconds = self._sync_timeout_seconds(trigger_source)
         try:
             result = await asyncio.wait_for(
                 service.sync_account_snapshot(account_id, trigger_source=trigger_source),
-                timeout=self.ACCOUNT_SYNC_TIMEOUT_SECONDS,
+                timeout=timeout_seconds,
             )
             self._log_account_sync_finished(
                 result,
@@ -291,6 +293,7 @@ class AccountAutoSyncRuntime:
                 account_id=account_id,
                 user_id=user_id,
                 trigger_source=trigger_source,
+                timeout_seconds=timeout_seconds,
             )
         except Exception as exc:
             logger.exception(
@@ -301,6 +304,11 @@ class AccountAutoSyncRuntime:
                 type(exc).__name__,
                 exc,
             )
+
+    def _sync_timeout_seconds(self, trigger_source: str) -> float:
+        if trigger_source == SYNC_TRIGGER_AUTO_TIMER:
+            return float(self.AUTO_TIMER_ACCOUNT_SYNC_TIMEOUT_SECONDS)
+        return float(self.ACCOUNT_SYNC_TIMEOUT_SECONDS)
 
     def _log_account_sync_finished(
         self,
@@ -327,13 +335,14 @@ class AccountAutoSyncRuntime:
         account_id: str,
         user_id: int,
         trigger_source: str,
+        timeout_seconds: float,
     ) -> None:
         logger.error(
             "account sync timed out: account_id={}, user_id={}, trigger_source={}, timeout_seconds={}",
             account_id,
             user_id,
             trigger_source,
-            self.ACCOUNT_SYNC_TIMEOUT_SECONDS,
+            timeout_seconds,
         )
 
     async def _load_active_account(self, account_id: str, *, user_id: Optional[int] = None) -> Optional[Account]:
