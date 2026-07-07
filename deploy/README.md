@@ -18,6 +18,8 @@
   - 生成或校验 Docker 所需环境变量。
 - `check-services.sh`
   - 后端容器、宿主机前端入口、基础设施健康检查、自愈和告警。
+- `scheduled-restart.sh`
+  - 低峰定时重启当前 release 的 `app` 服务，并验证容器健康与宿主机 API 反代。
 - `check-frontend.sh`
   - 宿主机 Nginx 前端入口可用性巡检。
 - `nginx/`

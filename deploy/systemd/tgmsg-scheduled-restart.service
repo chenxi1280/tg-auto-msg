@@ -1,0 +1,13 @@
+[Unit]
+Description=tgmsg scheduled app restart
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/data/tgmsg/current
+Environment=TZ=Asia/Shanghai
+EnvironmentFile=-/etc/tgmsg/scheduled-restart.env
+TimeoutStartSec=480
+ExecStart=/usr/bin/env bash /data/tgmsg/current/deploy/scheduled-restart.sh
+

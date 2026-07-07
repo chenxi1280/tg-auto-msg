@@ -1,0 +1,11 @@
+[Unit]
+Description=Run tgmsg scheduled app restart weekly
+
+[Timer]
+OnCalendar=Wed *-*-* 04:20:00
+AccuracySec=1min
+Persistent=false
+Unit=tgmsg-scheduled-restart.service
+
+[Install]
+WantedBy=timers.target

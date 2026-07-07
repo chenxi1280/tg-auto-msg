@@ -79,9 +79,12 @@ install_systemd_units() {
 
   cp "${RELEASE_DIR}/deploy/systemd/tgmsg-healthcheck.service" /etc/systemd/system/
   cp "${RELEASE_DIR}/deploy/systemd/tgmsg-healthcheck.timer" /etc/systemd/system/
+  cp "${RELEASE_DIR}/deploy/systemd/tgmsg-scheduled-restart.service" /etc/systemd/system/
+  cp "${RELEASE_DIR}/deploy/systemd/tgmsg-scheduled-restart.timer" /etc/systemd/system/
 
   systemctl daemon-reload
   systemctl enable --now tgmsg-healthcheck.timer
+  systemctl enable --now tgmsg-scheduled-restart.timer
 }
 
 prepare_shared_layout() {

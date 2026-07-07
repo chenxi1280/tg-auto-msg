@@ -184,3 +184,35 @@ docker compose --env-file /data/tgmsg/shared/.env ps
 # 回滚
 bash /data/tgmsg/current/deploy/rollback.sh <release_id>
 ```
+
+## 8. 定时重启
+
+线上安装 `tgmsg-scheduled-restart.timer`，默认每周三 `04:20 Asia/Shanghai` 执行一次，只重启当前 release 的 `app` 服务：
+
+```bash
+systemctl list-timers 'tgmsg-scheduled-restart*'
+journalctl -u tgmsg-scheduled-restart.service -n 100 --no-pager
+tail -n 100 /data/tgmsg/shared/logs/scheduled-restart.log
+```
+
+重启动作通过 `/data/tgmsg/current/deploy/scheduled-restart.sh` 执行，脚本会：
+
+- 使用 `/data/tgmsg/current` 和 `/data/tgmsg/shared/.env`
+- 通过 `docker compose up -d --no-build --force-recreate app` 重建业务容器
+- 等待 `tgmsg-app` healthy
+- 验证本机 OpenAPI 与宿主机 `/api` 反代
+- 使用 `/run/tgmsg-scheduled-restart.lock` 避免并发执行
+
+如需临时关闭：
+
+```bash
+systemctl disable --now tgmsg-scheduled-restart.timer
+```
+
+如需不禁用 timer 但跳过执行：
+
+```bash
+mkdir -p /etc/tgmsg
+printf 'TGMSG_SCHEDULED_RESTART_ENABLED=0\n' > /etc/tgmsg/scheduled-restart.env
+systemctl daemon-reload
+```
