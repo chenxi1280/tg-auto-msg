@@ -24,3 +24,10 @@ class ClashAddressDeployConfigTests(unittest.TestCase):
 
         self.assertIn("download.docker.com/linux/static", dockerfile)
         self.assertIn("/usr/local/bin/docker", dockerfile)
+        self.assertIn("26.1.3", dockerfile)
+
+    def test_backend_image_installs_compose_plugin_for_apply_command(self):
+        dockerfile = (REPO_ROOT / "docker" / "Dockerfile.backend").read_text(encoding="utf-8")
+
+        self.assertIn("github.com/docker/compose/releases/download", dockerfile)
+        self.assertIn("/usr/local/lib/docker/cli-plugins/docker-compose", dockerfile)
