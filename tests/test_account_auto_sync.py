@@ -66,6 +66,7 @@ class AccountAutoSyncTests(unittest.IsolatedAsyncioTestCase):
             is_banned=False,
             reauth_required=False,
             health_status=HealthStatus.ONLINE.value,
+            proxy_id=None,
         )
 
         self.assertTrue(
@@ -83,8 +84,36 @@ class AccountAutoSyncTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    def test_auto_timer_skips_proxy_accounts_when_enabled(self):
+        now = datetime(2026, 7, 8, 13, 50, 0)
+        proxied_account = SimpleNamespace(
+            is_active=True,
+            is_banned=False,
+            reauth_required=False,
+            health_status=HealthStatus.ONLINE.value,
+            proxy_id=1,
+        )
+
+        self.assertFalse(
+            should_enqueue_auto_timer_sync(
+                proxied_account,
+                latest_resource_sync_at=None,
+                now=now,
+                skip_proxy_accounts=True,
+            )
+        )
+        self.assertTrue(
+            should_enqueue_auto_timer_sync(
+                proxied_account,
+                latest_resource_sync_at=None,
+                now=now,
+                skip_proxy_accounts=False,
+            )
+        )
+
     async def test_run_once_uses_candidate_loader_instead_of_all_active_accounts(self):
         runtime = AccountAutoSyncRuntime()
+        runtime.AUTO_TIMER_MAX_CANDIDATES_PER_RUN = 0
         runtime.load_auto_timer_candidates = AsyncMock(
             return_value=[
                 SimpleNamespace(account_id="acc-stale", user_id=1),
@@ -107,6 +136,27 @@ class AccountAutoSyncTests(unittest.IsolatedAsyncioTestCase):
             "acc-missing",
             trigger_source=SYNC_TRIGGER_AUTO_TIMER,
             user_id=2,
+            skip_reauth_required=True,
+        )
+
+    async def test_run_once_limits_auto_timer_candidates_per_scan(self):
+        runtime = AccountAutoSyncRuntime()
+        runtime.AUTO_TIMER_MAX_CANDIDATES_PER_RUN = 1
+        runtime.load_auto_timer_candidates = AsyncMock(
+            return_value=[
+                SimpleNamespace(account_id="acc-1", user_id=1),
+                SimpleNamespace(account_id="acc-2", user_id=2),
+            ]
+        )
+
+        with patch.object(runtime, "enqueue_account", AsyncMock(return_value={"status": "enqueued"})) as enqueue:
+            await runtime.run_once()
+
+        self.assertEqual(enqueue.await_count, 1)
+        enqueue.assert_awaited_once_with(
+            "acc-1",
+            trigger_source=SYNC_TRIGGER_AUTO_TIMER,
+            user_id=1,
             skip_reauth_required=True,
         )
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
@@ -16,6 +17,19 @@ SYNC_TRIGGER_LOGIN_SUCCESS = "login_success"
 SYNC_TRIGGER_AUTO_TIMER = "auto_timer"
 SYNC_TRIGGER_MANUAL = "manual"
 AUTO_TIMER_RESOURCE_STALE_SECONDS = 24 * 60 * 60
+AUTO_TIMER_UNLIMITED_CANDIDATES = 0
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean value")
 
 
 def should_enqueue_auto_timer_sync(
@@ -23,6 +37,7 @@ def should_enqueue_auto_timer_sync(
     *,
     latest_resource_sync_at: Optional[datetime],
     now: datetime,
+    skip_proxy_accounts: bool = True,
 ) -> bool:
     if not bool(getattr(account, "is_active", False)):
         return False
@@ -31,6 +46,8 @@ def should_enqueue_auto_timer_sync(
     if bool(getattr(account, "reauth_required", False)):
         return False
     if str(getattr(account, "health_status", "")) != HealthStatus.ONLINE.value:
+        return False
+    if skip_proxy_accounts and getattr(account, "proxy_id", None) is not None:
         return False
     if latest_resource_sync_at is None:
         return True
@@ -42,6 +59,8 @@ class AccountAutoSyncRuntime:
     INTERVAL_SECONDS = 60 * 60
     ACCOUNT_SYNC_TIMEOUT_SECONDS = 6 * 60
     AUTO_TIMER_ACCOUNT_SYNC_TIMEOUT_SECONDS = 45
+    AUTO_TIMER_MAX_CANDIDATES_PER_RUN = int(os.getenv("ACCOUNT_AUTO_SYNC_MAX_CANDIDATES_PER_RUN", "1"))
+    AUTO_TIMER_SKIP_PROXY_ACCOUNTS = _env_bool("ACCOUNT_AUTO_SYNC_SKIP_PROXY_ACCOUNTS", True)
 
     def __init__(self) -> None:
         self._running = False
@@ -117,10 +136,15 @@ class AccountAutoSyncRuntime:
         return {"status": "enqueued", "account_id": normalized_account_id, "user_id": normalized_user_id}
 
     async def run_once(self) -> None:
-        rows = await self.load_auto_timer_candidates()
+        loaded_rows = await self.load_auto_timer_candidates()
+        rows = self._limit_auto_timer_candidates(loaded_rows)
 
         if not rows:
-            logger.info("account sync scan queued: total_accounts=0, enqueued=0, deduped=0, queue_size={}", self._queue.qsize())
+            logger.info(
+                "account sync scan queued: total_accounts={}, selected_accounts=0, enqueued=0, deduped=0, queue_size={}",
+                len(loaded_rows),
+                self._queue.qsize(),
+            )
             return
 
         enqueued = 0
@@ -141,7 +165,7 @@ class AccountAutoSyncRuntime:
 
         logger.info(
             "account sync scan queued: total_accounts={}, enqueued={}, deduped={}, queue_size={}",
-            len(rows),
+            len(loaded_rows),
             enqueued,
             deduped,
             self._queue.qsize(),
@@ -158,27 +182,41 @@ class AccountAutoSyncRuntime:
             .group_by(Resource.account_id)
             .subquery()
         )
-        async with get_async_session() as session:
-            result = await session.execute(
-                select(Account.account_id, Account.user_id)
-                .outerjoin(latest_sync, latest_sync.c.account_id == Account.account_id)
-                .where(Account.is_active.is_(True))
-                .where(Account.is_banned.is_(False))
-                .where(Account.reauth_required.is_(False))
-                .where(Account.health_status == HealthStatus.ONLINE.value)
-                .where(
-                    or_(
-                        latest_sync.c.latest_resource_sync_at.is_(None),
-                        latest_sync.c.latest_resource_sync_at <= cutoff,
-                    )
-                )
-                .order_by(
-                    latest_sync.c.latest_resource_sync_at.asc().nullsfirst(),
-                    Account.updated_at.asc(),
-                    Account.account_id.asc(),
+        stmt = (
+            select(Account.account_id, Account.user_id)
+            .outerjoin(latest_sync, latest_sync.c.account_id == Account.account_id)
+            .where(Account.is_active.is_(True))
+            .where(Account.is_banned.is_(False))
+            .where(Account.reauth_required.is_(False))
+            .where(Account.health_status == HealthStatus.ONLINE.value)
+            .where(
+                or_(
+                    latest_sync.c.latest_resource_sync_at.is_(None),
+                    latest_sync.c.latest_resource_sync_at <= cutoff,
                 )
             )
+            .order_by(
+                latest_sync.c.latest_resource_sync_at.asc().nullsfirst(),
+                Account.updated_at.asc(),
+                Account.account_id.asc(),
+            )
+        )
+        if bool(self.AUTO_TIMER_SKIP_PROXY_ACCOUNTS):
+            stmt = stmt.where(Account.proxy_id.is_(None))
+        if int(self.AUTO_TIMER_MAX_CANDIDATES_PER_RUN) > AUTO_TIMER_UNLIMITED_CANDIDATES:
+            stmt = stmt.limit(int(self.AUTO_TIMER_MAX_CANDIDATES_PER_RUN))
+
+        async with get_async_session() as session:
+            result = await session.execute(stmt)
             return result.all()
+
+    def _limit_auto_timer_candidates(self, rows: list[Any]) -> list[Any]:
+        max_candidates = int(self.AUTO_TIMER_MAX_CANDIDATES_PER_RUN)
+        if max_candidates == AUTO_TIMER_UNLIMITED_CANDIDATES:
+            return list(rows)
+        if max_candidates < AUTO_TIMER_UNLIMITED_CANDIDATES:
+            raise ValueError("ACCOUNT_AUTO_SYNC_MAX_CANDIDATES_PER_RUN must be >= 0")
+        return list(rows)[:max_candidates]
 
     async def _worker_loop(self) -> None:
         from backend.h5_backend.services.account.service import get_account_service
