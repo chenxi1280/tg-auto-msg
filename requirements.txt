@@ -17,6 +17,7 @@ apscheduler>=3.10.4
 python-dotenv>=1.0.0
 pydantic>=2.5.3
 pydantic-settings>=2.1.0
+PyYAML>=6.0.1
 qrcode>=7.4.2
 Pillow>=10.2.0
 

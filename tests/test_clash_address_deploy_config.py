@@ -31,3 +31,8 @@ class ClashAddressDeployConfigTests(unittest.TestCase):
 
         self.assertIn("github.com/docker/compose/releases/download", dockerfile)
         self.assertIn("/usr/local/lib/docker/cli-plugins/docker-compose", dockerfile)
+
+    def test_backend_image_has_yaml_dependency_for_sing_box_renderer(self):
+        requirements = (REPO_ROOT / "requirements.txt").read_text(encoding="utf-8")
+
+        self.assertIn("PyYAML", requirements)
