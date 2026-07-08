@@ -22,4 +22,5 @@ class ClashAddressDeployConfigTests(unittest.TestCase):
     def test_backend_image_installs_docker_cli_for_apply_command(self):
         dockerfile = (REPO_ROOT / "docker" / "Dockerfile.backend").read_text(encoding="utf-8")
 
-        self.assertIn("docker.io", dockerfile)
+        self.assertIn("download.docker.com/linux/static", dockerfile)
+        self.assertIn("/usr/local/bin/docker", dockerfile)
