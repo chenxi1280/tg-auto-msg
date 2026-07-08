@@ -9,6 +9,7 @@ from backend.h5_backend.app.lifespan import app_lifespan
 from backend.h5_backend.app.static_site import mount_spa
 from backend.h5_backend.routers.accounts import router as accounts_router
 from backend.h5_backend.routers.admin_auth import router as admin_auth_router
+from backend.h5_backend.routers.admin_clash_addresses import router as admin_clash_addresses_router
 from backend.h5_backend.routers.admin_panel import router as admin_panel_router
 from backend.h5_backend.routers.admin_rbac import router as admin_rbac_router
 from backend.h5_backend.routers.admin_system import router as admin_system_router
@@ -27,6 +28,7 @@ def create_app() -> FastAPI:
 
     app.include_router(auth_router)
     app.include_router(admin_auth_router)
+    app.include_router(admin_clash_addresses_router)
     app.include_router(admin_panel_router)
     app.include_router(admin_rbac_router)
     app.include_router(admin_system_router)

@@ -1176,3 +1176,24 @@ class AppSetting(Base):
 
     def __repr__(self) -> str:
         return f"<AppSetting(key={self.key})>"
+
+
+class ClashAddress(Base):
+    """Clash subscription/config address managed from system settings."""
+    __tablename__ = "clash_addresses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False, comment="地址名称")
+    url: Mapped[str] = mapped_column(Text, nullable=False, comment="Clash 订阅或配置 URL")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, comment="是否当前启用")
+    remark: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="备注")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), comment="创建时间")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间")
+
+    __table_args__ = (
+        Index("idx_clash_addresses_active", "is_active"),
+        Index("idx_clash_addresses_created_at", "created_at"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<ClashAddress(id={self.id}, name={self.name})>"

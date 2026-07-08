@@ -237,6 +237,16 @@ export interface BotNoticeSettings {
   }
 }
 
+export interface ClashAddress {
+  id: number
+  name: string
+  url_masked: string
+  is_active: boolean
+  remark: string
+  created_at: string | null
+  updated_at: string | null
+}
+
 export interface SystemTodayStats {
   date: string
   timezone: string

@@ -30,6 +30,11 @@ services:
       SCHEDULER_TASK_CONCURRENCY: ${SCHEDULER_TASK_CONCURRENCY:-3}
       ACCOUNT_AUTO_SYNC_MAX_CANDIDATES_PER_RUN: ${ACCOUNT_AUTO_SYNC_MAX_CANDIDATES_PER_RUN:-1}
       ACCOUNT_AUTO_SYNC_SKIP_PROXY_ACCOUNTS: ${ACCOUNT_AUTO_SYNC_SKIP_PROXY_ACCOUNTS:-true}
+      CLASH_ADDRESS_CONFIG_DIR: ${CLASH_ADDRESS_CONFIG_DIR:-/data/infra/sing-box}
+      CLASH_ADDRESS_COMPOSE_DIR: ${CLASH_ADDRESS_COMPOSE_DIR:-/data/infra/compose}
+      CLASH_ADDRESS_SUBSCRIPTION_URL_FILE: ${CLASH_ADDRESS_SUBSCRIPTION_URL_FILE:-/data/infra/sing-box/subscription.url}
+      CLASH_ADDRESS_APPLY_COMMAND: ${CLASH_ADDRESS_APPLY_COMMAND:-bash /data/infra/compose/deploy/sync-sing-box.sh}
+      CLASH_ADDRESS_APPLY_TIMEOUT_SECONDS: ${CLASH_ADDRESS_APPLY_TIMEOUT_SECONDS:-120}
       BIND_MAX_FAILURES: ${BIND_MAX_FAILURES:-8}
       BIND_FAILURE_WINDOW_SECONDS: ${BIND_FAILURE_WINDOW_SECONDS:-600}
       BIND_LOCK_SECONDS: ${BIND_LOCK_SECONDS:-900}
@@ -37,6 +42,9 @@ services:
     volumes:
       - ${APP_LOG_DIR:-/data/tgmsg/logs}:/app/logs
       - ${APP_UPLOAD_DIR:-/data/tgmsg/uploads}:/app/uploads
+      - ${CLASH_ADDRESS_CONFIG_DIR:-/data/infra/sing-box}:${CLASH_ADDRESS_CONFIG_DIR:-/data/infra/sing-box}
+      - ${CLASH_ADDRESS_COMPOSE_DIR:-/data/infra/compose}:${CLASH_ADDRESS_COMPOSE_DIR:-/data/infra/compose}:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "${TGMSG_APP_BIND_HOST:-127.0.0.1}:${TGMSG_APP_HOST_PORT:-18000}:8000"
     healthcheck:

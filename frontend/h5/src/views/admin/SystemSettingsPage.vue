@@ -60,17 +60,73 @@
           </el-button>
         </el-form>
       </el-card>
+
+      <el-card shadow="hover">
+        <template #header>
+          <div class="card-header">
+            <span>Clash 地址管理</span>
+            <el-tag type="info">{{ clashAddresses.length }} 条</el-tag>
+          </div>
+        </template>
+        <el-form label-position="top">
+          <div class="clash-form-grid">
+            <el-form-item label="名称">
+              <el-input v-model.trim="clashForm.name" :disabled="!canUpdate" maxlength="100" show-word-limit />
+            </el-form-item>
+            <el-form-item :label="editingClashId === null ? 'Clash 地址' : 'Clash 地址（留空不修改）'">
+              <el-input v-model.trim="clashForm.url" :disabled="!canUpdate" type="password" show-password />
+            </el-form-item>
+            <el-form-item label="备注">
+              <el-input v-model.trim="clashForm.remark" :disabled="!canUpdate" maxlength="255" show-word-limit />
+            </el-form-item>
+            <el-form-item label="启用">
+              <el-switch v-model="clashForm.is_active" :disabled="!canUpdate" />
+            </el-form-item>
+          </div>
+          <div v-if="canUpdate" class="clash-form-actions">
+            <el-button type="primary" :loading="savingClash" @click="saveClashAddress">
+              {{ editingClashId === null ? '新增地址' : '保存地址' }}
+            </el-button>
+            <el-button v-if="editingClashId !== null" @click="resetClashForm">取消编辑</el-button>
+          </div>
+        </el-form>
+        <div class="table-scroll">
+          <el-table :data="clashAddresses" class="clash-table" stripe>
+            <el-table-column label="名称" prop="name" min-width="140" />
+            <el-table-column label="地址" prop="url_masked" min-width="260" />
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="row.is_active ? 'success' : 'info'">{{ row.is_active ? '已启用' : '未启用' }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="备注" prop="remark" min-width="140" />
+            <el-table-column label="操作" width="190" fixed="right">
+              <template #default="{ row }">
+                <el-button v-if="canUpdate" link type="primary" @click="editClashAddress(row)">编辑</el-button>
+                <el-button v-if="canUpdate && !row.is_active" link type="success" @click="activateClashAddress(row.id)">启用</el-button>
+                <el-button v-if="canUpdate" link type="danger" @click="deleteClashAddress(row.id)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+      </el-card>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import type { ClashAddress } from '@/api/admin'
 import {
+  adminActivateClashAddress,
+  adminCreateClashAddress,
+  adminDeleteClashAddress,
   adminGetBotNoticeSettings,
+  adminListClashAddresses,
   adminGetPurchaseSettings,
   adminUpdateBotNoticeSettings,
+  adminUpdateClashAddress,
   adminUpdatePurchaseSettings,
 } from '@/api/admin'
 import { useAdminConsoleStore } from '@/stores/adminConsole'
@@ -80,6 +136,9 @@ const canUpdate = computed(() => store.hasPermission('system.settings.update'))
 
 const savingPurchase = ref(false)
 const savingNotice = ref(false)
+const savingClash = ref(false)
+const editingClashId = ref<number | null>(null)
+const clashAddresses = ref<ClashAddress[]>([])
 
 const purchaseButtons = reactive([
   { text: '联系 Telegram 购买', url: '' },
@@ -93,10 +152,18 @@ const noticeForm = reactive({
   target_url: '',
 })
 
+const clashForm = reactive({
+  name: '',
+  url: '',
+  is_active: false,
+  remark: '',
+})
+
 const loadData = async () => {
-  const [purchaseResponse, noticeResponse] = await Promise.all([
+  const [purchaseResponse, noticeResponse, clashResponse] = await Promise.all([
     adminGetPurchaseSettings(),
     adminGetBotNoticeSettings(),
+    adminListClashAddresses({ limit: 500, offset: 0 }),
   ])
   const buttons = purchaseResponse.data.purchase_buttons?.length
     ? purchaseResponse.data.purchase_buttons
@@ -111,6 +178,7 @@ const loadData = async () => {
   noticeForm.entry_button_text = noticeResponse.data.entry_button_text
   noticeForm.message_text = noticeResponse.data.message_text
   noticeForm.target_url = noticeResponse.data.target_url
+  clashAddresses.value = clashResponse.data.items
 }
 
 const savePurchase = async () => {
@@ -145,6 +213,68 @@ const saveNotice = async () => {
   }
 }
 
+const resetClashForm = () => {
+  editingClashId.value = null
+  clashForm.name = ''
+  clashForm.url = ''
+  clashForm.is_active = false
+  clashForm.remark = ''
+}
+
+const editClashAddress = (row: ClashAddress) => {
+  editingClashId.value = row.id
+  clashForm.name = row.name
+  clashForm.url = ''
+  clashForm.is_active = row.is_active
+  clashForm.remark = row.remark || ''
+}
+
+const saveClashAddress = async () => {
+  if (!clashForm.name.trim()) {
+    ElMessage.warning('请填写 Clash 地址名称')
+    return
+  }
+  if (editingClashId.value === null && !clashForm.url.trim()) {
+    ElMessage.warning('请填写 Clash 地址')
+    return
+  }
+  savingClash.value = true
+  try {
+    if (editingClashId.value === null) {
+      await adminCreateClashAddress({ ...clashForm })
+      ElMessage.success('Clash 地址已新增')
+    } else {
+      await adminUpdateClashAddress(editingClashId.value, {
+        name: clashForm.name,
+        url: clashForm.url.trim() || undefined,
+        is_active: clashForm.is_active,
+        remark: clashForm.remark,
+      })
+      ElMessage.success('Clash 地址已保存')
+    }
+    resetClashForm()
+    await loadData()
+  } finally {
+    savingClash.value = false
+  }
+}
+
+const activateClashAddress = async (addressId: number) => {
+  await adminActivateClashAddress(addressId)
+  await loadData()
+  ElMessage.success('Clash 地址已启用')
+}
+
+const deleteClashAddress = async (addressId: number) => {
+  await ElMessageBox.confirm('删除后将不可恢复，确定继续吗？', '删除 Clash 地址', { type: 'warning' })
+  await adminDeleteClashAddress(addressId)
+  if (editingClashId.value === addressId) {
+    resetClashForm()
+  }
+  await loadData()
+  ElMessage.success('Clash 地址已删除')
+}
+
 onMounted(async () => {
   await loadData()
 })
@@ -175,6 +305,26 @@ onMounted(async () => {
 
 .purchase-button-row {
   padding-bottom: 8px;
+}
+
+.clash-form-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.clash-form-actions {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.clash-table {
+  min-width: 720px;
 }
 
 @media (max-width: 768px) {

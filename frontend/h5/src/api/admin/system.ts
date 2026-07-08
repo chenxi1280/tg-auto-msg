@@ -5,6 +5,7 @@ import type {
   SystemTodayStats,
   DeveloperApp,
   DeveloperAppSettings,
+  ClashAddress,
   SystemProxy,
   AdminAuditLog,
   PaginatedResponse,
@@ -30,6 +31,39 @@ export const adminUpdateBotNoticeSettings = (payload: {
   target_url: string
 }): Promise<{ success: boolean; data: BotNoticeSettings }> =>
   adminApi.put('/admin/system/bot-notice', payload)
+
+// ── Clash Addresses ─────────────────────────────────────────────────────────
+
+export const adminListClashAddresses = (params?: {
+  limit?: number
+  offset?: number
+}): Promise<{ success: boolean; data: PaginatedResponse<ClashAddress> }> =>
+  adminApi.get('/admin/system/clash-addresses', { params })
+
+export const adminCreateClashAddress = (payload: {
+  name: string
+  url: string
+  is_active: boolean
+  remark: string
+}): Promise<{ success: boolean; data: ClashAddress }> =>
+  adminApi.post('/admin/system/clash-addresses', payload)
+
+export const adminUpdateClashAddress = (
+  addressId: number,
+  payload: {
+    name: string
+    url?: string
+    is_active: boolean
+    remark: string
+  },
+): Promise<{ success: boolean; data: ClashAddress }> =>
+  adminApi.put(`/admin/system/clash-addresses/${addressId}`, payload)
+
+export const adminDeleteClashAddress = (addressId: number): Promise<{ success: boolean; message: string }> =>
+  adminApi.delete(`/admin/system/clash-addresses/${addressId}`)
+
+export const adminActivateClashAddress = (addressId: number): Promise<{ success: boolean; data: ClashAddress }> =>
+  adminApi.post(`/admin/system/clash-addresses/${addressId}/activate`)
 
 // ── System Stats ─────────────────────────────────────────────────────────────
 
