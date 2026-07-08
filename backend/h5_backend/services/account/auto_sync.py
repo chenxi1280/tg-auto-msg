@@ -55,6 +55,42 @@ def should_enqueue_auto_timer_sync(
     return latest_resource_sync_at <= now - stale_after
 
 
+def _latest_resource_sync_subquery() -> Any:
+    return (
+        select(
+            Resource.account_id,
+            func.max(Resource.last_sync_at).label("latest_resource_sync_at"),
+        )
+        .where(Resource.is_active.is_(True))
+        .group_by(Resource.account_id)
+        .subquery()
+    )
+
+
+def _build_auto_timer_candidate_statement(
+    *,
+    cutoff: datetime,
+    skip_proxy_accounts: bool,
+    max_candidates: int,
+) -> Any:
+    latest_sync = _latest_resource_sync_subquery()
+    stmt = (
+        select(Account.account_id, Account.user_id)
+        .outerjoin(latest_sync, latest_sync.c.account_id == Account.account_id)
+        .where(Account.is_active.is_(True))
+        .where(Account.is_banned.is_(False))
+        .where(Account.reauth_required.is_(False))
+        .where(Account.health_status == HealthStatus.ONLINE.value)
+        .where(or_(latest_sync.c.latest_resource_sync_at.is_(None), latest_sync.c.latest_resource_sync_at <= cutoff))
+        .order_by(Account.updated_at.asc(), latest_sync.c.latest_resource_sync_at.asc().nullsfirst(), Account.account_id.asc())
+    )
+    if skip_proxy_accounts:
+        stmt = stmt.where(Account.proxy_id.is_(None))
+    if max_candidates > AUTO_TIMER_UNLIMITED_CANDIDATES:
+        stmt = stmt.limit(max_candidates)
+    return stmt
+
+
 class AccountAutoSyncRuntime:
     INTERVAL_SECONDS = 60 * 60
     ACCOUNT_SYNC_TIMEOUT_SECONDS = 6 * 60
@@ -173,38 +209,12 @@ class AccountAutoSyncRuntime:
 
     async def load_auto_timer_candidates(self) -> list[Any]:
         cutoff = datetime.now() - timedelta(seconds=AUTO_TIMER_RESOURCE_STALE_SECONDS)
-        latest_sync = (
-            select(
-                Resource.account_id,
-                func.max(Resource.last_sync_at).label("latest_resource_sync_at"),
-            )
-            .where(Resource.is_active.is_(True))
-            .group_by(Resource.account_id)
-            .subquery()
+        max_candidates = int(self.AUTO_TIMER_MAX_CANDIDATES_PER_RUN)
+        stmt = _build_auto_timer_candidate_statement(
+            cutoff=cutoff,
+            skip_proxy_accounts=bool(self.AUTO_TIMER_SKIP_PROXY_ACCOUNTS),
+            max_candidates=max_candidates,
         )
-        stmt = (
-            select(Account.account_id, Account.user_id)
-            .outerjoin(latest_sync, latest_sync.c.account_id == Account.account_id)
-            .where(Account.is_active.is_(True))
-            .where(Account.is_banned.is_(False))
-            .where(Account.reauth_required.is_(False))
-            .where(Account.health_status == HealthStatus.ONLINE.value)
-            .where(
-                or_(
-                    latest_sync.c.latest_resource_sync_at.is_(None),
-                    latest_sync.c.latest_resource_sync_at <= cutoff,
-                )
-            )
-            .order_by(
-                latest_sync.c.latest_resource_sync_at.asc().nullsfirst(),
-                Account.updated_at.asc(),
-                Account.account_id.asc(),
-            )
-        )
-        if bool(self.AUTO_TIMER_SKIP_PROXY_ACCOUNTS):
-            stmt = stmt.where(Account.proxy_id.is_(None))
-        if int(self.AUTO_TIMER_MAX_CANDIDATES_PER_RUN) > AUTO_TIMER_UNLIMITED_CANDIDATES:
-            stmt = stmt.limit(int(self.AUTO_TIMER_MAX_CANDIDATES_PER_RUN))
 
         async with get_async_session() as session:
             result = await session.execute(stmt)
@@ -375,6 +385,16 @@ class AccountAutoSyncRuntime:
         trigger_source: str,
         timeout_seconds: float,
     ) -> None:
+        if trigger_source == SYNC_TRIGGER_AUTO_TIMER:
+            logger.warning(
+                "auto account sync timed out without marking service unhealthy: "
+                "account_id={}, user_id={}, trigger_source={}, timeout_seconds={}",
+                account_id,
+                user_id,
+                trigger_source,
+                timeout_seconds,
+            )
+            return
         logger.error(
             "account sync timed out: account_id={}, user_id={}, trigger_source={}, timeout_seconds={}",
             account_id,

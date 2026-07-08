@@ -8,6 +8,8 @@ from backend.database.schema.models import HealthStatus
 from backend.h5_backend.services.account.auto_sync import (
     AccountAutoSyncRuntime,
     SYNC_TRIGGER_AUTO_TIMER,
+    SYNC_TRIGGER_MANUAL,
+    _build_auto_timer_candidate_statement,
     should_enqueue_auto_timer_sync,
 )
 
@@ -160,6 +162,22 @@ class AccountAutoSyncTests(unittest.IsolatedAsyncioTestCase):
             skip_reauth_required=True,
         )
 
+    def test_auto_timer_candidate_query_rotates_recently_attempted_accounts(self):
+        cutoff = datetime(2026, 7, 8, 22, 0, 0)
+
+        stmt = _build_auto_timer_candidate_statement(
+            cutoff=cutoff,
+            skip_proxy_accounts=True,
+            max_candidates=1,
+        )
+        compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+
+        self.assertIn(
+            "ORDER BY accounts.updated_at ASC, "
+            "anon_1.latest_resource_sync_at ASC NULLS FIRST, accounts.account_id ASC",
+            compiled,
+        )
+
     async def test_worker_does_not_mark_account_offline_after_sync_timeout(self):
         runtime = AccountAutoSyncRuntime()
         runtime.AUTO_TIMER_ACCOUNT_SYNC_TIMEOUT_SECONDS = 0.01
@@ -180,6 +198,34 @@ class AccountAutoSyncTests(unittest.IsolatedAsyncioTestCase):
                 await worker
 
         session_factory.assert_not_called()
+
+    async def test_auto_timer_timeout_is_not_logged_as_service_error(self):
+        runtime = AccountAutoSyncRuntime()
+
+        with patch("backend.h5_backend.services.account.auto_sync.logger") as logger:
+            await runtime._handle_account_sync_timeout(
+                account_id="acc-timeout",
+                user_id=1,
+                trigger_source=SYNC_TRIGGER_AUTO_TIMER,
+                timeout_seconds=45,
+            )
+
+        logger.warning.assert_called_once()
+        logger.error.assert_not_called()
+
+    async def test_manual_timeout_remains_logged_as_service_error(self):
+        runtime = AccountAutoSyncRuntime()
+
+        with patch("backend.h5_backend.services.account.auto_sync.logger") as logger:
+            await runtime._handle_account_sync_timeout(
+                account_id="acc-timeout",
+                user_id=1,
+                trigger_source=SYNC_TRIGGER_MANUAL,
+                timeout_seconds=360,
+            )
+
+        logger.error.assert_called_once()
+        logger.warning.assert_not_called()
 
     async def test_auto_timer_worker_uses_short_timeout_without_changing_manual_budget(self):
         runtime = AccountAutoSyncRuntime()
