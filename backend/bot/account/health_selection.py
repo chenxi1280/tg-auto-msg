@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 import random
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from backend.bot.session.redis_login_manager import get_redis_login_manager
 from backend.database.schema.models import Account, HealthStatus, Resource
@@ -139,14 +139,13 @@ async def get_health_status(account_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-async def increment_messages_sent(account_id: str) -> None:
-    """Increment sent counter and update last-used timestamp."""
-    async with get_async_session() as session:
-        result = await session.execute(
-            select(Account).where(Account.account_id == account_id)
+async def increment_messages_sent(session, account_id: str) -> None:
+    """Increment sent statistics within the caller's transaction."""
+    await session.execute(
+        update(Account)
+        .where(Account.account_id == account_id)
+        .values(
+            messages_sent=Account.messages_sent + 1,
+            last_used_at=datetime.now(),
         )
-        account = result.scalar_one_or_none()
-        if account:
-            account.messages_sent += 1
-            account.last_used_at = datetime.now()
-            await session.commit()
+    )

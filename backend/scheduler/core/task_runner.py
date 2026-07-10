@@ -599,7 +599,6 @@ async def _send_to_targets(
     now: int,
     advance_schedule: bool,
     trigger_source: str,
-    account_manager,
     account_display: str,
 ) -> TaskExecutionSummary:
     """Send message to every target and handle success/failure lifecycle."""
@@ -714,7 +713,7 @@ async def _send_to_targets(
             message_id=last_message_id,
             target_message_ids=target_message_ids,
             error_message=partial_failure_summary,
-            now=now, account_manager=account_manager,
+            now=now,
             trigger_source=trigger_source, advance_schedule=advance_schedule,
         )
         if send_errors:
@@ -823,7 +822,6 @@ async def execute_task_once(
                 session=session, now=now,
                 advance_schedule=advance_schedule,
                 trigger_source=trigger_source,
-                account_manager=account_manager,
                 account_display=vr.account_display,
             )
 

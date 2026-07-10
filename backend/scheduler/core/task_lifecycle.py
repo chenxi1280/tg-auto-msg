@@ -6,6 +6,7 @@ from datetime import datetime
 from loguru import logger
 from sqlalchemy import select
 
+from backend.bot.account.health_selection import increment_messages_sent
 from backend.database.schema.models import ScheduledMessageTask, TaskLog, TaskTriggerSource
 from backend.bot.account.proxy_observation import mark_proxy_observation_success
 
@@ -41,7 +42,6 @@ async def handle_task_success(
     target_message_ids: dict[tuple[str, int], int] | None,
     error_message: str | None,
     now: int,
-    account_manager,
     trigger_source: str = TaskTriggerSource.SCHEDULER.value,
     advance_schedule: bool = True,
 ) -> None:
@@ -69,7 +69,7 @@ async def handle_task_success(
         task.next_run_at = now + task.repeat_interval_min * 60
 
     if task.account_id:
-        await account_manager.increment_messages_sent(task.account_id)
+        await increment_messages_sent(session, task.account_id)
         await mark_proxy_observation_success(session, task.account_id)
 
     await session.commit()

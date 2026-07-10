@@ -467,13 +467,6 @@ class AccountManager:
         from backend.bot.account.health_selection import get_health_status
         return await get_health_status(account_id)
 
-    # ==================== 统计更新 ====================
-
-    async def increment_messages_sent(self, account_id: str):
-        """增加消息发送计数"""
-        from backend.bot.account.health_selection import increment_messages_sent
-        await increment_messages_sent(account_id)
-
     async def close_all(self):
         """关闭所有客户端连接"""
         from backend.bot.account.client_runtime import close_all_clients
