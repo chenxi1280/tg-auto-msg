@@ -30,6 +30,7 @@ ENV/
 .claude
 .vscode/
 .idea/
+.worktrees/
 *.swp
 *.swo
 *~
