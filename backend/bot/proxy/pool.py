@@ -21,6 +21,9 @@ from backend.bot.proxy.ops import (
 )
 
 
+HEALTH_CACHE_TTL_SECONDS = 60
+
+
 @dataclass
 class HealthStatus:
     """Proxy health status payload."""
@@ -34,7 +37,8 @@ class ProxyPool:
 
     def __init__(self):
         self._health_cache: Dict[int, HealthStatus] = {}
-        self._cache_ttl = 300
+        self._health_cache_checked_at: Dict[int, float] = {}
+        self._cache_ttl = HEALTH_CACHE_TTL_SECONDS
 
     async def add_proxy(
         self,
@@ -96,6 +100,7 @@ class ProxyPool:
 
     def clear_health_cache(self):
         self._health_cache.clear()
+        self._health_cache_checked_at.clear()
 
 
 _proxy_pool: Optional[ProxyPool] = None

@@ -164,6 +164,7 @@ readlink -f /data/tgmsg/current
 - H5 静态首页、OpenAPI 与宿主机 `/api` 反代均可访问
 - `tgmsg-app` 日志中没有持续重启或连接失败
 - `current` 指向最新 release
+- 更新 sing-box 订阅后，必须从 `tgmsg-app` 通过每个启用的 SOCKS 网关完成一次 Telegram MTProto 请求；仅 SOCKS 端口 TCP 可连接不代表代理可发送 Telegram 消息
 
 ## 7. 常用运维命令
 

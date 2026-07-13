@@ -183,7 +183,7 @@ async def get_client(manager, account_id: str) -> Optional[TelegramClient]:
 
 
 async def ensure_account_proxy(manager, account_id: str) -> Optional[int]:
-    """Ensure one healthy proxy is bound to account; replace when unhealthy."""
+    """Keep a verified bound proxy or permanently fall back to direct routing."""
     from backend.bot.proxy.pool import get_proxy_pool
 
     account = await manager.get_account(account_id)
@@ -192,34 +192,23 @@ async def ensure_account_proxy(manager, account_id: str) -> Optional[int]:
 
     proxy_pool = get_proxy_pool()
 
-    if account.proxy_id:
-        current_proxy = await proxy_pool.get_proxy(account.proxy_id)
-        if current_proxy and bool(getattr(current_proxy, "is_system_gateway", False)):
-            proxy_active = bool(getattr(current_proxy, "is_active", False))
-            proxy_healthy = bool(getattr(current_proxy, "is_healthy", False))
-            if proxy_active and proxy_healthy:
-                return account.proxy_id
-            logger.warning(
-                "账号 {} 的系统代理 {} 不可用(active={}, healthy={})，解除绑定",
-                account_id,
-                account.proxy_id,
-                proxy_active,
-                proxy_healthy,
-            )
-            await proxy_pool.unassign_proxy(account_id)
-            await manager.update_account(account_id, proxy_id=None)
-            await close_client(manager, account_id)
-            return None
-
     if not account.proxy_id:
         return None
 
-    status = await proxy_pool.check_health(account.proxy_id)
-    if status.is_healthy:
-        return account.proxy_id
+    current_proxy = await proxy_pool.get_proxy(account.proxy_id)
+    if not current_proxy or not bool(getattr(current_proxy, "is_active", True)):
+        error = "代理不存在或已停用"
+    else:
+        status = await proxy_pool.check_health(account.proxy_id)
+        if status.is_healthy:
+            return account.proxy_id
+        error = status.error or "unknown"
 
     logger.warning(
-        f"账号 {account_id} 的代理 {account.proxy_id} 不健康({status.error or 'unknown'})，解除绑定后使用直连"
+        "账号 {} 的代理 {} 无法完成 Telegram 通信({})，永久解除绑定后使用直连",
+        account_id,
+        account.proxy_id,
+        error,
     )
     await proxy_pool.unassign_proxy(account_id)
     await manager.update_account(account_id, proxy_id=None)
