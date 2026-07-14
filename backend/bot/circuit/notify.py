@@ -3,17 +3,36 @@ from __future__ import annotations
 
 from loguru import logger
 
+from backend.database.runtime.session import get_async_session
 
-async def send_notification(user_id: int, message: str) -> None:
+
+async def resolve_notification_recipient(system_user_id: int) -> int | None:
+    """Return the currently linked Telegram user for a system user."""
+    from backend.bot.handlers.core.user_link import load_latest_linked_tg_user_ids
+
+    async with get_async_session() as session:
+        user_links = await load_latest_linked_tg_user_ids(session)
+    return user_links.get(int(system_user_id))
+
+
+async def send_notification(system_user_id: int, message: str) -> None:
     """Send notification message through manager bot."""
     try:
         from backend.bot.client_runtime.manager import bot_client, ensure_manager_bot_ready
 
-        if not await ensure_manager_bot_ready():
-            logger.warning("Manager Bot 当前未就绪，跳过本次通知发送: user_id={}", user_id)
+        tg_user_id = await resolve_notification_recipient(system_user_id)
+        if tg_user_id is None:
+            logger.warning(
+                "通知无法投递，系统用户未绑定 Telegram: user_id={}",
+                system_user_id,
+            )
             return
 
-        await bot_client.send_message(user_id, message, parse_mode="html")
+        if not await ensure_manager_bot_ready():
+            logger.warning("Manager Bot 当前未就绪，跳过本次通知发送: user_id={}", system_user_id)
+            return
+
+        await bot_client.send_message(tg_user_id, message, parse_mode="html")
     except Exception as e:
         logger.error(f"发送通知失败: {e}")
 

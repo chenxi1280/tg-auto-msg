@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 from backend.bot.circuit.breaker import CircuitBreaker
 from backend.bot.account.health_selection import select_account
 from backend.bot.account.manager import AccountSelectionStrategy
+from backend.config.core.settings import Settings
 from backend.database.schema.models import HealthStatus, TaskTriggerMode
 from backend.scheduler.core.task_runner import _ValidationResult, _validate_and_resolve, execute_task_once
 from backend.scheduler.core.health import collect_scheduler_health_snapshot
@@ -73,6 +74,13 @@ class QueueOpsTests(unittest.IsolatedAsyncioTestCase):
         fake_redis.eval.assert_awaited_once()
 
 
+class SchedulerSettingsTests(unittest.TestCase):
+    def test_default_task_timeout_allows_short_flood_wait_retry(self):
+        default_timeout = Settings.model_fields["scheduler_task_timeout_seconds"].default
+
+        self.assertEqual(default_timeout, 360)
+
+
 class WorkerLockingTests(unittest.IsolatedAsyncioTestCase):
     async def test_execute_task_from_queue_skips_when_processing_lock_exists(self):
         scheduler = TaskScheduler()
@@ -129,8 +137,50 @@ class WorkerLockingTests(unittest.IsolatedAsyncioTestCase):
         scheduler.redis_client.set.assert_awaited_once()
         _, kwargs = scheduler.redis_client.set.await_args
         self.assertTrue(kwargs["nx"])
-        self.assertEqual(kwargs["ex"], scheduler.PROCESSING_TTL)
+        self.assertEqual(
+            kwargs["ex"],
+            Settings.model_fields["scheduler_task_timeout_seconds"].default
+            + scheduler.PROCESSING_LOCK_BUFFER_SECONDS,
+        )
         scheduler.redis_client.eval.assert_awaited_once()
+
+    async def test_processing_lock_outlives_configured_task_timeout(self):
+        scheduler = TaskScheduler()
+        scheduler.redis_client = SimpleNamespace(
+            set=AsyncMock(return_value=True),
+            eval=AsyncMock(return_value=1),
+        )
+        db_task = SimpleNamespace(task_id="task-lock-timeout", enabled=True)
+        summary = SimpleNamespace(
+            status="success",
+            success_count=1,
+            failed_count=0,
+            error_summary=None,
+        )
+
+        @asynccontextmanager
+        async def fake_session_ctx():
+            yield _FakeQueueSession(db_task)
+
+        with (
+            patch("backend.scheduler.core.worker.get_async_session", fake_session_ctx),
+            patch(
+                "backend.scheduler.core.worker._execute_task_once",
+                AsyncMock(return_value=summary),
+            ),
+            patch(
+                "backend.scheduler.core.worker.settings",
+                SimpleNamespace(scheduler_task_timeout_seconds=360),
+            ),
+        ):
+            await scheduler._execute_task_from_queue(
+                SimpleNamespace(task_id="task-lock-timeout"),
+                now=123,
+                current_hour=8,
+            )
+
+        _, kwargs = scheduler.redis_client.set.await_args
+        self.assertGreater(kwargs["ex"], 360)
 
     async def test_execute_task_from_queue_times_out_and_releases_lock(self):
         scheduler = TaskScheduler()

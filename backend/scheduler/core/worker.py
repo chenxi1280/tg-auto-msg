@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from loguru import logger
 
 from backend.bot.account.manager import get_account_manager
-from backend.config.core.settings import settings
+from backend.config.core.settings import DEFAULT_SCHEDULER_TASK_TIMEOUT_SECONDS, settings
 from backend.database.schema.models import ScheduledMessageTask
 from backend.database.runtime.session import get_async_session
 from backend.scheduler.core.queue_ops import (
@@ -40,7 +40,7 @@ class TaskScheduler:
 
     # 配置
     SCAN_INTERVAL = 10  # 10 秒扫描间隔
-    PROCESSING_TTL = 300
+    PROCESSING_LOCK_BUFFER_SECONDS = 60
     JITTER_RANGE = 300  # 最大抖动 5 分钟（300秒）
     URGENT_PRIORITY_THRESHOLD = 100
     TELEGRAM_MEDIA_REF_PREFIX = "tgmsg://"
@@ -261,6 +261,18 @@ return 0
             current_hour: 当前小时
         """
         task_id = task.task_id
+        timeout_seconds = max(
+            1,
+            int(
+                getattr(
+                    settings,
+                    "scheduler_task_timeout_seconds",
+                    DEFAULT_SCHEDULER_TASK_TIMEOUT_SECONDS,
+                )
+                or DEFAULT_SCHEDULER_TASK_TIMEOUT_SECONDS
+            ),
+        )
+        processing_ttl_seconds = timeout_seconds + self.PROCESSING_LOCK_BUFFER_SECONDS
 
         processing_key = f"{self.PROCESSING_QUEUE_KEY}:{task_id}"
         processing_token = str(uuid.uuid4())
@@ -268,7 +280,7 @@ return 0
             processing_key,
             processing_token,
             nx=True,
-            ex=self.PROCESSING_TTL,
+            ex=processing_ttl_seconds,
         )
         if not lock_acquired:
             logger.debug("任务 {} 正在处理中，跳过", task_id)
@@ -290,10 +302,6 @@ return 0
                     logger.debug("任务 {} 不存在或已禁用", task_id)
                     return
             try:
-                timeout_seconds = max(
-                    1,
-                    int(getattr(settings, "scheduler_task_timeout_seconds", 240) or 240),
-                )
                 summary = await asyncio.wait_for(
                     _execute_task_once(
                         task_id,

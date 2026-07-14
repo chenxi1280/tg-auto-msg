@@ -7,6 +7,7 @@ from pydantic import Field, model_validator
 
 _VALID_SCHEDULER_MODES = {"all", "producer", "consumer"}
 _DEFAULT_JWT_SECRET = "your-secret-key-change-in-production"
+DEFAULT_SCHEDULER_TASK_TIMEOUT_SECONDS = 360
 
 
 class Settings(BaseSettings):
@@ -65,7 +66,7 @@ class Settings(BaseSettings):
         description="调度模式: all/producer/consumer"
     )
     scheduler_task_timeout_seconds: int = Field(
-        default=240,
+        default=DEFAULT_SCHEDULER_TASK_TIMEOUT_SECONDS,
         alias="SCHEDULER_TASK_TIMEOUT_SECONDS",
         description="单个调度任务最大执行秒数，防止一个任务卡死整个调度器"
     )
