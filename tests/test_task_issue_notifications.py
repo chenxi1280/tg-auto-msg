@@ -71,6 +71,21 @@ class TaskIssueClassifierTests(unittest.TestCase):
         self.assertEqual(result.suspension_reason, "chat_write_forbidden")
         self.assertNotIn("ChatWriteForbiddenError", result.user_message)
 
+    def test_other_target_access_errors_are_auto_suspended(self):
+        cases = (
+            ("ChatSendPlainForbiddenError", "chat_send_plain_forbidden"),
+            ("ChatRestrictedError", "chat_restricted"),
+        )
+
+        for error_type, suspension_reason in cases:
+            with self.subTest(error_type=error_type):
+                result = classify_task_send_error(type(error_type, (Exception,), {})())
+
+                self.assertEqual(result.issue_category, "permission_denied")
+                self.assertTrue(result.should_auto_suspend_target)
+                self.assertEqual(result.suspension_reason, suspension_reason)
+                self.assertNotIn(error_type, result.user_message)
+
     def test_other_errors_are_not_auto_suspended(self):
         result = classify_task_send_error(RuntimeError("boom"))
 

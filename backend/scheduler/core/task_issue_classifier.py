@@ -33,6 +33,22 @@ _SPECIALIZED_ERROR_CLASSIFICATIONS = {
         suspension_reason="chat_write_forbidden",
         auto_suspend_after_failures=1,
     ),
+    "ChatSendPlainForbiddenError": TaskIssueClassification(
+        error_type="ChatSendPlainForbiddenError",
+        issue_category="permission_denied",
+        user_message="当前群聊不允许此任务发送纯文本消息，已暂停这个目标。",
+        should_auto_suspend_target=True,
+        suspension_reason="chat_send_plain_forbidden",
+        auto_suspend_after_failures=1,
+    ),
+    "ChatRestrictedError": TaskIssueClassification(
+        error_type="ChatRestrictedError",
+        issue_category="permission_denied",
+        user_message="当前账号无法在这个群聊或频道执行发送操作，可能权限受限或群组已限制发言。",
+        should_auto_suspend_target=True,
+        suspension_reason="chat_restricted",
+        auto_suspend_after_failures=1,
+    ),
     "ChannelPrivateError": TaskIssueClassification(
         error_type="ChannelPrivateError",
         issue_category="target_inaccessible",
