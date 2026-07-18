@@ -62,6 +62,15 @@ class TaskIssueClassifierTests(unittest.TestCase):
         self.assertEqual(result.suspension_reason, "channel_private")
         self.assertNotIn("ChannelPrivateError", result.user_message)
 
+    def test_chat_write_forbidden_error_is_auto_suspended(self):
+        exc = type("ChatWriteForbiddenError", (Exception,), {})()
+        result = classify_task_send_error(exc)
+
+        self.assertEqual(result.issue_category, "permission_denied")
+        self.assertTrue(result.should_auto_suspend_target)
+        self.assertEqual(result.suspension_reason, "chat_write_forbidden")
+        self.assertNotIn("ChatWriteForbiddenError", result.user_message)
+
     def test_other_errors_are_not_auto_suspended(self):
         result = classify_task_send_error(RuntimeError("boom"))
 
