@@ -3,7 +3,10 @@ from types import SimpleNamespace
 
 import unittest
 
+from backend.bot.account.reauth import REAUTH_DIRECT_FALLBACK_REASON
 from backend.bot.account.proxy_observation import (
+    REAUTH_LOGIN_ROUTE_DIRECT,
+    REAUTH_LOGIN_ROUTE_SELECT_PROXY,
     SING_BOX_PROXY_REGIONS,
     get_proxy_region_options,
     is_proxy_observation_active,
@@ -11,6 +14,7 @@ from backend.bot.account.proxy_observation import (
     proxy_observation_has_send_budget,
     proxy_observation_remaining_seconds,
     reset_proxy_observation,
+    resolve_reauth_login_route,
     select_reauth_proxy_for_account,
     start_proxy_observation,
 )
@@ -101,6 +105,93 @@ class TestAccountProxyObservation(unittest.IsolatedAsyncioTestCase):
         assert account.proxy_observation_started_at is None
         assert account.proxy_observation_until is None
         assert account.proxy_observation_success_count == 0
+
+    async def test_unhealthy_selected_system_proxy_switches_reauth_to_direct(self):
+        account = SimpleNamespace(
+            account_id="acc-1",
+            user_id=9,
+            proxy_id=1,
+            reauth_required=True,
+            reauth_reason="proxy_region_selected",
+            reauth_required_at=None,
+            health_status="online",
+            proxy_observation_started_at=datetime(2026, 5, 9, 10, 0, 0),
+            proxy_observation_until=datetime(2026, 5, 10, 10, 0, 0),
+            proxy_observation_success_count=1,
+        )
+        proxy = SimpleNamespace(
+            proxy_id=1,
+            is_system_gateway=True,
+            is_active=True,
+            is_healthy=False,
+            assigned_account_id="acc-1",
+        )
+
+        class FakeSession:
+            flushed = False
+
+            async def get(self, model, key):
+                if model is Account and key == "acc-1":
+                    return account
+                if model is Proxy and key == 1:
+                    return proxy
+                return None
+
+            async def flush(self):
+                self.flushed = True
+
+        session = FakeSession()
+
+        route = await resolve_reauth_login_route(session, user_id=9, account_id="acc-1")
+
+        assert route == REAUTH_LOGIN_ROUTE_DIRECT
+        assert account.proxy_id is None
+        assert account.reauth_required is True
+        assert account.reauth_reason == REAUTH_DIRECT_FALLBACK_REASON
+        assert account.health_status == "offline"
+        assert account.proxy_observation_started_at is None
+        assert account.proxy_observation_until is None
+        assert account.proxy_observation_success_count == 0
+        assert proxy.assigned_account_id is None
+        assert session.flushed is True
+
+    async def test_direct_reauth_route_persists_after_unhealthy_proxy_is_removed(self):
+        account = SimpleNamespace(
+            account_id="acc-1",
+            user_id=9,
+            proxy_id=None,
+            reauth_required=True,
+            reauth_reason=REAUTH_DIRECT_FALLBACK_REASON,
+        )
+
+        class FakeSession:
+            async def get(self, model, key):
+                assert model is Account
+                assert key == "acc-1"
+                return account
+
+        route = await resolve_reauth_login_route(FakeSession(), user_id=9, account_id="acc-1")
+
+        assert route == REAUTH_LOGIN_ROUTE_DIRECT
+
+    async def test_reauth_without_selected_proxy_still_requires_region_selection(self):
+        account = SimpleNamespace(
+            account_id="acc-1",
+            user_id=9,
+            proxy_id=None,
+            reauth_required=True,
+            reauth_reason="session_unauthorized",
+        )
+
+        class FakeSession:
+            async def get(self, model, key):
+                assert model is Account
+                assert key == "acc-1"
+                return account
+
+        route = await resolve_reauth_login_route(FakeSession(), user_id=9, account_id="acc-1")
+
+        assert route == REAUTH_LOGIN_ROUTE_SELECT_PROXY
 
     async def test_task_runner_claims_observation_budget_before_sending(self):
         account = SimpleNamespace(

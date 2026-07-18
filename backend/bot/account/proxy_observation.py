@@ -9,11 +9,15 @@ from fastapi import HTTPException, status
 from loguru import logger
 from sqlalchemy import select, update
 
+from backend.bot.account.reauth import REAUTH_DIRECT_FALLBACK_REASON
 from backend.database.schema.models import Account, HealthStatus, Proxy
 
 OBSERVATION_HOURS = 24
 OBSERVATION_SUCCESS_LIMIT = 1
 REAUTH_PROXY_SELECTED_REASON = "proxy_region_selected"
+REAUTH_LOGIN_ROUTE_DIRECT = "direct"
+REAUTH_LOGIN_ROUTE_FIXED_PROXY = "fixed_proxy"
+REAUTH_LOGIN_ROUTE_SELECT_PROXY = "select_proxy"
 
 
 @dataclass(frozen=True)
@@ -205,6 +209,41 @@ async def select_reauth_proxy_for_account(
         "region_label": str(proxy.display_name or ""),
         "endpoint": f"{proxy.proxy_type}://{proxy.host}:{proxy.port}",
     }
+
+
+async def resolve_reauth_login_route(
+    session,
+    *,
+    user_id: int,
+    account_id: str,
+) -> str:
+    """Choose a re-login route without weakening first-time proxy selection."""
+    account = await session.get(Account, str(account_id))
+    if account is None or int(account.user_id) != int(user_id):
+        raise HTTPException(status_code=404, detail="账号不存在")
+
+    if not account.proxy_id:
+        if str(account.reauth_reason or "") == REAUTH_DIRECT_FALLBACK_REASON:
+            return REAUTH_LOGIN_ROUTE_DIRECT
+        return REAUTH_LOGIN_ROUTE_SELECT_PROXY
+
+    proxy = await session.get(Proxy, int(account.proxy_id))
+    if proxy is None or not bool(getattr(proxy, "is_system_gateway", False)):
+        return REAUTH_LOGIN_ROUTE_SELECT_PROXY
+    if bool(getattr(proxy, "is_active", False)) and bool(getattr(proxy, "is_healthy", False)):
+        return REAUTH_LOGIN_ROUTE_FIXED_PROXY
+
+    if proxy.assigned_account_id == str(account_id):
+        proxy.assigned_account_id = None
+    account.proxy_id = None
+    account.reauth_required = True
+    account.reauth_reason = REAUTH_DIRECT_FALLBACK_REASON
+    account.reauth_required_at = datetime.now()
+    account.health_status = HealthStatus.OFFLINE
+    reset_proxy_observation(account)
+    await session.flush()
+    logger.warning("重登固定代理不可用，已改为服务器直连: account_id={}", account_id)
+    return REAUTH_LOGIN_ROUTE_DIRECT
 
 
 async def assert_account_can_create_task(account_id: Optional[str], *, session) -> None:

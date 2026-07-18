@@ -12,7 +12,10 @@ from backend.bot.account.reauth import (
     is_reauth_required_account,
 )
 from backend.bot.account.proxy_observation import (
+    REAUTH_LOGIN_ROUTE_DIRECT,
+    REAUTH_LOGIN_ROUTE_SELECT_PROXY,
     SING_BOX_PROXY_REGIONS,
+    resolve_reauth_login_route,
     select_reauth_proxy_for_account,
 )
 from backend.bot.account.client_runtime import close_client
@@ -26,7 +29,7 @@ from backend.bot.handlers.task.queries import (
     resolve_actor_access_context as _resolve_actor_access_context,
 )
 from backend.bot.ui.messages import *
-from backend.database.schema.models import Account, Proxy
+from backend.database.schema.models import Account
 from backend.database.runtime.session import get_async_session
 from backend.h5_backend.services.licensing.service import (
     get_account_authorization_summary,
@@ -411,10 +414,17 @@ async def relogin_account(event, user_id: int, account_id: str):
     if db_user_id is None or not account:
         await event.answer("账号不存在或无权限", alert=True)
         return
+    login_route = None
     if is_reauth_required_account(account):
         async with get_async_session() as session:
-            proxy = await session.get(Proxy, int(account.proxy_id)) if account.proxy_id else None
-        if not proxy or not bool(getattr(proxy, "is_system_gateway", False)):
+            login_route = await resolve_reauth_login_route(
+                session,
+                user_id=int(db_user_id),
+                account_id=str(account_id),
+            )
+            if login_route == REAUTH_LOGIN_ROUTE_DIRECT:
+                await session.commit()
+        if login_route == REAUTH_LOGIN_ROUTE_SELECT_PROXY:
             await event.answer("请先选择一个固定代理地区，再重新登录。", alert=True)
             await _send_or_reply(
                 event,
@@ -435,7 +445,10 @@ async def relogin_account(event, user_id: int, account_id: str):
             return
     from backend.bot.onboarding import get_onboarding_service
 
-    await event.answer("开始重新登录，请用原 Telegram 账号完成验证。")
+    if login_route == REAUTH_LOGIN_ROUTE_DIRECT:
+        await event.answer("固定代理不可用，已切换服务器直连重新登录。")
+    else:
+        await event.answer("开始重新登录，请用原 Telegram 账号完成验证。")
     await get_onboarding_service().start_account_login(
         event,
         user_id,

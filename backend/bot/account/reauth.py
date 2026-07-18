@@ -5,6 +5,7 @@ from typing import Any
 
 
 REAUTH_REQUIRED_TITLE = "系统已更新，请先重新绑定"
+REAUTH_DIRECT_FALLBACK_REASON = "proxy_unavailable_direct"
 REAUTH_REQUIRED_GUIDE = (
     "点击“重新绑定”或回到主菜单选择“绑定账号”继续。"
     "即使只掉线 1 次，也可能是 Telegram 风控触发。"
@@ -13,6 +14,7 @@ REAUTH_REQUIRED_GUIDE = (
 
 _REAUTH_REASON_SET = {
     "session_unauthorized",
+    REAUTH_DIRECT_FALLBACK_REASON,
 }
 
 _REAUTH_KEYWORDS = (
