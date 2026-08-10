@@ -114,6 +114,33 @@ class AccountService:
             "data": result,
         }
 
+    async def get_sync_status(self, account_id: str, user_id: int) -> Dict[str, Any]:
+        await check_account_permission(account_id, user_id)
+        snapshot = account_auto_sync_runtime.get_account_status(account_id)
+        status = str(snapshot["status"])
+        response: Dict[str, Any] = {
+            "status": status,
+            "message": self._sync_status_message(status, snapshot.get("data")),
+        }
+        if "data" in snapshot:
+            response["data"] = snapshot["data"]
+        return response
+
+    @staticmethod
+    def _sync_status_message(status: str, data: Any) -> str:
+        if status == "completed":
+            synced_count = int((data or {}).get("resource_synced_count") or 0)
+            return f"资源同步完成，共刷新 {synced_count} 条"
+        messages = {
+            "idle": "当前没有可查询的账号同步任务",
+            "queued": "该账号正在等待同步",
+            "running": "该账号正在同步中",
+            "failed": str((data or {}).get("error") or "账号资源同步失败"),
+        }
+        if status not in messages:
+            raise RuntimeError(f"unexpected account sync status: {status}")
+        return messages[status]
+
     @staticmethod
     def _manual_enqueue_response(status: str) -> Dict[str, Any]:
         messages = {

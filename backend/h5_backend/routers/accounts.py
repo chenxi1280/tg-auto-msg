@@ -38,6 +38,17 @@ async def sync_account_resources(
     return {"success": True, **result}
 
 
+@router.get("/api/accounts/{account_id}/sync-status")
+async def get_account_sync_status(
+    account_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    """查询账号资源同步的当前或最近结果。"""
+    service = get_account_service()
+    result = await service.get_sync_status(account_id, current_user.id)
+    return {"success": True, **result}
+
+
 @router.post("/api/accounts/sync-all")
 async def sync_all_account_resources(
     background_tasks: BackgroundTasks,

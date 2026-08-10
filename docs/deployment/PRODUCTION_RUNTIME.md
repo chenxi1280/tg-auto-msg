@@ -135,7 +135,7 @@ curl -fsS -H "Authorization: Bearer <admin_jwt>" \
 
 账号资源自动同步每小时扫描一次缺失或超过 24 小时未刷新的快照，并按“从未同步、最久未同步、account_id”顺序把全部符合条件的账号加入单 worker 队列。队列逐个连接 Telegram；单账号失败或超时只记录该账号结果，不阻塞后续账号。
 
-手动单账号同步使用更高队列优先级。`wait=true` 只有在 Telegram Dialog 拉取和资源事务提交完成后才返回成功；排队、执行中、失败和超时必须使用不同状态，不能把“已加入队列”展示成“同步完成”。详细契约见 `docs/superpowers/specs/2026-08-10-account-resource-sync-rotation-design.md`。
+手动单账号同步使用更高队列优先级。页面按钮先以 `wait=false` 立即入队，再轮询 `/api/accounts/{account_id}/sync-status`；只有 `completed` 才刷新资源并提示成功，`failed`、`idle`（进程重启导致状态丢失）和前端等待超时均明确报错。`wait=true` 仅保留为兼容接口，不再作为页面按钮的长连接。详细契约见 `docs/superpowers/specs/2026-08-10-account-resource-sync-rotation-design.md`。
 
 ## 5. 当前实际 vs 目标架构
 

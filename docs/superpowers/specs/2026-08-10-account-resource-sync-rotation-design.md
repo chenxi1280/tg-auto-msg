@@ -10,7 +10,8 @@ Keep every eligible Telegram account resource snapshot current without creating 
 
 - Resource search reads the persisted `resources` snapshot. It is not a live Telegram search.
 - Automatic synchronization eventually visits every eligible stale account in a deterministic rotation.
-- A single-account manual synchronization with `wait=true` returns success only after the Telegram dialog fetch and resource transaction complete.
+- A UI button click immediately enqueues with `wait=false`, then polls an independent status endpoint until the Telegram dialog fetch and resource transaction complete.
+- The compatibility `wait=true` request returns success only after the same shared completion result is available, but the UI does not depend on one long HTTP connection.
 - A failed or timed-out manual synchronization returns an explicit error. The UI must not display a completed-success message for queued work.
 - After a successful manual synchronization, resource selectors reload the persisted snapshot before showing the result.
 
@@ -36,7 +37,15 @@ Only one live queue item exists per account. If a manual request targets an acco
 
 ## Manual completion semantics
 
-`POST /api/accounts/{account_id}/sync?wait=true` waits on the shared account completion result.
+The UI manual flow is:
+
+1. `POST /api/accounts/{account_id}/sync?wait=false` to enqueue or reprioritize the account;
+2. `GET /api/accounts/{account_id}/sync-status` until a terminal state is returned;
+3. reload the persisted account/resource snapshot only after `status=completed`.
+
+The status endpoint returns `queued`, `running`, `completed`, `failed`, or `idle`. A completed or failed result remains queryable until that account is explicitly enqueued again. `idle` after a successful enqueue means the in-process state was lost, for example because the application restarted; the UI reports this explicitly and never treats it as success.
+
+`POST /api/accounts/{account_id}/sync?wait=true` remains a compatibility path that waits on the shared account completion result.
 
 - success: `status=completed`, `profile_sync_ok=true`, `resource_sync_ok=true`, and the synchronized resource count;
 - Telegram or persistence failure: an explicit non-2xx response with the recorded error;
@@ -51,7 +60,7 @@ Scan logs include total selected, enqueued, reprioritized, deduplicated, and cur
 
 ## Recovery boundary
 
-The current hotfix keeps the existing in-process queue and does not introduce a database migration. After a process restart, the startup scan reconstructs automatic work from stale resource timestamps. An interrupted manual HTTP request fails visibly and can be retried; it is never reported as completed without a committed resource snapshot.
+The current hotfix keeps the existing in-process queue and does not introduce a database migration. After a process restart, the startup scan reconstructs automatic work from stale resource timestamps. A polling UI sees `idle` if its manual queue state was interrupted by restart and fails visibly; it is never reported as completed without a committed resource snapshot.
 
 ## Verification
 
@@ -63,6 +72,7 @@ Automated coverage must prove:
 - manual work reprioritizes an already queued automatic item without duplicate execution;
 - one account failure or timeout does not stop the following account;
 - `wait=true` observes completed and failed outcomes without cancelling shared work;
+- the button path enqueues without a long request, polls queued/running to a terminal result, and rejects failed/idle/timeout states;
 - resource pages reload after successful completion.
 
 Production verification must compare a known stale account across application logs, `resources.last_sync_at`, and a read-only Telegram dialog fact. Container health alone is not completion evidence.

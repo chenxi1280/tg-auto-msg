@@ -179,6 +179,7 @@
 import { reactive, ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useAccountStore } from '@/stores/account'
+import { AccountSyncPollingError } from '@/stores/accountSync'
 import type { TaskItem } from '@/api/task'
 import { createTask, getTask, updateTask, uploadTaskMedia } from '@/api/task'
 import {
@@ -318,8 +319,8 @@ const loadResources = async (autoSyncIfEmpty = false, preserveTargets = true) =>
     }
 
     emit('update:resources', [...resources.value])
-  } catch {
-    // HTTP errors already handled by the response interceptor
+  } catch (error) {
+    if (error instanceof AccountSyncPollingError) ElMessage.error(error.message)
   } finally {
     loadingResources.value = false
   }

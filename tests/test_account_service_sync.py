@@ -14,6 +14,47 @@ from backend.h5_backend.services.account.service import account_auto_sync_runtim
 
 
 class AccountServiceSyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_sync_status_checks_permission_and_returns_completed_result(self):
+        service = AccountService()
+        completed = {
+            "resource_sync_ok": True,
+            "resource_synced_count": 125,
+            "error": None,
+        }
+        permission = AsyncMock()
+
+        with patch(
+            "backend.h5_backend.services.account.service.check_account_permission",
+            permission,
+        ), patch.object(
+            account_auto_sync_runtime,
+            "get_account_status",
+            return_value={"status": "completed", "data": completed},
+        ):
+            result = await service.get_sync_status("acc-1", 7)
+
+        permission.assert_awaited_once_with("acc-1", 7)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["data"], completed)
+        self.assertIn("125", result["message"])
+
+    async def test_sync_status_returns_failure_without_hiding_error(self):
+        service = AccountService()
+        failed = {"resource_sync_ok": False, "error": "Telegram read failed"}
+
+        with patch(
+            "backend.h5_backend.services.account.service.check_account_permission",
+            AsyncMock(),
+        ), patch.object(
+            account_auto_sync_runtime,
+            "get_account_status",
+            return_value={"status": "failed", "data": failed},
+        ):
+            result = await service.get_sync_status("acc-1", 7)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["message"], "Telegram read failed")
+
     async def test_manual_wait_returns_only_completed_resource_result(self):
         service = AccountService()
         completed = {

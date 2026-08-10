@@ -5,6 +5,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import * as accountApi from '@/api/account'
 import type { Account } from '@/api/account'
+import { waitForAccountSync } from './accountSync'
 
 function extractErrorMessage(err: unknown, fallback = '操作失败'): string {
   if (err && typeof err === 'object' && 'response' in err) {
@@ -45,11 +46,12 @@ export const useAccountStore = defineStore('account', () => {
   // 同步账号资源
   const syncAccount = async (accountId: string, wait = false) => {
     try {
-      const res = await accountApi.syncAccountResources(accountId, wait)
+      const queued = await accountApi.syncAccountResources(accountId, false)
+      const res = wait ? await waitForAccountSync(accountId) : queued
       return {
         message: res.message || '',
         status: res.status,
-        alreadyRunning: Boolean(res.already_running),
+        alreadyRunning: Boolean(queued.already_running),
         data: res.data
       }
     } catch (err: unknown) {

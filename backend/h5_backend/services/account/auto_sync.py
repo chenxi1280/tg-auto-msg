@@ -401,6 +401,9 @@ class AccountAutoSyncRuntime:
             timeout_seconds=timeout_seconds,
         )
 
+    def get_account_status(self, account_id: str) -> dict[str, Any]:
+        return self._sync_queue.get_status(str(account_id))
+
     async def wait_until_idle(self) -> None:
         await self._sync_queue.join()
 

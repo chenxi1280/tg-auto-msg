@@ -22,6 +22,43 @@ def _success_result(account_id: str) -> dict[str, object]:
 
 
 class AccountSyncQueueTests(unittest.IsolatedAsyncioTestCase):
+    async def test_status_tracks_queue_running_and_terminal_results(self):
+        runtime = AccountAutoSyncRuntime()
+        self.assertEqual(runtime.get_account_status("acc-1"), {"status": "idle"})
+
+        await runtime._sync_queue.enqueue(
+            account_id="acc-1",
+            user_id=1,
+            trigger_source=SYNC_TRIGGER_MANUAL,
+        )
+        self.assertEqual(runtime.get_account_status("acc-1"), {"status": "queued"})
+
+        item = await runtime._sync_queue.get()
+        self.assertEqual(runtime.get_account_status("acc-1"), {"status": "running"})
+
+        completed = _success_result("acc-1")
+        runtime._sync_queue.complete(item, completed)
+        self.assertEqual(
+            runtime.get_account_status("acc-1"),
+            {"status": "completed", "data": completed},
+        )
+
+    async def test_status_exposes_failed_result(self):
+        runtime = AccountAutoSyncRuntime()
+        await runtime._sync_queue.enqueue(
+            account_id="broken",
+            user_id=1,
+            trigger_source=SYNC_TRIGGER_MANUAL,
+        )
+        item = await runtime._sync_queue.get()
+        failed = {**_success_result("broken"), "resource_sync_ok": False, "error": "boom"}
+        runtime._sync_queue.complete(item, failed)
+
+        self.assertEqual(
+            runtime.get_account_status("broken"),
+            {"status": "failed", "data": failed},
+        )
+
     async def test_manual_reprioritizes_queued_automatic_account_without_duplicate_execution(self):
         runtime = AccountAutoSyncRuntime()
         await runtime._sync_queue.enqueue(

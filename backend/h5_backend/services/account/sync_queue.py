@@ -92,6 +92,21 @@ class AccountSyncQueue:
             raise RuntimeError(f"account sync completion is unavailable: {account_id}")
         return await asyncio.wait_for(asyncio.shield(future), timeout=timeout_seconds)
 
+    def get_status(self, account_id: str) -> dict[str, Any]:
+        """Return the current or most recent synchronization state."""
+        if account_id in self._queued_items:
+            return {"status": "queued"}
+        if account_id in self._running_items:
+            return {"status": "running"}
+
+        future = self._completion_futures.get(account_id)
+        if future is None or not future.done():
+            return {"status": "idle"}
+
+        result = dict(future.result())
+        status = "completed" if bool(result.get("resource_sync_ok")) else "failed"
+        return {"status": status, "data": result}
+
     async def join(self) -> None:
         await self._queue.join()
 

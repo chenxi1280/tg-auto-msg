@@ -241,6 +241,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Check, Close, Delete } from '@element-plus/icons-vue'
 import { useAccountStore } from '@/stores/account'
+import { AccountSyncPollingError } from '@/stores/accountSync'
 import { useUserStore } from '@/stores/user'
 import * as authApi from '@/api/auth'
 import { renewAccountAuthorization, syncAllAccountResources, type Account } from '@/api/account'
@@ -446,8 +447,8 @@ const syncAccount = async (accountId: string) => {
     const result = await accountStore.syncAccount(accountId, true)
     await refreshAccounts()
     ElMessage.success(result.message || '资源同步完成')
-  } catch {
-    // HTTP errors already handled by the response interceptor
+  } catch (error) {
+    if (error instanceof AccountSyncPollingError) ElMessage.error(error.message)
   } finally {
     syncLoading[accountId] = false
   }
