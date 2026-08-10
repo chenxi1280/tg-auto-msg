@@ -95,6 +95,8 @@ ENCRYPTION_KEY=<base64_32byte_key>
 ENCRYPTION_KEY_FALLBACKS=<old_base64_32byte_key_comma_separated>
 SCHEDULER_TASK_TIMEOUT_SECONDS=360
 SCHEDULER_TASK_CONCURRENCY=3
+ACCOUNT_AUTO_SYNC_MAX_CANDIDATES_PER_RUN=0
+ACCOUNT_AUTO_SYNC_SKIP_PROXY_ACCOUNTS=false
 ```
 
 含义：
@@ -110,6 +112,8 @@ SCHEDULER_TASK_CONCURRENCY=3
 - `ENCRYPTION_KEY` 必须长期稳定保存；如需轮换，先把旧密钥放入 `ENCRYPTION_KEY_FALLBACKS`，确认历史账号会话可解密后再发布，避免线上用户被迫重新绑定。
 - `SCHEDULER_TASK_TIMEOUT_SECONDS` 控制单个定时任务最大执行时长。超过后调度器会释放 processing 锁并继续后续任务，避免一个任务卡住所有定时发送。
 - `SCHEDULER_TASK_CONCURRENCY` 控制单轮最多并发执行的到点任务数。默认 `3`，用于避免多个慢任务串行拖住整个发送队列。
+- `ACCOUNT_AUTO_SYNC_MAX_CANDIDATES_PER_RUN` 控制每轮账号资源同步扫描的候选上限。`0` 表示选取全部陈旧账号，生产默认必须为 `0`；正整数仅用于显式应急限流。
+- `ACCOUNT_AUTO_SYNC_SKIP_PROXY_ACCOUNTS` 控制是否跳过绑定代理的账号。生产默认 `false`，保证所有在线账号进入顺序轮转；只有代理系统故障时才可临时设为 `true`。
 
 ### 4.1 调度器即时检测
 
@@ -126,6 +130,12 @@ curl -fsS -H "Authorization: Bearer <admin_jwt>" \
 - `issues` 包含 `due_tasks_not_queued` 表示数据库已有到点 scheduled 任务，但 Redis pending/processing 都为空，调度器可能已经停摆。
 - `issues` 包含 `pending_tasks_stale` 表示 Redis 中有到点任务长时间未被 consumer 消费。
 - `last_task_timeout_id` 不为空表示最近有单个任务执行超过 `SCHEDULER_TASK_TIMEOUT_SECONDS`，调度器已中断该次执行并继续处理后续任务。
+
+### 4.2 账号资源同步轮转
+
+账号资源自动同步每小时扫描一次缺失或超过 24 小时未刷新的快照，并按“从未同步、最久未同步、account_id”顺序把全部符合条件的账号加入单 worker 队列。队列逐个连接 Telegram；单账号失败或超时只记录该账号结果，不阻塞后续账号。
+
+手动单账号同步使用更高队列优先级。`wait=true` 只有在 Telegram Dialog 拉取和资源事务提交完成后才返回成功；排队、执行中、失败和超时必须使用不同状态，不能把“已加入队列”展示成“同步完成”。详细契约见 `docs/superpowers/specs/2026-08-10-account-resource-sync-rotation-design.md`。
 
 ## 5. 当前实际 vs 目标架构
 
@@ -156,6 +166,7 @@ test "$(curl -k -s -o /dev/null -w '%{http_code}' -H 'Host: msg.telema.cn' https
 docker logs --tail 50 tgmsg-app
 docker inspect tgmsg-app --format '{{json .Mounts}}'
 readlink -f /data/tgmsg/current
+docker logs --since 2h tgmsg-app 2>&1 | grep 'account sync scan queued\|account sync finished'
 ```
 
 通过标准：
@@ -164,6 +175,8 @@ readlink -f /data/tgmsg/current
 - H5 静态首页、OpenAPI 与宿主机 `/api` 反代均可访问
 - `tgmsg-app` 日志中没有持续重启或连接失败
 - `current` 指向最新 release
+- 账号同步扫描日志中的 `selected_accounts`、`enqueued`、`reprioritized`、`deduped` 与实际陈旧账号一致；不得仍表现为每小时固定只选 1 个账号
+- 选取一个已知陈旧账号，确认 `account sync finished` 成功后其 `resources.last_sync_at` 前移，并用只读 Telegram Dialog 核对一个目标群已落库
 - 更新 sing-box 订阅后，必须从 `tgmsg-app` 通过每个启用的 SOCKS 网关完成一次 Telegram MTProto 请求；仅 SOCKS 端口 TCP 可连接不代表代理可发送 Telegram 消息
 
 ## 7. 常用运维命令

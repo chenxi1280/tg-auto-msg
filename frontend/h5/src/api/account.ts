@@ -4,6 +4,33 @@
 import request from './request'
 import type { ApiResponse } from './request'
 
+const ACCOUNT_SYNC_REQUEST_TIMEOUT_MS = 285_000
+
+export type AccountSyncStatus = 'enqueued' | 'reprioritized' | 'queued' | 'running' | 'completed'
+
+export interface AccountSyncResult {
+  account_id: string
+  user_id: number
+  trigger_source: string
+  profile_sync_ok: boolean
+  resource_sync_ok: boolean
+  resource_synced_count: number
+  error?: string | null
+}
+
+export interface AccountSyncBatchResult {
+  queued_accounts: number
+  reprioritized_accounts: number
+  already_running_accounts: number
+  total_accounts: number
+}
+
+export interface AccountSyncResponse extends Omit<ApiResponse<AccountSyncResult | AccountSyncBatchResult>, 'data'> {
+  data?: AccountSyncResult | AccountSyncBatchResult
+  status: AccountSyncStatus
+  already_running?: boolean
+}
+
 /**
  * 账号接口
  */
@@ -55,17 +82,19 @@ export const getAccounts = (
 export const syncAccountResources = (
   accountId: string,
   wait = false
-): Promise<(ApiResponse<{ data?: Record<string, any> }> & { already_running?: boolean })> => {
+): Promise<AccountSyncResponse> => {
   return request.post(`/accounts/${accountId}/sync`, null, {
-    params: { wait }
+    params: { wait },
+    timeout: ACCOUNT_SYNC_REQUEST_TIMEOUT_MS
   })
 }
 
 export const syncAllAccountResources = (
   wait = false
-): Promise<(ApiResponse<{ data?: Record<string, any> }> & { already_running?: boolean })> => {
+): Promise<AccountSyncResponse> => {
   return request.post('/accounts/sync-all', null, {
-    params: { wait }
+    params: { wait },
+    timeout: ACCOUNT_SYNC_REQUEST_TIMEOUT_MS
   })
 }
 

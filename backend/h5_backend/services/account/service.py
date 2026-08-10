@@ -30,6 +30,7 @@ class AccountService:
     """Account and resource business service."""
     PROFILE_SYNC_TIMEOUT_SECONDS = 30
     RESOURCE_SYNC_TIMEOUT_SECONDS = 5 * 60
+    MANUAL_SYNC_WAIT_TIMEOUT_SECONDS = 4 * 60 + 30
 
     async def _mark_account_offline_for_sync_failure(
         self,
@@ -78,7 +79,7 @@ class AccountService:
         background_tasks: BackgroundTasks,
         wait: bool = False,
     ) -> Dict[str, Any]:
-        del background_tasks, wait
+        del background_tasks
         await check_account_permission(account_id, user_id)
         enqueue_result = await account_auto_sync_runtime.enqueue_account(
             account_id,
@@ -87,9 +88,47 @@ class AccountService:
         )
         if enqueue_result["status"] == "missing":
             raise HTTPException(status_code=404, detail="账号不存在或未启用")
-        if enqueue_result["status"] in {"queued", "running"}:
-            return {"message": "该账号正在同步中，请稍后查看结果", "already_running": True}
-        return {"message": "该账号已加入同步队列", "already_running": False}
+        if wait:
+            return await self._wait_for_manual_sync(account_id)
+        return self._manual_enqueue_response(enqueue_result["status"])
+
+    async def _wait_for_manual_sync(self, account_id: str) -> Dict[str, Any]:
+        try:
+            result = await account_auto_sync_runtime.wait_for_account(
+                account_id,
+                timeout_seconds=self.MANUAL_SYNC_WAIT_TIMEOUT_SECONDS,
+            )
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=504,
+                detail="等待账号资源同步完成超时，后台任务未被取消",
+            ) from exc
+        if not bool(result.get("resource_sync_ok")):
+            detail = str(result.get("error") or "账号资源同步失败")
+            raise HTTPException(status_code=502, detail=detail)
+        synced_count = int(result.get("resource_synced_count") or 0)
+        return {
+            "message": f"资源同步完成，共刷新 {synced_count} 条",
+            "status": "completed",
+            "already_running": False,
+            "data": result,
+        }
+
+    @staticmethod
+    def _manual_enqueue_response(status: str) -> Dict[str, Any]:
+        messages = {
+            "enqueued": "该账号已加入同步队列",
+            "reprioritized": "该账号已提升为优先同步",
+            "queued": "该账号已在同步队列中",
+            "running": "该账号正在同步中",
+        }
+        if status not in messages:
+            raise RuntimeError(f"unexpected account sync queue status: {status}")
+        return {
+            "message": messages[status],
+            "status": status,
+            "already_running": status in {"queued", "running"},
+        }
 
     async def sync_all_resources(
         self,
@@ -101,28 +140,38 @@ class AccountService:
         account_manager = get_account_manager()
         accounts = await account_manager.get_accounts(user_id, is_active=True)
         if not accounts:
-            return {"message": "当前没有可同步的账号", "already_running": False}
+            return {"message": "当前没有可同步的账号", "status": "completed", "already_running": False}
 
-        queued_accounts = 0
-        already_running_accounts = 0
+        status_counts: dict[str, int] = {}
         for account in accounts:
             enqueue_result = await account_auto_sync_runtime.enqueue_account(
                 account.account_id,
                 trigger_source=SYNC_TRIGGER_MANUAL,
                 user_id=int(user_id),
             )
-            if enqueue_result["status"] == "enqueued":
-                queued_accounts += 1
-            elif enqueue_result["status"] in {"queued", "running"}:
-                already_running_accounts += 1
+            status = str(enqueue_result["status"])
+            status_counts[status] = status_counts.get(status, 0) + 1
 
-        if queued_accounts == 0 and already_running_accounts > 0:
-            return {"message": "账号正在同步中，请稍后查看结果", "already_running": True}
+        queued_accounts = status_counts.get("enqueued", 0)
+        reprioritized_accounts = status_counts.get("reprioritized", 0)
+        already_running_accounts = status_counts.get("queued", 0) + status_counts.get("running", 0)
+        if queued_accounts == 0 and reprioritized_accounts == 0 and already_running_accounts > 0:
+            return {
+                "message": "账号正在同步中，请稍后查看结果",
+                "status": "running",
+                "already_running": True,
+            }
         return {
-            "message": f"账号已加入同步队列：新增排队 {queued_accounts} 个，已在同步中 {already_running_accounts} 个",
+            "message": (
+                f"账号已加入同步队列：新增 {queued_accounts} 个，"
+                f"提升优先级 {reprioritized_accounts} 个，"
+                f"已在队列或同步中 {already_running_accounts} 个"
+            ),
+            "status": "queued",
             "already_running": False,
             "data": {
                 "queued_accounts": queued_accounts,
+                "reprioritized_accounts": reprioritized_accounts,
                 "already_running_accounts": already_running_accounts,
                 "total_accounts": len(accounts),
             },

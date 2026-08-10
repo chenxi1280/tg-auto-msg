@@ -301,13 +301,15 @@ const loadResources = async (autoSyncIfEmpty = false, preserveTargets = true) =>
   loadingResources.value = true
   try {
     const query = { is_active: true }
-    const data = await accountStore.getAccountResources(form.accountId, query)
+    let data = await accountStore.getAccountResources(form.accountId, query)
     resources.value = (data || []) as ResourceOption[]
 
     if (autoSyncIfEmpty && resources.value.length === 0) {
       ElMessage.info('正在同步聊天资源，请稍候...')
       const syncResult = await accountStore.syncAccount(form.accountId, true)
-      ElMessage.info(syncResult.message || '该账号已加入同步队列，请稍后刷新资源列表')
+      data = await accountStore.getAccountResources(form.accountId, query)
+      resources.value = (data || []) as ResourceOption[]
+      ElMessage.success(syncResult.message || '聊天资源同步完成')
     }
 
     if (preserveTargets && previousTargetKeys.length > 0) {

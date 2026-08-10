@@ -113,6 +113,29 @@ class AccountAutoSyncTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    def test_auto_timer_includes_proxy_accounts_by_default(self):
+        account = SimpleNamespace(
+            is_active=True,
+            is_banned=False,
+            reauth_required=False,
+            health_status=HealthStatus.ONLINE.value,
+            proxy_id=1,
+        )
+
+        self.assertTrue(
+            should_enqueue_auto_timer_sync(
+                account,
+                latest_resource_sync_at=None,
+                now=datetime(2026, 8, 10, 12, 0, 0),
+            )
+        )
+
+    def test_auto_timer_defaults_to_all_accounts_and_includes_proxy_accounts(self):
+        runtime = AccountAutoSyncRuntime()
+
+        self.assertEqual(runtime.AUTO_TIMER_MAX_CANDIDATES_PER_RUN, 0)
+        self.assertFalse(runtime.AUTO_TIMER_SKIP_PROXY_ACCOUNTS)
+
     async def test_run_once_uses_candidate_loader_instead_of_all_active_accounts(self):
         runtime = AccountAutoSyncRuntime()
         runtime.AUTO_TIMER_MAX_CANDIDATES_PER_RUN = 0
@@ -162,7 +185,7 @@ class AccountAutoSyncTests(unittest.IsolatedAsyncioTestCase):
             skip_reauth_required=True,
         )
 
-    def test_auto_timer_candidate_query_rotates_recently_attempted_accounts(self):
+    def test_auto_timer_candidate_query_orders_by_oldest_resource_snapshot(self):
         cutoff = datetime(2026, 7, 8, 22, 0, 0)
 
         stmt = _build_auto_timer_candidate_statement(
@@ -173,15 +196,19 @@ class AccountAutoSyncTests(unittest.IsolatedAsyncioTestCase):
         compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
 
         self.assertIn(
-            "ORDER BY accounts.updated_at ASC, "
-            "anon_1.latest_resource_sync_at ASC NULLS FIRST, accounts.account_id ASC",
+            "ORDER BY anon_1.latest_resource_sync_at ASC NULLS FIRST, accounts.account_id ASC",
             compiled,
         )
+        self.assertNotIn("ORDER BY accounts.updated_at", compiled)
 
     async def test_worker_does_not_mark_account_offline_after_sync_timeout(self):
         runtime = AccountAutoSyncRuntime()
         runtime.AUTO_TIMER_ACCOUNT_SYNC_TIMEOUT_SECONDS = 0.01
-        await runtime._queue.put(("acc-timeout", 1, SYNC_TRIGGER_AUTO_TIMER))
+        await runtime._sync_queue.enqueue(
+            account_id="acc-timeout",
+            user_id=1,
+            trigger_source=SYNC_TRIGGER_AUTO_TIMER,
+        )
 
         class SlowAccountService:
             async def sync_account_snapshot(self, *_args, **_kwargs):
@@ -192,7 +219,7 @@ class AccountAutoSyncTests(unittest.IsolatedAsyncioTestCase):
             return_value=SlowAccountService(),
         ), patch("backend.h5_backend.services.account.auto_sync.get_async_session") as session_factory:
             worker = asyncio.create_task(runtime._worker_loop())
-            await asyncio.wait_for(runtime._queue.join(), timeout=1)
+            await asyncio.wait_for(runtime.wait_until_idle(), timeout=1)
             worker.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await worker
@@ -231,7 +258,11 @@ class AccountAutoSyncTests(unittest.IsolatedAsyncioTestCase):
         runtime = AccountAutoSyncRuntime()
         runtime.ACCOUNT_SYNC_TIMEOUT_SECONDS = 0.5
         runtime.AUTO_TIMER_ACCOUNT_SYNC_TIMEOUT_SECONDS = 0.01
-        await runtime._queue.put(("acc-timeout", 1, SYNC_TRIGGER_AUTO_TIMER))
+        await runtime._sync_queue.enqueue(
+            account_id="acc-timeout",
+            user_id=1,
+            trigger_source=SYNC_TRIGGER_AUTO_TIMER,
+        )
 
         class SlowAccountService:
             async def sync_account_snapshot(self, *_args, **_kwargs):
@@ -242,7 +273,7 @@ class AccountAutoSyncTests(unittest.IsolatedAsyncioTestCase):
             return_value=SlowAccountService(),
         ):
             worker = asyncio.create_task(runtime._worker_loop())
-            await asyncio.wait_for(runtime._queue.join(), timeout=0.2)
+            await asyncio.wait_for(runtime.wait_until_idle(), timeout=0.2)
             worker.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await worker

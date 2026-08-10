@@ -12,10 +12,14 @@ from sqlalchemy import func, or_, select
 from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import Account, HealthStatus, Resource
 from backend.bot.account.reauth import is_reauth_required_account
+from backend.h5_backend.services.account.sync_queue import (
+    SYNC_TRIGGER_AUTO_TIMER,
+    SYNC_TRIGGER_LOGIN_SUCCESS,
+    SYNC_TRIGGER_MANUAL,
+    AccountSyncQueue,
+    AccountSyncWorkItem,
+)
 
-SYNC_TRIGGER_LOGIN_SUCCESS = "login_success"
-SYNC_TRIGGER_AUTO_TIMER = "auto_timer"
-SYNC_TRIGGER_MANUAL = "manual"
 AUTO_TIMER_RESOURCE_STALE_SECONDS = 24 * 60 * 60
 AUTO_TIMER_UNLIMITED_CANDIDATES = 0
 
@@ -37,7 +41,7 @@ def should_enqueue_auto_timer_sync(
     *,
     latest_resource_sync_at: Optional[datetime],
     now: datetime,
-    skip_proxy_accounts: bool = True,
+    skip_proxy_accounts: bool = False,
 ) -> bool:
     if not bool(getattr(account, "is_active", False)):
         return False
@@ -82,7 +86,7 @@ def _build_auto_timer_candidate_statement(
         .where(Account.reauth_required.is_(False))
         .where(Account.health_status == HealthStatus.ONLINE.value)
         .where(or_(latest_sync.c.latest_resource_sync_at.is_(None), latest_sync.c.latest_resource_sync_at <= cutoff))
-        .order_by(Account.updated_at.asc(), latest_sync.c.latest_resource_sync_at.asc().nullsfirst(), Account.account_id.asc())
+        .order_by(latest_sync.c.latest_resource_sync_at.asc().nullsfirst(), Account.account_id.asc())
     )
     if skip_proxy_accounts:
         stmt = stmt.where(Account.proxy_id.is_(None))
@@ -95,14 +99,12 @@ class AccountAutoSyncRuntime:
     INTERVAL_SECONDS = 60 * 60
     ACCOUNT_SYNC_TIMEOUT_SECONDS = 6 * 60
     AUTO_TIMER_ACCOUNT_SYNC_TIMEOUT_SECONDS = 45
-    AUTO_TIMER_MAX_CANDIDATES_PER_RUN = int(os.getenv("ACCOUNT_AUTO_SYNC_MAX_CANDIDATES_PER_RUN", "1"))
-    AUTO_TIMER_SKIP_PROXY_ACCOUNTS = _env_bool("ACCOUNT_AUTO_SYNC_SKIP_PROXY_ACCOUNTS", True)
+    AUTO_TIMER_MAX_CANDIDATES_PER_RUN = int(os.getenv("ACCOUNT_AUTO_SYNC_MAX_CANDIDATES_PER_RUN", "0"))
+    AUTO_TIMER_SKIP_PROXY_ACCOUNTS = _env_bool("ACCOUNT_AUTO_SYNC_SKIP_PROXY_ACCOUNTS", False)
 
     def __init__(self) -> None:
         self._running = False
-        self._queue: asyncio.Queue[tuple[str, int, str]] = asyncio.Queue()
-        self._queued_account_ids: set[str] = set()
-        self._running_account_ids: set[str] = set()
+        self._sync_queue = AccountSyncQueue()
         self._worker_task: Optional[asyncio.Task] = None
 
     async def start(self) -> None:
@@ -157,19 +159,27 @@ class AccountAutoSyncRuntime:
         if skipped is not None:
             return skipped
 
-        await self._enqueue_loaded_account(
+        status = await self._sync_queue.enqueue(
             account_id=normalized_account_id,
             user_id=normalized_user_id,
             trigger_source=trigger_source,
         )
+        if status in {"queued", "running"}:
+            return self._dedupe_result(
+                status=status,
+                account_id=normalized_account_id,
+                user_id=normalized_user_id,
+                trigger_source=trigger_source,
+            )
         logger.info(
-            "account sync enqueued: account_id={}, user_id={}, trigger_source={}, queue_size={}",
+            "account sync enqueued: account_id={}, user_id={}, trigger_source={}, status={}, queue_size={}",
             normalized_account_id,
             normalized_user_id,
             trigger_source,
-            self._queue.qsize(),
+            status,
+            self._sync_queue.pending_count(),
         )
-        return {"status": "enqueued", "account_id": normalized_account_id, "user_id": normalized_user_id}
+        return {"status": status, "account_id": normalized_account_id, "user_id": normalized_user_id}
 
     async def run_once(self) -> None:
         loaded_rows = await self.load_auto_timer_candidates()
@@ -177,13 +187,15 @@ class AccountAutoSyncRuntime:
 
         if not rows:
             logger.info(
-                "account sync scan queued: total_accounts={}, selected_accounts=0, enqueued=0, deduped=0, queue_size={}",
+                "account sync scan queued: total_accounts={}, selected_accounts=0, "
+                "enqueued=0, deduped=0, queue_size={}",
                 len(loaded_rows),
-                self._queue.qsize(),
+                self._sync_queue.pending_count(),
             )
             return
 
         enqueued = 0
+        reprioritized = 0
         deduped = 0
         for row in rows:
             account_id = str(row.account_id)
@@ -196,15 +208,18 @@ class AccountAutoSyncRuntime:
             )
             if queue_result["status"] == "enqueued":
                 enqueued += 1
+            elif queue_result["status"] == "reprioritized":
+                reprioritized += 1
             else:
                 deduped += 1
 
         logger.info(
-            "account sync scan queued: total_accounts={}, enqueued={}, deduped={}, queue_size={}",
+            "account sync scan queued: selected_accounts={}, enqueued={}, reprioritized={}, deduped={}, queue_size={}",
             len(loaded_rows),
             enqueued,
+            reprioritized,
             deduped,
-            self._queue.qsize(),
+            self._sync_queue.pending_count(),
         )
 
     async def load_auto_timer_candidates(self) -> list[Any]:
@@ -233,26 +248,25 @@ class AccountAutoSyncRuntime:
 
         service = get_account_service()
         while True:
-            account_id, user_id, trigger_source = await self._queue.get()
-            self._queued_account_ids.discard(account_id)
-            self._running_account_ids.add(account_id)
+            item = await self._sync_queue.get()
             logger.info(
                 "account sync started: account_id={}, user_id={}, trigger_source={}, queue_size={}",
-                account_id,
-                user_id,
-                trigger_source,
-                self._queue.qsize(),
+                item.account_id,
+                item.user_id,
+                item.trigger_source,
+                self._sync_queue.pending_count(),
             )
             try:
-                await self._execute_account_sync(
+                result = await self._execute_account_sync(
                     service,
-                    account_id=account_id,
-                    user_id=user_id,
-                    trigger_source=trigger_source,
+                    account_id=item.account_id,
+                    user_id=item.user_id,
+                    trigger_source=item.trigger_source,
                 )
-            finally:
-                self._running_account_ids.discard(account_id)
-                self._queue.task_done()
+            except asyncio.CancelledError:
+                self._sync_queue.complete(item, self._cancelled_result(item))
+                raise
+            self._sync_queue.complete(item, result)
 
     def _missing_account_result(
         self,
@@ -280,16 +294,13 @@ class AccountAutoSyncRuntime:
     ) -> Optional[dict[str, Any]]:
         if skip_reauth_required and is_reauth_required_account(account):
             logger.info(
-                "account sync enqueue skipped: account_id={}, user_id={}, trigger_source={}, reason=skipped_reauth_required",
+                "account sync enqueue skipped: account_id={}, user_id={}, "
+                "trigger_source={}, reason=skipped_reauth_required",
                 account_id,
                 user_id,
                 trigger_source,
             )
             return {"status": "skipped_reauth_required", "account_id": account_id, "user_id": user_id}
-        if account_id in self._running_account_ids:
-            return self._dedupe_result(status="running", account_id=account_id, user_id=user_id, trigger_source=trigger_source)
-        if account_id in self._queued_account_ids:
-            return self._dedupe_result(status="queued", account_id=account_id, user_id=user_id, trigger_source=trigger_source)
         return None
 
     def _dedupe_result(
@@ -301,18 +312,15 @@ class AccountAutoSyncRuntime:
         trigger_source: str,
     ) -> dict[str, Any]:
         logger.info(
-            "account sync enqueue deduped: account_id={}, user_id={}, trigger_source={}, dedupe={}, queue_size={}",
+            "account sync enqueue deduped: account_id={}, user_id={}, "
+            "trigger_source={}, dedupe={}, queue_size={}",
             account_id,
             user_id,
             trigger_source,
             status,
-            self._queue.qsize(),
+            self._sync_queue.pending_count(),
         )
         return {"status": status, "account_id": account_id, "user_id": user_id}
-
-    async def _enqueue_loaded_account(self, *, account_id: str, user_id: int, trigger_source: str) -> None:
-        self._queued_account_ids.add(account_id)
-        await self._queue.put((account_id, user_id, trigger_source))
 
     async def _execute_account_sync(
         self,
@@ -321,7 +329,7 @@ class AccountAutoSyncRuntime:
         account_id: str,
         user_id: int,
         trigger_source: str,
-    ) -> None:
+    ) -> dict[str, Any]:
         timeout_seconds = self._sync_timeout_seconds(trigger_source)
         try:
             result = await asyncio.wait_for(
@@ -334,6 +342,7 @@ class AccountAutoSyncRuntime:
                 user_id=user_id,
                 trigger_source=trigger_source,
             )
+            return result
         except asyncio.CancelledError:
             raise
         except TimeoutError:
@@ -343,15 +352,83 @@ class AccountAutoSyncRuntime:
                 trigger_source=trigger_source,
                 timeout_seconds=timeout_seconds,
             )
-        except Exception as exc:
-            logger.exception(
-                "account sync failed: account_id={}, user_id={}, trigger_source={}, error_type={}, error={!r}",
-                account_id,
-                user_id,
-                trigger_source,
-                type(exc).__name__,
-                exc,
+            return self._failure_result(
+                account_id=account_id,
+                user_id=user_id,
+                trigger_source=trigger_source,
+                error=f"账号同步超时: {timeout_seconds:g}s",
             )
+        except Exception as exc:
+            return self._exception_result(
+                account_id=account_id,
+                user_id=user_id,
+                trigger_source=trigger_source,
+                exc=exc,
+            )
+
+    def _exception_result(
+        self,
+        *,
+        account_id: str,
+        user_id: int,
+        trigger_source: str,
+        exc: Exception,
+    ) -> dict[str, Any]:
+        logger.exception(
+            "account sync failed: account_id={}, user_id={}, trigger_source={}, "
+            "error_type={}, error={!r}",
+            account_id,
+            user_id,
+            trigger_source,
+            type(exc).__name__,
+            exc,
+        )
+        return self._failure_result(
+            account_id=account_id,
+            user_id=user_id,
+            trigger_source=trigger_source,
+            error=f"账号同步失败: {type(exc).__name__}: {exc}",
+        )
+
+    async def wait_for_account(
+        self,
+        account_id: str,
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> dict[str, Any]:
+        return await self._sync_queue.wait_for_result(
+            str(account_id),
+            timeout_seconds=timeout_seconds,
+        )
+
+    async def wait_until_idle(self) -> None:
+        await self._sync_queue.join()
+
+    @staticmethod
+    def _failure_result(
+        *,
+        account_id: str,
+        user_id: int,
+        trigger_source: str,
+        error: str,
+    ) -> dict[str, Any]:
+        return {
+            "account_id": account_id,
+            "user_id": user_id,
+            "trigger_source": trigger_source,
+            "profile_sync_ok": False,
+            "resource_sync_ok": False,
+            "resource_synced_count": 0,
+            "error": error,
+        }
+
+    def _cancelled_result(self, item: AccountSyncWorkItem) -> dict[str, Any]:
+        return self._failure_result(
+            account_id=item.account_id,
+            user_id=item.user_id,
+            trigger_source=item.trigger_source,
+            error="账号同步 worker 已停止",
+        )
 
     def _sync_timeout_seconds(self, trigger_source: str) -> float:
         if trigger_source == SYNC_TRIGGER_AUTO_TIMER:
@@ -367,7 +444,8 @@ class AccountAutoSyncRuntime:
         trigger_source: str,
     ) -> None:
         logger.info(
-            "account sync finished: account_id={}, user_id={}, trigger_source={}, profile_sync_ok={}, resource_sync_ok={}, resource_synced_count={}, error={}",
+            "account sync finished: account_id={}, user_id={}, trigger_source={}, "
+            "profile_sync_ok={}, resource_sync_ok={}, resource_synced_count={}, error={}",
             account_id,
             user_id,
             trigger_source,

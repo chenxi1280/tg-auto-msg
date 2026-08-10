@@ -444,7 +444,8 @@ const syncAccount = async (accountId: string) => {
   syncLoading[accountId] = true
   try {
     const result = await accountStore.syncAccount(accountId, true)
-    ElMessage.success(result.message || '该账号已加入同步队列')
+    await refreshAccounts()
+    ElMessage.success(result.message || '资源同步完成')
   } catch {
     // HTTP errors already handled by the response interceptor
   } finally {
