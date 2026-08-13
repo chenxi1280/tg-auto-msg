@@ -27,7 +27,7 @@ Candidates are ordered by:
 2. oldest `last_sync_at`;
 3. stable `account_id` tie-breaker.
 
-The runtime still uses one worker. Accounts are synchronized sequentially, and each automatic attempt has a bounded timeout. A failure or timeout is logged for that account and the worker continues with the next queued account.
+The runtime still uses one worker. Accounts are synchronized sequentially, and every attempt has a six-minute total timeout. That outer budget must be greater than the account service's 30-second profile timeout plus five-minute resource timeout; it must not cancel a valid large-dialog resource fetch before the resource-layer budget expires. A failure or timeout is logged for that account and the worker continues with the next queued account.
 
 ## Queue priority and deduplication
 
@@ -71,6 +71,7 @@ Automated coverage must prove:
 - candidate ordering is oldest-resource-first and deterministic;
 - manual work reprioritizes an already queued automatic item without duplicate execution;
 - one account failure or timeout does not stop the following account;
+- automatic work uses the same six-minute total budget as manual work, so a large-dialog account can use the full resource-layer timeout;
 - `wait=true` observes completed and failed outcomes without cancelling shared work;
 - the button path enqueues without a long request, polls queued/running to a terminal result, and rejects failed/idle/timeout states;
 - resource pages reload after successful completion.

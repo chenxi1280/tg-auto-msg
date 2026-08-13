@@ -133,7 +133,7 @@ curl -fsS -H "Authorization: Bearer <admin_jwt>" \
 
 ### 4.2 账号资源同步轮转
 
-账号资源自动同步每小时扫描一次缺失或超过 24 小时未刷新的快照，并按“从未同步、最久未同步、account_id”顺序把全部符合条件的账号加入单 worker 队列。队列逐个连接 Telegram；单账号失败或超时只记录该账号结果，不阻塞后续账号。
+账号资源自动同步每小时扫描一次缺失或超过 24 小时未刷新的快照，并按“从未同步、最久未同步、account_id”顺序把全部符合条件的账号加入单 worker 队列。队列逐个连接 Telegram；每个账号的总同步预算为 6 分钟，覆盖资料同步 30 秒与资源同步 5 分钟，不能用更短的外层超时提前取消大 Dialog 账号。单账号失败或超时只记录该账号结果，不阻塞后续账号。
 
 手动单账号同步使用更高队列优先级。页面按钮先以 `wait=false` 立即入队，再轮询 `/api/accounts/{account_id}/sync-status`；只有 `completed` 才刷新资源并提示成功，`failed`、`idle`（进程重启导致状态丢失）和前端等待超时均明确报错。`wait=true` 仅保留为兼容接口，不再作为页面按钮的长连接。详细契约见 `docs/superpowers/specs/2026-08-10-account-resource-sync-rotation-design.md`。
 
@@ -176,6 +176,7 @@ docker logs --since 2h tgmsg-app 2>&1 | grep 'account sync scan queued\|account 
 - `tgmsg-app` 日志中没有持续重启或连接失败
 - `current` 指向最新 release
 - 账号同步扫描日志中的 `selected_accounts`、`enqueued`、`reprioritized`、`deduped` 与实际陈旧账号一致；不得仍表现为每小时固定只选 1 个账号
+- 大 Dialog 账号不得在资源层 5 分钟预算之前被自动同步外层提前取消；单账号总同步最多 6 分钟，超时后继续下一个账号
 - 选取一个已知陈旧账号，确认 `account sync finished` 成功后其 `resources.last_sync_at` 前移，并用只读 Telegram Dialog 核对一个目标群已落库
 - 更新 sing-box 订阅后，必须从 `tgmsg-app` 通过每个启用的 SOCKS 网关完成一次 Telegram MTProto 请求；仅 SOCKS 端口 TCP 可连接不代表代理可发送 Telegram 消息
 

@@ -98,7 +98,6 @@ def _build_auto_timer_candidate_statement(
 class AccountAutoSyncRuntime:
     INTERVAL_SECONDS = 60 * 60
     ACCOUNT_SYNC_TIMEOUT_SECONDS = 6 * 60
-    AUTO_TIMER_ACCOUNT_SYNC_TIMEOUT_SECONDS = 45
     AUTO_TIMER_MAX_CANDIDATES_PER_RUN = int(os.getenv("ACCOUNT_AUTO_SYNC_MAX_CANDIDATES_PER_RUN", "0"))
     AUTO_TIMER_SKIP_PROXY_ACCOUNTS = _env_bool("ACCOUNT_AUTO_SYNC_SKIP_PROXY_ACCOUNTS", False)
 
@@ -434,8 +433,7 @@ class AccountAutoSyncRuntime:
         )
 
     def _sync_timeout_seconds(self, trigger_source: str) -> float:
-        if trigger_source == SYNC_TRIGGER_AUTO_TIMER:
-            return float(self.AUTO_TIMER_ACCOUNT_SYNC_TIMEOUT_SECONDS)
+        del trigger_source
         return float(self.ACCOUNT_SYNC_TIMEOUT_SECONDS)
 
     def _log_account_sync_finished(

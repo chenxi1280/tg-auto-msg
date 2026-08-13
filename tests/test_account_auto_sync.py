@@ -203,7 +203,7 @@ class AccountAutoSyncTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_worker_does_not_mark_account_offline_after_sync_timeout(self):
         runtime = AccountAutoSyncRuntime()
-        runtime.AUTO_TIMER_ACCOUNT_SYNC_TIMEOUT_SECONDS = 0.01
+        runtime.ACCOUNT_SYNC_TIMEOUT_SECONDS = 0.01
         await runtime._sync_queue.enqueue(
             account_id="acc-timeout",
             user_id=1,
@@ -254,10 +254,9 @@ class AccountAutoSyncTests(unittest.IsolatedAsyncioTestCase):
         logger.error.assert_called_once()
         logger.warning.assert_not_called()
 
-    async def test_auto_timer_worker_uses_short_timeout_without_changing_manual_budget(self):
+    async def test_auto_timer_worker_uses_full_account_sync_budget(self):
         runtime = AccountAutoSyncRuntime()
-        runtime.ACCOUNT_SYNC_TIMEOUT_SECONDS = 0.5
-        runtime.AUTO_TIMER_ACCOUNT_SYNC_TIMEOUT_SECONDS = 0.01
+        runtime.ACCOUNT_SYNC_TIMEOUT_SECONDS = 0.05
         await runtime._sync_queue.enqueue(
             account_id="acc-timeout",
             user_id=1,
@@ -266,7 +265,13 @@ class AccountAutoSyncTests(unittest.IsolatedAsyncioTestCase):
 
         class SlowAccountService:
             async def sync_account_snapshot(self, *_args, **_kwargs):
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.02)
+                return {
+                    "profile_sync_ok": True,
+                    "resource_sync_ok": True,
+                    "resource_synced_count": 1649,
+                    "error": None,
+                }
 
         with patch(
             "backend.h5_backend.services.account.service.get_account_service",
@@ -274,6 +279,17 @@ class AccountAutoSyncTests(unittest.IsolatedAsyncioTestCase):
         ):
             worker = asyncio.create_task(runtime._worker_loop())
             await asyncio.wait_for(runtime.wait_until_idle(), timeout=0.2)
+            result = runtime.get_account_status("acc-timeout")
             worker.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await worker
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["data"]["resource_synced_count"], 1649)
+
+    def test_auto_and_manual_sync_share_six_minute_outer_budget(self):
+        runtime = AccountAutoSyncRuntime()
+
+        self.assertEqual(runtime.ACCOUNT_SYNC_TIMEOUT_SECONDS, 6 * 60)
+        self.assertEqual(runtime._sync_timeout_seconds(SYNC_TRIGGER_AUTO_TIMER), 6 * 60)
+        self.assertEqual(runtime._sync_timeout_seconds(SYNC_TRIGGER_MANUAL), 6 * 60)
