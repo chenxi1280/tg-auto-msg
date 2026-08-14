@@ -18,6 +18,20 @@ export enum LoginStatus {
   ERROR = 'error'
 }
 
+export type PhoneCodeDeliveryMethod =
+  | 'telegram_app'
+  | 'sms'
+  | 'phone_call'
+  | 'email'
+  | 'unknown'
+
+export interface PhoneCodeDeliveryInfo {
+  delivery_method: PhoneCodeDeliveryMethod
+  next_delivery_method?: PhoneCodeDeliveryMethod | null
+  code_length?: number | null
+  resend_after_seconds: number
+}
+
 /**
  * 登录会话接口
  */
@@ -30,7 +44,7 @@ export interface LoginSession {
 /**
  * 登录状态响应
  */
-export interface LoginStatusResponse {
+export interface LoginStatusResponse extends Partial<PhoneCodeDeliveryInfo> {
   status: LoginStatus
   qr_url?: string
   phone_number?: string
@@ -73,7 +87,7 @@ export const getLoginStatus = (loginId: string): Promise<ApiResponse<LoginStatus
   return request.get('/login/status', { params: { login_id: loginId } })
 }
 
-export interface PhoneSendCodeResponse {
+export interface PhoneSendCodeResponse extends PhoneCodeDeliveryInfo {
   login_id: string
   status: LoginStatus
   phone_number: string

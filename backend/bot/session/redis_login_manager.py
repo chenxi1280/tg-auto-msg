@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from loguru import logger
 
 import redis.asyncio as redis
+from backend.bot.session.login_cooldown_store import LoginCooldownStore
 from backend.config.core.settings import settings
 
 
@@ -40,6 +41,9 @@ class LoginSession:
     phone_code_hash: str = ""
     code_sent_at: str = ""
     code_attempts: str = "0"
+    delivery_method: str = ""
+    next_delivery_method: str = ""
+    code_length: str = ""
     tg_user_id: str = ""
     username: str = ""
     phone: str = ""
@@ -69,13 +73,11 @@ class RedisLoginManager:
     BIND_KEY_PREFIX = "login:bind:"
     USER_KEY_PREFIX = "login:user:"
     SYSTEM_BIND_KEY_PREFIX = "login:system-bind:"
-    BIND_START_KEY_PREFIX = "login:bind-start:"
 
     # 会话过期时间（秒）
     SESSION_TTL = max(1, int(settings.login_session_ttl_seconds or 900))      # 默认 15 分钟
     BIND_CODE_TTL = 600    # 10 分钟
     SYSTEM_BIND_TTL = 600  # 10 分钟
-    BIND_START_COOLDOWN_TTL = max(1, int(settings.bind_start_cooldown_seconds or 120))
 
     def __init__(self, redis_url: str | None = None):
         """
@@ -86,6 +88,12 @@ class RedisLoginManager:
         """
         self._redis_url = redis_url or settings.redis_url
         self._redis_client: Optional[redis.Redis] = None
+        self._cooldowns = LoginCooldownStore(lambda: self._get_redis())
+
+    @property
+    def cooldowns(self) -> LoginCooldownStore:
+        """Expose login cooldown operations without leaking Redis clients."""
+        return self._cooldowns
 
     async def _get_redis(self) -> redis.Redis:
         """获取 Redis 客户端（懒加载）"""
@@ -136,6 +144,9 @@ class RedisLoginManager:
             "phone_code_hash": "",
             "code_sent_at": "",
             "code_attempts": "0",
+            "delivery_method": "",
+            "next_delivery_method": "",
+            "code_length": "",
             "tg_user_id": "",
             "username": "",
             "phone": "",
@@ -284,17 +295,8 @@ class RedisLoginManager:
         ttl_seconds: Optional[int] = None,
     ) -> int:
         """Try to acquire per-user bind-start cooldown. Returns retry-after seconds when denied."""
-        r = await self._get_redis()
-        cooldown = max(1, int(ttl_seconds or self.BIND_START_COOLDOWN_TTL))
-        key = self.BIND_START_KEY_PREFIX + str(int(user_id))
-        acquired = await r.set(key, "1", nx=True, ex=cooldown)
-        if acquired:
-            return 0
-
-        ttl = int(await r.ttl(key) or 0)
-        if ttl <= 0:
-            return cooldown
-        return ttl
+        cooldown = max(1, int(ttl_seconds or settings.bind_start_cooldown_seconds))
+        return await self._cooldowns.acquire_bind_start(user_id, ttl_seconds=cooldown)
 
     async def delete_session(self, login_id: str) -> bool:
         """

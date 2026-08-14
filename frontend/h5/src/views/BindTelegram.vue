@@ -84,16 +84,16 @@
           </div>
 
           <div v-else-if="status === LoginStatus.CODE_INPUT_REQUIRED" class="phone-form">
-            <p class="scan-tip">验证码已发送到 {{ phoneNumber || '你的 Telegram 账号' }}，请输入验证码继续登录。</p>
+            <p class="scan-tip">{{ phoneCodeDeliveryHint }}</p>
             <el-input
               v-model="phoneCode"
-              placeholder="请输入 Telegram 验证码"
+              :placeholder="phoneCodePlaceholder"
               clearable
               @keyup.enter="handleSubmitPhoneCode"
             />
             <div class="phone-actions">
-              <el-button :loading="sendingPhoneCode" @click="handleSendPhoneCode">
-                重新发送验证码
+              <el-button :disabled="sendingPhoneCode || !canResend" :loading="sendingPhoneCode" @click="handleSendPhoneCode">
+                {{ resendButtonLabel }}
               </el-button>
               <el-button type="primary" :loading="submittingPhoneCode" @click="handleSubmitPhoneCode">
                 提交验证码
@@ -194,6 +194,8 @@ import {
   createPhoneLoginSession,
   getLoginStatus,
   LoginStatus,
+  type PhoneCodeDeliveryInfo,
+  type PhoneCodeDeliveryMethod,
   sendPhoneLoginCode,
   submitLoginPassword,
   submitPhoneLoginCode
@@ -201,6 +203,7 @@ import {
 import { getLicenseStatus } from '@/api/me'
 import QRCode from 'qrcode'
 import ResponsiveFormLayer from '@/components/responsive/ResponsiveFormLayer.vue'
+import { useResendCountdown } from '@/composables/useResendCountdown'
 
 const router = useRouter()
 type LoginMode = 'qr' | 'phone'
@@ -230,8 +233,66 @@ const confirmedUsername = ref('')
 const phoneNumber = ref('')
 const phoneCode = ref('')
 const trialSlotEndAt = ref('')
+const phoneCodeDeliveryMethod = ref<PhoneCodeDeliveryMethod>('unknown')
+const phoneCodeNextDeliveryMethod = ref<PhoneCodeDeliveryMethod | null>(null)
+const phoneCodeLength = ref<number | null>(null)
+const {
+  canResend,
+  resendRemainingSeconds,
+  startResendCountdown,
+  stopResendCountdown
+} = useResendCountdown()
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
+
+const deliveryMethodLabels: Record<PhoneCodeDeliveryMethod, string> = {
+  telegram_app: '已登录的 Telegram 客户端',
+  sms: '短信',
+  phone_call: '电话',
+  email: '邮箱',
+  unknown: 'Telegram 官方渠道'
+}
+
+const phoneCodeDeliveryHint = computed(() => {
+  const current = deliveryMethodLabels[phoneCodeDeliveryMethod.value]
+  const next = phoneCodeNextDeliveryMethod.value
+    ? deliveryMethodLabels[phoneCodeNextDeliveryMethod.value]
+    : ''
+  const nextHint = next ? ` 若暂未收到，Telegram 可能后续改用${next}。` : ''
+  return `Telegram 指示：请在${current}查看验证码。${nextHint}`
+})
+
+const phoneCodePlaceholder = computed(() => {
+  const length = phoneCodeLength.value
+  return length ? `请输入 ${length} 位 Telegram 验证码` : '请输入 Telegram 验证码'
+})
+
+const resendButtonLabel = computed(() => (
+  canResend.value ? '重新发送验证码' : `${resendRemainingSeconds.value} 秒后可重发`
+))
+
+const resetPhoneCodeDelivery = () => {
+  phoneCodeDeliveryMethod.value = 'unknown'
+  phoneCodeNextDeliveryMethod.value = null
+  phoneCodeLength.value = null
+  stopResendCountdown()
+}
+
+const applyPhoneCodeDelivery = (data: Partial<PhoneCodeDeliveryInfo>) => {
+  phoneCodeDeliveryMethod.value = data.delivery_method || 'unknown'
+  phoneCodeNextDeliveryMethod.value = data.next_delivery_method || null
+  phoneCodeLength.value = data.code_length || null
+  startResendCountdown(data.resend_after_seconds)
+}
+
+const retryAfterSecondsFromError = (err: any): number => {
+  const retryAfter = Number(err?.response?.headers?.['retry-after'])
+  return Number.isFinite(retryAfter) ? Math.max(0, Math.ceil(retryAfter)) : 0
+}
+
+const requestErrorMessage = (err: any, fallback: string): string => (
+  err?.response?.data?.detail || err?.message || fallback
+)
 
 const resetCommonState = () => {
   stopPolling()
@@ -244,6 +305,7 @@ const resetCommonState = () => {
   passwordDialogVisible.value = false
   phoneCode.value = ''
   trialSlotEndAt.value = ''
+  resetPhoneCodeDelivery()
 }
 
 const updateTrialSlotState = (trialSlot?: { end_at?: string | null } | null) => {
@@ -305,6 +367,9 @@ const pollStatus = async () => {
     const data = res.data
 
     status.value = data.status
+    if (data.delivery_method) {
+      applyPhoneCodeDelivery(data)
+    }
 
     // 若后端刷新了二维码，更新前端展示
     if (data.qr_url && data.qr_url !== qrUrlData.value) {
@@ -418,10 +483,17 @@ const handleSendPhoneCode = async () => {
     const res = await sendPhoneLoginCode(loginId.value, phoneNumber.value)
     phoneNumber.value = res.data.phone_number
     status.value = res.data.status
+    phoneCode.value = ''
+    applyPhoneCodeDelivery(res.data)
     error.value = ''
-    ElMessage.success('验证码已发送，请在 Telegram 中查看')
+    ElMessage.success(phoneCodeDeliveryHint.value)
   } catch (err: any) {
-    error.value = err.message || '发送验证码失败'
+    const retryAfterSeconds = retryAfterSecondsFromError(err)
+    if (retryAfterSeconds > 0) {
+      startResendCountdown(retryAfterSeconds)
+    }
+    error.value = requestErrorMessage(err, '发送验证码失败')
+    ElMessage.warning(error.value)
   } finally {
     sendingPhoneCode.value = false
   }

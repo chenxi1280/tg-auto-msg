@@ -4,7 +4,6 @@ from __future__ import annotations
 import random
 import string
 import ipaddress
-from datetime import datetime
 from typing import Any, Dict, Optional
 
 from fastapi import BackgroundTasks, HTTPException, Request, status
@@ -40,6 +39,11 @@ from backend.h5_backend.services.licensing.service import (
     bind_current_authorization_to_account_if_possible,
     grant_trial_authorization_if_eligible,
 )
+from backend.h5_backend.services.login.phone_code_delivery import PhoneCodeDelivery
+from backend.h5_backend.services.login.phone_code_sender import (
+    PhoneCodeResendCooldownError,
+    request_phone_code,
+)
 from backend.h5_backend.services.account.auto_sync import (
     SYNC_TRIGGER_LOGIN_SUCCESS,
     account_auto_sync_runtime,
@@ -51,8 +55,12 @@ from backend.utils.security.crypto import decrypt_string_session, encrypt_string
 class LoginService:
     """Login lifecycle and bind business service."""
     PHONE_CODE_MAX_ATTEMPTS = 5
-    BIND_START_COOLDOWN_SECONDS = max(1, int(settings.bind_start_cooldown_seconds or 120))
-    LOGIN_SESSION_TTL_SECONDS = max(1, int(settings.login_session_ttl_seconds or 900))
+    BIND_START_COOLDOWN_SECONDS = max(1, int(settings.bind_start_cooldown_seconds))
+    LOGIN_SESSION_TTL_SECONDS = max(1, int(settings.login_session_ttl_seconds))
+    PHONE_CODE_RESEND_FALLBACK_COOLDOWN_SECONDS = max(
+        1,
+        int(settings.phone_code_resend_fallback_cooldown_seconds),
+    )
 
     @staticmethod
     def _normalize_ip_address(raw_ip: Optional[str]) -> Optional[str]:
@@ -458,43 +466,46 @@ class LoginService:
         )
 
         try:
-            await client.connect()
-            sent = await client.send_code_request(normalized_phone)
-            pending_session = encrypt_string_session(StringSession.save(client.session))
-            await get_redis_login_manager().update_status(
-                login_id,
-                LoginStatus.CODE_INPUT_REQUIRED,
-                login_mode="phone_code",
+            login_manager = get_redis_login_manager()
+            delivery = await request_phone_code(
+                login_manager=login_manager,
+                phone_code_lease_store=login_manager.cooldowns,
+                login_id=login_id,
                 phone_number=normalized_phone,
-                phone_code_hash=sent.phone_code_hash,
-                code_sent_at=datetime.now().isoformat(),
-                code_attempts="0",
-                pending_session_encrypted=pending_session,
-                error="",
-                password_hint="",
-                qr_url="",
+                client=client,
+                save_pending_session=lambda: encrypt_string_session(StringSession.save(client.session)),
+                code_input_status=LoginStatus.CODE_INPUT_REQUIRED,
+                fallback_resend_cooldown_seconds=self.PHONE_CODE_RESEND_FALLBACK_COOLDOWN_SECONDS,
+                inflight_lease_ttl_seconds=self.LOGIN_SESSION_TTL_SECONDS,
+                log=logger,
             )
-            logger.info("手机号登录验证码已发送: login_id={}, phone={}", login_id, f"{normalized_phone[:4]}***")
             return {
                 "login_id": login_id,
                 "status": LoginStatus.CODE_INPUT_REQUIRED.value,
                 "phone_number": normalized_phone,
                 "expires_in_seconds": self.LOGIN_SESSION_TTL_SECONDS,
+                **delivery.to_response_fields(),
             }
+        except PhoneCodeResendCooldownError as exc:
+            logger.info(
+                "phone login code resend blocked: login_id={}, retry_after_seconds={}",
+                login_id,
+                exc.retry_after_seconds,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"验证码已请求，请在 {exc.retry_after_seconds} 秒后再试。",
+                headers={"Retry-After": str(exc.retry_after_seconds)},
+            ) from exc
         except PhoneNumberInvalidError as exc:
             raise HTTPException(status_code=400, detail="手机号格式不正确，请检查国家区号和号码") from exc
         except Exception as exc:
-            await get_redis_login_manager().update_status(
+            await login_manager.update_status(
                 login_id,
                 LoginStatus.ERROR,
                 error=f"发送验证码失败: {type(exc).__name__}",
             )
             raise HTTPException(status_code=400, detail="发送 Telegram 验证码失败，请稍后重试") from exc
-        finally:
-            try:
-                await client.disconnect()
-            except Exception:
-                pass
 
     async def submit_phone_code_data(
         self,
@@ -635,11 +646,20 @@ class LoginService:
             if owner_user_id != user_id:
                 raise HTTPException(status_code=404, detail="会话不存在")
 
+        delivery = PhoneCodeDelivery.from_mapping(
+            {
+                "delivery_method": getattr(session, "delivery_method", ""),
+                "next_delivery_method": getattr(session, "next_delivery_method", ""),
+                "code_length": getattr(session, "code_length", ""),
+            },
+            resend_after_seconds=await login_manager.cooldowns.phone_code_send_retry_after(login_id),
+        )
         response_data = {
             "status": session.status.value,
             "error": session.error,
             "qr_url": session.qr_url,
             "phone_number": session.phone_number,
+            **delivery.to_response_fields(),
         }
         if session.status == LoginStatus.CONFIRMED:
             finalized = await self._upsert_login_account(

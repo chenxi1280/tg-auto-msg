@@ -102,6 +102,11 @@ class Settings(BaseSettings):
         alias="BIND_START_COOLDOWN_SECONDS",
         description="单个系统用户发起 TG 绑定的冷却时间（秒）"
     )
+    phone_code_resend_fallback_cooldown_seconds: int = Field(
+        default=60,
+        alias="PHONE_CODE_RESEND_FALLBACK_COOLDOWN_SECONDS",
+        description="Telegram 未返回验证码重发等待时间时的兜底秒数"
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",

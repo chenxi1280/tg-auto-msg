@@ -8,7 +8,7 @@ from datetime import datetime
 from io import BytesIO
 from typing import Any, Optional
 
-from fastapi import HTTPException
+from fastapi import HTTPException, status
 from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -27,6 +27,12 @@ from backend.bot.client_runtime.manager import bot_client
 from backend.bot.notice_manager import get_bot_notice_manager
 from backend.bot.client_runtime.qr_login import wait_for_qr_login as _wait_for_qr_login_flow
 from backend.bot.developer_apps import get_developer_app_service
+from backend.bot.onboarding.phone_code_copy import build_phone_code_prompt
+from backend.bot.onboarding.phone_code_state import (
+    delivery_from_phone_code_state,
+    delivery_with_retry_after,
+    phone_code_state_fields,
+)
 from backend.bot.handlers.core.helpers import is_valid_button_url
 from backend.bot.handlers.core.helpers import truncate_text as _truncate_text
 from backend.bot.handlers.core.user_link import (
@@ -57,6 +63,7 @@ from backend.h5_backend.services.licensing.service import (
     list_user_authorizations,
 )
 from backend.h5_backend.services.login.service import get_login_service
+from backend.h5_backend.services.login.phone_code_delivery import PhoneCodeDelivery
 from backend.h5_backend.services.me.service import get_me_service
 from backend.h5_backend.services.task.service import get_task_service
 from backend.bot.ui.keyboards import build_reply_shortcut_keyboard
@@ -130,6 +137,40 @@ async def _send_or_edit(event, text: str, *, buttons: Any = None, parse_mode: Op
         except Exception:
             pass
     await event.respond(text, buttons=buttons, parse_mode=parse_mode)
+
+
+def _phone_code_delivery_from_data(data: dict[str, Any]) -> PhoneCodeDelivery:
+    return delivery_from_phone_code_state(data)
+
+
+def _retry_after_seconds_from_exception(exc: HTTPException) -> int:
+    headers = exc.headers or {}
+    try:
+        return max(0, int(headers.get("Retry-After") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _mask_phone_for_log(phone_number: str) -> str:
+    return f"{str(phone_number or '')[:4]}***"
+
+
+def _update_phone_code_state(
+    tg_user_id: int,
+    *,
+    login_id: str,
+    phone_number: str,
+    buffer: str,
+    delivery: Optional[PhoneCodeDelivery],
+) -> None:
+    values: dict[str, Any] = {
+        "login_id": login_id,
+        "phone_number": phone_number,
+        "login_code_buffer": buffer,
+    }
+    if delivery is not None:
+        values.update(phone_code_state_fields(delivery))
+    fsm_storage.update_data(tg_user_id, **values)
 
 
 async def _send_main_menu_to_actor(tg_user_id: int) -> None:
@@ -267,27 +308,17 @@ class BotOnboardingService:
         phone_number: str,
         buffer: str,
         detail: Optional[str] = None,
+        delivery: Optional[PhoneCodeDelivery] = None,
+        request_accepted: Optional[bool] = True,
     ) -> str:
-        masked = self._mask_login_code(buffer)
-        count = len(str(buffer or ""))
-        current_input = f"`{masked}`（已输入 {count} 位）" if count > 0 else "`未输入`"
-        lines = [
-            "📨 **验证码已发送**",
-            "",
-            f"手机号：`{phone_number or '未记录'}`",
-            "请使用下方数字按钮输入 Telegram 验证码，不要直接发送验证码消息。",
-            "为避免验证码被 Telegram 判定失效，Bot 不会在聊天中接收明文验证码。",
-            "",
-            f"当前输入：{current_input}",
-            "",
-            "验证码和本次绑定会话 15 分钟内有效。",
-            "若提示验证码已过期，请点击「🔄 重发验证码」后输入最新验证码。",
-            "",
-            "下一步：输入验证码后，若账号开启二步验证，Bot 会继续提示你输入密码。",
-        ]
-        if detail:
-            lines[6:6] = ["", f"⚠️ {detail}"]
-        return "\n".join(lines)
+        return build_phone_code_prompt(
+            phone_number=phone_number,
+            masked_code=self._mask_login_code(buffer),
+            input_count=len(str(buffer or "")),
+            detail=detail,
+            delivery=delivery,
+            request_accepted=request_accepted,
+        )
 
     async def _render_login_code_prompt(
         self,
@@ -298,22 +329,95 @@ class BotOnboardingService:
         phone_number: str,
         buffer: str,
         detail: Optional[str] = None,
+        delivery: Optional[PhoneCodeDelivery] = None,
+        request_accepted: Optional[bool] = True,
     ) -> None:
+        prompt_delivery = delivery or _phone_code_delivery_from_data(fsm_storage.get_data(tg_user_id))
         text = self._build_login_code_prompt(
             phone_number=phone_number,
             buffer=buffer,
             detail=detail,
+            delivery=prompt_delivery,
+            request_accepted=request_accepted,
         )
         await _send_or_edit(
             event,
             text,
             buttons=self._build_login_code_buttons(login_id),
         )
-        fsm_storage.update_data(
+        _update_phone_code_state(
             tg_user_id,
             login_id=login_id,
             phone_number=phone_number,
-            login_code_buffer=buffer,
+            buffer=buffer,
+            delivery=delivery,
+        )
+
+    async def _show_initial_phone_code_prompt(
+        self,
+        *,
+        tg_user_id: int,
+        login_id: str,
+        fsm_data: dict[str, Any],
+        result: dict[str, Any],
+        fallback_phone: str,
+    ) -> None:
+        phone_number = str(result.get("phone_number") or fallback_phone)
+        delivery = PhoneCodeDelivery.from_mapping(result)
+        fsm_storage.set_state(tg_user_id, FSMState.WAIT_LOGIN_CODE)
+        fsm_storage.update_data(
+            tg_user_id,
+            login_id=login_id,
+            expected_tg_user_id=fsm_data.get("expected_tg_user_id"),
+            login_mode="phone_code",
+        )
+        _update_phone_code_state(
+            tg_user_id,
+            login_id=login_id,
+            phone_number=phone_number,
+            buffer="",
+            delivery=delivery,
+        )
+        logger.info(
+            "bot login code keypad ready: sender={}, login_id={}, phone={}",
+            tg_user_id,
+            login_id,
+            _mask_phone_for_log(phone_number),
+        )
+        message = await bot_client.send_message(
+            tg_user_id,
+            self._build_login_code_prompt(phone_number=phone_number, buffer="", delivery=delivery),
+            parse_mode="markdown",
+            buttons=self._build_login_code_buttons(login_id),
+        )
+        fsm_storage.update_data(tg_user_id, login_code_message_id=getattr(message, "id", None))
+        _track_login_message(tg_user_id, message)
+
+    async def _show_resent_phone_code_prompt(
+        self,
+        event,
+        *,
+        tg_user_id: int,
+        login_id: str,
+        result: dict[str, Any],
+        fallback_phone: str,
+    ) -> None:
+        phone_number = str(result.get("phone_number") or fallback_phone)
+        delivery = PhoneCodeDelivery.from_mapping(result)
+        logger.info(
+            "bot login code resent: sender={}, login_id={}, phone={}",
+            tg_user_id,
+            login_id,
+            _mask_phone_for_log(phone_number),
+        )
+        await self._render_login_code_prompt(
+            event,
+            tg_user_id=tg_user_id,
+            login_id=login_id,
+            phone_number=phone_number,
+            buffer="",
+            detail="验证码请求已重新发起，请根据 Telegram 指示查看最新验证码。",
+            delivery=delivery,
         )
 
     @staticmethod
@@ -1718,32 +1822,13 @@ class BotOnboardingService:
             await bot_client.send_message(tg_user_id, f"❌ {exc.detail}")
             return
 
-        fsm_storage.set_state(tg_user_id, FSMState.WAIT_LOGIN_CODE)
-        fsm_storage.update_data(
-            tg_user_id,
+        await self._show_initial_phone_code_prompt(
+            tg_user_id=tg_user_id,
             login_id=login_id,
-            expected_tg_user_id=data.get("expected_tg_user_id"),
-            login_mode="phone_code",
-            phone_number=result.get("phone_number") or phone,
-            login_code_buffer="",
+            fsm_data=data,
+            result=result,
+            fallback_phone=phone,
         )
-        logger.info(
-            "bot login code keypad ready: sender={}, login_id={}, phone={}",
-            tg_user_id,
-            login_id,
-            result.get("phone_number") or phone,
-        )
-        message = await bot_client.send_message(
-            tg_user_id,
-            self._build_login_code_prompt(
-                phone_number=result.get("phone_number") or phone,
-                buffer="",
-            ),
-            parse_mode="markdown",
-            buttons=self._build_login_code_buttons(login_id),
-        )
-        fsm_storage.update_data(tg_user_id, login_code_message_id=getattr(message, "id", None))
-        _track_login_message(tg_user_id, message)
 
     async def handle_login_code(self, event, tg_user_id: int, text: str) -> None:
         code = (text or "").strip()
@@ -1849,6 +1934,15 @@ class BotOnboardingService:
                 phone_number=phone_number,
             )
         except HTTPException as exc:
+            if exc.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
+                delivery = delivery_with_retry_after(
+                    data,
+                    _retry_after_seconds_from_exception(exc),
+                )
+                request_accepted = False
+            else:
+                delivery = None
+                request_accepted = None
             await self._render_login_code_prompt(
                 event,
                 tg_user_id=tg_user_id,
@@ -1856,22 +1950,17 @@ class BotOnboardingService:
                 phone_number=phone_number,
                 buffer=str(data.get("login_code_buffer") or ""),
                 detail=str(exc.detail),
+                delivery=delivery,
+                request_accepted=request_accepted,
             )
             return
 
-        logger.info(
-            "bot login code resent: sender={}, login_id={}, phone={}",
-            tg_user_id,
-            login_id,
-            result.get("phone_number") or phone_number,
-        )
-        await self._render_login_code_prompt(
+        await self._show_resent_phone_code_prompt(
             event,
             tg_user_id=tg_user_id,
             login_id=login_id,
-            phone_number=result.get("phone_number") or phone_number,
-            buffer="",
-            detail="验证码已重新发送，请输入最新验证码。",
+            result=result,
+            fallback_phone=phone_number,
         )
 
     async def submit_login_code_by_keypad(self, event, tg_user_id: int) -> None:
