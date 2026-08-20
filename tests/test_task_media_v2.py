@@ -381,3 +381,19 @@ def test_new_media_surfaces_do_not_accept_server_file_uploads():
     assert "download_media" not in gateway_source
     assert "BytesIO" not in gateway_source
     assert 'ScheduledMessageTask.media_source_state != "invalid"' in migration_source
+
+
+def test_task_buttons_persist_python_none_as_sql_null():
+    from backend.database.schema.models import ScheduledMessageTask
+
+    assert ScheduledMessageTask.__table__.c.buttons.type.none_as_null is True
+
+
+def test_json_null_buttons_are_normalized_before_v2_migration():
+    root = Path(__file__).resolve().parents[1]
+    migration_source = (
+        root / "sql/migrations/035_normalize_task_buttons_null.sql"
+    ).read_text()
+    assert "SET buttons = NULL" in migration_source
+    assert "buttons::text = 'null'" in migration_source
+    assert "buttons IS NULL OR buttons::text = 'null'" in migration_source

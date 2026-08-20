@@ -28,6 +28,7 @@ python scripts/task_media_v2_migration.py migrate --account-id <account_id> --li
 - 保留旧 `media_file_id`、旧 enum/check 和旧读路径。
 - 所有现有任务标记 `content_contract_version=1`。
 - 新任务写 V2；过渡期同时写可推导的 `tgmsg://account/message` 兼容值，支持应用回滚。
+- 历史 `buttons=None` 可能以 JSON `null` 落库；035 先归一为 SQL `NULL`，模型后续使用 `none_as_null=True`，V2 检查约束兼容两种无按钮表示。
 - 扩展迁移只改 schema，不连接 Telegram。
 
 ## 3. 阶段 B：只读清点

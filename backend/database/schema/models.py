@@ -768,7 +768,9 @@ class ScheduledMessageTask(Base):
         comment="媒体类型",
     )
     media_file_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="Telegram file_id")
-    buttons: Mapped[Optional[List[Any]]] = mapped_column(JSON, nullable=True, comment="二维按钮数组")
+    buttons: Mapped[Optional[List[Any]]] = mapped_column(
+        JSON(none_as_null=True), nullable=True, comment="二维按钮数组"
+    )
     content_contract_version: Mapped[int] = mapped_column(Integer, default=2, nullable=False, comment="内容合同版本")
     revision: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False, comment="配置版本号")
     media_source_account_id: Mapped[Optional[str]] = mapped_column(
