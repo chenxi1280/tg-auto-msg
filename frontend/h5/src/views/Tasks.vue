@@ -39,6 +39,7 @@
         @update:resources="onResourcesUpdate"
         @close="onEditorClose"
         @saved="onEditorSaved"
+        @draft-created="loadTasks"
         @run-once="runTaskOnce"
       />
 
@@ -236,7 +237,11 @@ const runTaskOnce = async (taskId: string, title: string) => {
 
 const toggleTaskEnabled = async (task: TaskItem, enabled: boolean) => {
   try {
-    await updateTask(task.task_id, { enabled })
+    const response = await updateTask(task.task_id, {
+      enabled,
+      expected_revision: task.revision
+    })
+    task.revision = response.data.revision
   } catch {
     task.enabled = !enabled
     // HTTP errors already handled by the response interceptor

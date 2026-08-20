@@ -4,20 +4,11 @@ from __future__ import annotations
 from backend.bot.state.fsm import FSMState
 from backend.bot.handlers.task.target_selection import handle_target_search_input
 from backend.bot.handlers.task.editing import (
-    handle_buttons_input,
     handle_end_at_input,
     handle_interval_input,
-    handle_media_input,
     handle_shortcut_label_input,
     handle_start_at_input,
     handle_text_input,
-)
-from backend.bot.handlers.task.management import (
-    handle_manual_task_buttons_create,
-    handle_manual_task_media_create,
-    handle_manual_task_media_text_input,
-    handle_manual_task_shortcut_label_create,
-    handle_manual_task_text_create,
 )
 from backend.bot.onboarding import get_onboarding_service
 
@@ -29,18 +20,11 @@ _SENSITIVE_INPUT_STATES = {
 
 _TEXT_STATE_HANDLERS = {
     FSMState.WAIT_TEXT: handle_text_input,
-    FSMState.WAIT_BUTTONS: handle_buttons_input,
     FSMState.WAIT_INTERVAL: handle_interval_input,
     FSMState.WAIT_START_AT: handle_start_at_input,
     FSMState.WAIT_END_AT: handle_end_at_input,
     FSMState.WAIT_SHORTCUT_LABEL: handle_shortcut_label_input,
 }
-
-_MEDIA_STATE_HANDLERS = {
-    FSMState.WAIT_MEDIA: handle_media_input,
-    FSMState.WAIT_MANUAL_TASK_MEDIA: handle_manual_task_media_create,
-}
-
 
 async def dispatch_message_by_state(event, user_id: int, state: FSMState, task_id: str):
     """Dispatch input message by FSM state."""
@@ -69,27 +53,9 @@ async def dispatch_message_by_state(event, user_id: int, state: FSMState, task_i
     if state == FSMState.WAIT_LOGIN_PASSWORD:
         await onboarding_service.handle_login_password(event, user_id, event.message.message or "")
         return
-    if state == FSMState.WAIT_MANUAL_TASK_SHORTCUT_LABEL:
-        await handle_manual_task_shortcut_label_create(event, user_id, event.message.message or "")
-        return
-    if state == FSMState.WAIT_MANUAL_TASK_TEXT:
-        await handle_manual_task_text_create(event, user_id, event.message.message or "")
-        return
-    if state == FSMState.WAIT_MANUAL_TASK_BUTTONS:
-        await handle_manual_task_buttons_create(event, user_id, event.message.message or "")
-        return
-    if state == FSMState.WAIT_MANUAL_TASK_MEDIA and not getattr(event.message, "media", None) and getattr(event.message, "message", None):
-        await handle_manual_task_media_text_input(event, user_id, event.message.message or "")
-        return
-
     text_handler = _TEXT_STATE_HANDLERS.get(state)
     if text_handler:
         await text_handler(event, user_id, task_id, event.message.message)
-        return
-
-    media_handler = _MEDIA_STATE_HANDLERS.get(state)
-    if media_handler:
-        await media_handler(event, user_id, task_id, event.message.media)
         return
 
     if state == FSMState.WAIT_TARGET_SEARCH:

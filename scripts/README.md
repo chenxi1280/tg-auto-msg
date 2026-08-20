@@ -8,6 +8,8 @@
   - 本地开发环境一键启动。
 - `reinit_db.py`
   - 重建数据库表结构的维护脚本。
+- `task_media_v2_migration.py`
+  - 默认执行只读 V1 媒体清点；只有显式 `migrate --account-id ...` 才按账号串行迁移一批任务。
 
 ## 维护约定
 

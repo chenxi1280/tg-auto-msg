@@ -20,6 +20,7 @@ from backend.bot.handlers.account.management import show_accounts_list, show_pro
 from backend.bot.onboarding import get_onboarding_service
 from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import Account
+from backend.task_media.capture_service import activate_capture_from_start
 
 
 async def handle_start_command(event):
@@ -29,6 +30,11 @@ async def handle_start_command(event):
     raw_text = (event.raw_text or event.message.message or "").replace("／", "/").strip()
     match = re.match(r"(?i)^/start(?:@[\w\d_]+)?(?:\s+(.+))?$", raw_text)
     payload = (match.group(1) or "").strip() if match else ""
+
+    media_match = re.match(r"(?i)^media_([A-Za-z0-9_-]{24,64})$", payload)
+    if media_match:
+        await activate_capture_from_start(event, media_match.group(1))
+        return
 
     bind_match = re.match(r"(?i)^link_([A-Za-z0-9]{8,32})$", payload)
     if bind_match:

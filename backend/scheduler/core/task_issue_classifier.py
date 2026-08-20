@@ -17,6 +17,38 @@ class TaskIssueClassification:
 
 
 _SPECIALIZED_ERROR_CLASSIFICATIONS = {
+    "ChatSendPhotosForbiddenError": TaskIssueClassification(
+        error_type="TARGET_PHOTO_FORBIDDEN",
+        issue_category="media_permission_denied",
+        user_message="目标聊天不允许发送图片，已暂停这个目标。",
+        should_auto_suspend_target=True,
+        suspension_reason="target_photo_forbidden",
+        auto_suspend_after_failures=1,
+    ),
+    "ChatSendVideosForbiddenError": TaskIssueClassification(
+        error_type="TARGET_VIDEO_FORBIDDEN",
+        issue_category="media_permission_denied",
+        user_message="目标聊天不允许发送视频，已暂停这个目标。",
+        should_auto_suspend_target=True,
+        suspension_reason="target_video_forbidden",
+        auto_suspend_after_failures=1,
+    ),
+    "ChatSendGifsForbiddenError": TaskIssueClassification(
+        error_type="TARGET_ANIMATION_FORBIDDEN",
+        issue_category="media_permission_denied",
+        user_message="目标聊天不允许发送动图，已暂停这个目标。",
+        should_auto_suspend_target=True,
+        suspension_reason="target_animation_forbidden",
+        auto_suspend_after_failures=1,
+    ),
+    "ChatSendMediaForbiddenError": TaskIssueClassification(
+        error_type="TARGET_MEDIA_FORBIDDEN",
+        issue_category="media_permission_denied",
+        user_message="目标聊天不允许发送媒体，已暂停这个目标。",
+        should_auto_suspend_target=True,
+        suspension_reason="target_media_forbidden",
+        auto_suspend_after_failures=1,
+    ),
     "UserBannedInChannelError": TaskIssueClassification(
         error_type="UserBannedInChannelError",
         issue_category="permission_denied",
@@ -80,6 +112,15 @@ def classify_task_send_error(exc: Exception) -> TaskIssueClassification:
     specialized = _SPECIALIZED_ERROR_CLASSIFICATIONS.get(error_type)
     if specialized is not None:
         return specialized
+
+    domain_code = str(getattr(exc, "code", "") or "").strip()
+    if domain_code:
+        return TaskIssueClassification(
+            error_type=domain_code,
+            issue_category="task_media_contract",
+            user_message=detail or "任务媒体配置无效。",
+            should_auto_suspend_target=False,
+        )
 
     if detail == "send_message returned empty":
         return TaskIssueClassification(

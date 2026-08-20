@@ -10,7 +10,16 @@ export interface ApiResponse<T = unknown> {
   data: T
   message?: string
   error?: string
-  detail?: string
+  detail?: string | { code?: string; message?: string }
+}
+
+const errorText = (data?: ApiResponse) => {
+  if (typeof data?.detail === 'string') return data.detail
+  if (data?.detail && typeof data.detail === 'object') {
+    const code = data.detail.code ? `${data.detail.code}：` : ''
+    return `${code}${data.detail.message || '请求失败'}`
+  }
+  return data?.message || data?.error || '请求失败'
 }
 
 // 创建 axios 实例
@@ -66,13 +75,13 @@ api.interceptors.response.use(
 
       switch (status) {
         case 400:
-          ElMessage.error(data?.detail || data?.message || data?.error || '请求参数错误')
+          ElMessage.error(errorText(data) || '请求参数错误')
           break
         case 401:
           if (isAuthLogin) {
-            ElMessage.error(data?.detail || data?.message || data?.error || '用户名或密码错误')
+            ElMessage.error(errorText(data) || '用户名或密码错误')
           } else {
-            ElMessage.error(data?.detail || data?.message || data?.error || '未授权，请重新登录')
+            ElMessage.error(errorText(data) || '未授权，请重新登录')
             clearAuthStorage()
 
             if (!window.location.pathname.startsWith('/login')) {
@@ -82,16 +91,16 @@ api.interceptors.response.use(
           }
           break
         case 403:
-          ElMessage.error(data?.detail || data?.message || data?.error || '无权访问')
+          ElMessage.error(errorText(data) || '无权访问')
           break
         case 404:
-          ElMessage.error(data?.detail || data?.message || data?.error || '请求的资源不存在')
+          ElMessage.error(errorText(data) || '请求的资源不存在')
           break
         case 500:
-          ElMessage.error(data?.detail || data?.message || data?.error || '服务器错误')
+          ElMessage.error(errorText(data) || '服务器错误')
           break
         default:
-          ElMessage.error(data?.detail || data?.message || data?.error || `请求失败 (${status})`)
+          ElMessage.error(errorText(data) || `请求失败 (${status})`)
       }
     } else if (error.code === 'ECONNABORTED') {
       ElMessage.error('请求超时，请稍后重试')

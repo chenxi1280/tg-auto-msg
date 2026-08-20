@@ -27,6 +27,9 @@ export interface TaskItem {
   end_at: number | null
   text: string | null
   media_type: string
+  media_source_state: string
+  content_contract_version: number
+  revision: number
   delete_previous: boolean
   pin_message: boolean
   next_run_at: number | null
@@ -36,8 +39,9 @@ export interface TaskItem {
 export interface TaskDetail extends TaskItem {
   user_id: number
   target_access_hash: number | null
-  media_file_id: string | null
-  buttons: Array<Array<{ text: string; url: string }>> | null
+  media_source_meta: Record<string, unknown> | null
+  media_source_error_code: string | null
+  media_source_verified_at: string | null
   last_sent_message_id: number | null
   failure_count: number
   updated_at: string | null
@@ -65,18 +69,19 @@ export interface CreateTaskPayload {
   start_at?: number | null
   end_at?: number | null
   text?: string | null
-  media_type?: string
-  media_file_id?: string | null
-  buttons?: Array<Array<{ text: string; url: string }>> | null
+  expected_revision?: number
   delete_previous?: boolean
   pin_message?: boolean
 }
 
-export interface UploadTaskMediaResult {
-  media_type: string
-  media_file_id: string
-  filename: string
-  size: number
+export interface TaskMediaCapture {
+  capture_id: string
+  state: string
+  expires_at: string
+  bot_deep_link: string
+  required_tg_user_id: string
+  error_code?: string | null
+  completed_revision?: number | null
 }
 
 export interface TaskLogItem {
@@ -110,22 +115,33 @@ export const getTask = (taskId: string): Promise<ApiResponse<TaskDetail>> => {
   return request.get(`/tasks/${taskId}`)
 }
 
-export const createTask = (payload: CreateTaskPayload): Promise<ApiResponse<{ task_id: string }>> => {
+export const createTask = (payload: CreateTaskPayload): Promise<ApiResponse<{ task_id: string; revision: number }>> => {
   return request.post('/tasks', payload)
 }
 
-export const updateTask = (taskId: string, payload: Partial<CreateTaskPayload>): Promise<ApiResponse<any>> => {
+export const updateTask = (taskId: string, payload: Partial<CreateTaskPayload>): Promise<ApiResponse<{ revision: number }>> => {
   return request.put(`/tasks/${taskId}`, payload)
 }
 
-export const uploadTaskMedia = (
-  accountId: string,
-  file: File
-): Promise<ApiResponse<UploadTaskMediaResult>> => {
-  const formData = new FormData()
-  formData.append('account_id', accountId)
-  formData.append('media', file)
-  return request.post('/tasks/upload-media', formData)
+export const createTaskMediaCapture = (
+  taskId: string,
+  expectedRevision: number
+): Promise<ApiResponse<TaskMediaCapture>> => {
+  return request.post(`/tasks/${taskId}/media-captures`, { expected_revision: expectedRevision })
+}
+
+export const getTaskMediaCapture = (
+  taskId: string,
+  captureId: string
+): Promise<ApiResponse<TaskMediaCapture>> => {
+  return request.get(`/tasks/${taskId}/media-captures/${captureId}`)
+}
+
+export const clearTaskMedia = (
+  taskId: string,
+  expectedRevision: number
+): Promise<ApiResponse<{ revision: number }>> => {
+  return request.delete(`/tasks/${taskId}/media`, { data: { expected_revision: expectedRevision } })
 }
 
 export const deleteTask = (taskId: string): Promise<ApiResponse<any>> => {

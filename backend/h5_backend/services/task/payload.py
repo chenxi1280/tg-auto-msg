@@ -21,6 +21,7 @@ from backend.scheduler.core.task_issue_state import (
     has_target_collection_changed,
     merge_target_runtime_metadata,
 )
+from backend.task_media.contract import TaskMediaError, validate_message_length
 
 ALLOWED_PEER_TYPES = {"user", "chat", "supergroup", "channel"}
 
@@ -160,6 +161,13 @@ def validate_task_payload(payload: Dict[str, Any], current_task: Optional[Schedu
         raise HTTPException(status_code=400, detail="priority 不能小于 0")
     payload["priority"] = priority
 
+    contract_version = int(
+        payload.get(
+            "content_contract_version",
+            current_task.content_contract_version if current_task is not None else 2,
+        )
+        or 2
+    )
     raw_media_type = payload.get("media_type")
     if raw_media_type is None and current_task is not None:
         raw_media_type = current_task.media_type
@@ -170,9 +178,11 @@ def validate_task_payload(payload: Dict[str, Any], current_task: Optional[Schedu
     if media_file_id is None and current_task is not None:
         media_file_id = current_task.media_file_id
 
+    if contract_version == 2 and media_type == MediaType.STICKER:
+        raise HTTPException(status_code=400, detail="MEDIA_SOURCE_TYPE_UNSUPPORTED: V2 不支持贴纸")
     if media_type == MediaType.NONE:
         payload["media_file_id"] = None
-    elif not media_file_id:
+    elif contract_version == 1 and not media_file_id:
         raise HTTPException(status_code=400, detail="已选择媒体类型，请先上传媒体文件")
 
     buttons = payload.get("buttons")
@@ -181,12 +191,32 @@ def validate_task_payload(payload: Dict[str, Any], current_task: Optional[Schedu
     text_value = str(payload.get("text") if payload.get("text") is not None else (current_task.text if current_task is not None else "") or "").strip()
     has_buttons = bool(buttons)
     has_media = media_type != MediaType.NONE
+    media_source_state = (
+        str(current_task.media_source_state or "none") if current_task is not None else "none"
+    )
     enabled_value = payload.get("enabled")
     if enabled_value is None and current_task is not None:
         enabled_value = current_task.enabled
+    if contract_version == 2 and has_buttons:
+        raise HTTPException(
+            status_code=400,
+            detail="TASK_BUTTONS_UNSUPPORTED_FOR_USER_ACCOUNT: 执行账号不是 Bot，任务不支持消息按钮",
+        )
+    if contract_version == 2 and has_media and media_source_state != "valid" and bool(enabled_value):
+        raise HTTPException(
+            status_code=400,
+            detail="MEDIA_SOURCE_UNAVAILABLE: 当前 Telegram 媒体来源不可用，请重新设置媒体",
+        )
+    try:
+        validate_message_length(text_value, has_media=has_media)
+    except TaskMediaError as exc:
+        raise HTTPException(status_code=400, detail=f"{exc.code}: {exc}") from exc
     enabled_now = bool(enabled_value)
-    if trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value and enabled_now and not (text_value or has_buttons or has_media):
-        raise HTTPException(status_code=400, detail="手动任务至少需要填写文本、按钮或上传媒体中的一种内容")
+    if enabled_now and not (text_value or has_media):
+        raise HTTPException(
+            status_code=400,
+            detail="TASK_CONTENT_REQUIRED: 启用任务前必须填写文本或设置 Telegram 媒体",
+        )
 
 
 def apply_system_strategy_fields(payload: Dict[str, Any], account: Optional[Account]) -> None:
@@ -256,6 +286,11 @@ def apply_update_payload(task: ScheduledMessageTask, payload: Dict[str, Any]) ->
         "target_access_hash",
         "shortcut_slot",
         "shortcut_label",
+        "media_source_account_id",
+        "media_source_message_id",
+        "media_source_meta",
+        "media_source_error_code",
+        "media_source_verified_at",
     }
 
     for key, value in payload.items():

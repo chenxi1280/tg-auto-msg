@@ -68,7 +68,7 @@ class ManualShortcutPayloadTests(unittest.TestCase):
 
         self.assertIn("手动任务必须设置按钮名称", str(ctx.exception.detail))
 
-    def test_validate_task_payload_requires_manual_shortcut_content(self):
+    def test_validate_task_payload_requires_content_before_enable(self):
         payload = {
             "repeat_interval_min": 60,
             "media_type": "none",
@@ -82,7 +82,7 @@ class ManualShortcutPayloadTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             validate_task_payload(payload, current_task=None)
 
-        self.assertIn("手动任务至少需要填写文本、按钮或上传媒体中的一种内容", str(ctx.exception.detail))
+        self.assertIn("TASK_CONTENT_REQUIRED", str(ctx.exception.detail))
 
     def test_validate_task_payload_allows_disabled_manual_shortcut_without_content(self):
         payload = {
@@ -314,45 +314,6 @@ class ManualShortcutBotBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(handled)
         event.respond.assert_awaited()
 
-    async def test_handle_manual_task_shortcut_label_create_rejects_duplicate_name(self):
-        from backend.bot.handlers.task.management import handle_manual_task_shortcut_label_create
-
-        user_id = 100
-        fsm_storage.update_data(user_id, pending_manual_task_create={"account_id": "acc-1"})
-        event = SimpleNamespace(respond=AsyncMock())
-        fake_session = SimpleNamespace()
-
-        class _Ctx:
-            async def __aenter__(self):
-                return fake_session
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return False
-
-        fake_result = SimpleNamespace(scalar_one_or_none=lambda: "task-existing")
-
-        with patch(
-            "backend.bot.handlers.task.management.get_async_session",
-            return_value=_Ctx(),
-        ), patch(
-            "backend.bot.handlers.task.management._resolve_actor_access_context",
-            AsyncMock(return_value=SimpleNamespace(system_user_id=1)),
-        ), patch.object(
-            fake_session,
-            "execute",
-            AsyncMock(return_value=fake_result),
-            create=True,
-        ):
-            await handle_manual_task_shortcut_label_create(event, user_id, "开课通知")
-
-        event.respond.assert_awaited_once()
-        self.assertIn("按钮名称已存在", event.respond.await_args.args[0])
-        self.assertEqual(
-            fsm_storage.get_data(user_id).get("pending_manual_task_create", {}).get("shortcut_label"),
-            None,
-        )
-        fsm_storage.reset_state(user_id)
-
     async def test_trigger_task_once_from_bot_uses_respond_for_message_events(self):
         event = SimpleNamespace(respond=AsyncMock())
         fake_session = SimpleNamespace()
@@ -427,7 +388,7 @@ class ManualShortcutBotBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("发送内容：今晚八点准时上课", final_text)
         self.assertNotIn("执行账号：`acc-1`", final_text)
 
-    async def test_update_task_enabled_rejects_empty_manual_task(self):
+    async def test_update_task_enabled_rejects_empty_scheduled_task(self):
         from backend.bot.handlers.task.management import update_task_enabled
 
         event = SimpleNamespace(answer=AsyncMock())
@@ -435,11 +396,9 @@ class ManualShortcutBotBehaviorTests(unittest.IsolatedAsyncioTestCase):
         task = ScheduledMessageTask(
             task_id="task-empty-enable",
             user_id=1,
-            title="空手动任务",
+            title="空定时任务",
             repeat_interval_min=60,
-            trigger_mode=TaskTriggerMode.MANUAL_SHORTCUT.value,
-            shortcut_slot=1,
-            shortcut_label="空手动任务",
+            trigger_mode=TaskTriggerMode.SCHEDULED.value,
             enabled=False,
             text=None,
             buttons=None,
@@ -472,30 +431,10 @@ class ManualShortcutBotBehaviorTests(unittest.IsolatedAsyncioTestCase):
         commit.assert_not_awaited()
         event.answer.assert_awaited_once()
 
-    async def test_manual_task_media_state_prefers_media_handler_when_caption_present(self):
-        from backend.bot.handlers.core.message_dispatch import _MEDIA_STATE_HANDLERS, dispatch_message_by_state
+    async def test_obsolete_manual_media_state_has_no_direct_media_dispatch(self):
+        from backend.bot.handlers.core import message_dispatch
 
-        event = SimpleNamespace(
-            message=SimpleNamespace(
-                media=object(),
-                message="这是图片说明",
-            ),
-            respond=AsyncMock(),
-        )
-        media_handler = AsyncMock()
-
-        with patch.dict(
-            _MEDIA_STATE_HANDLERS,
-            {FSMState.WAIT_MANUAL_TASK_MEDIA: media_handler},
-            clear=False,
-        ), patch(
-            "backend.bot.handlers.core.message_dispatch.handle_manual_task_media_text_input",
-            new=AsyncMock(),
-        ) as text_handler:
-            await dispatch_message_by_state(event, 100, FSMState.WAIT_MANUAL_TASK_MEDIA, "")
-
-        media_handler.assert_awaited_once()
-        text_handler.assert_not_awaited()
+        self.assertFalse(hasattr(message_dispatch, "_MEDIA_STATE_HANDLERS"))
 
     async def test_create_new_task_for_account_rejects_invalid_account_before_showing_type_picker(self):
         from backend.bot.handlers.task.management import create_new_task_for_account
@@ -529,40 +468,6 @@ class ManualShortcutBotBehaviorTests(unittest.IsolatedAsyncioTestCase):
 
         event.answer.assert_awaited()
         event.edit.assert_not_called()
-
-    async def test_handle_manual_task_media_create_stores_telegram_media_ref(self):
-        from backend.bot.handlers.task.management import handle_manual_task_media_create
-
-        user_id = 100
-        draft = {"account_id": "acc-1", "targets": [{"peer_id": 1, "peer_type": "user", "access_hash": None}]}
-        fsm_storage.update_data(user_id, pending_manual_task_create=draft)
-        event = SimpleNamespace(
-            message=SimpleNamespace(media=object()),
-            respond=AsyncMock(),
-        )
-        FakePhoto = type("FakePhoto", (), {})
-        media = FakePhoto()
-        media.photo = SimpleNamespace(id=123)
-
-        with patch(
-            "backend.bot.handlers.task.management.MessageMediaPhoto",
-            FakePhoto,
-        ), patch(
-            "backend.bot.handlers.task.management.store_task_media_from_bot_message",
-            new=AsyncMock(return_value="tgmsg://acc-1/456"),
-        ) as store_media, patch(
-            "backend.bot.handlers.task.management._finalize_manual_task_create",
-            new=AsyncMock(),
-        ) as finalize_create:
-            await handle_manual_task_media_create(event, user_id, "", media)
-
-        self.assertEqual(
-            fsm_storage.get_data(user_id).get("pending_manual_task_create", {}).get("media_file_id"),
-            "tgmsg://acc-1/456",
-        )
-        store_media.assert_awaited_once()
-        finalize_create.assert_awaited_once()
-        fsm_storage.reset_state(user_id)
 
     async def test_toggle_trigger_mode_rejects_empty_task_for_manual_mode(self):
         from backend.bot.handlers.task.editing import toggle_trigger_mode

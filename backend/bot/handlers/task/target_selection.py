@@ -10,7 +10,6 @@ from sqlalchemy import select
 from backend.bot.account.reauth import get_reauth_required_message, is_reauth_required_account
 from backend.bot.state.fsm import FSMState, fsm_storage
 from backend.bot.handlers.core.helpers import (
-    apply_task_targets as _apply_task_targets,
     escape_markdown as _escape_markdown,
     filter_target_resources as _filter_target_resources,
     normalize_target_filter as _normalize_target_filter,
@@ -522,9 +521,24 @@ async def _handle_pick_done(event, user_id: int):
         except HTTPException as exc:
             await event.answer(str(exc.detail), alert=True)
             return
-        task.account_id = account_id or task.account_id
-        _apply_task_targets(task, targets)
-        await session.commit()
+        owner_user_id = int(task.user_id)
+        expected_revision = int(task.revision)
+        selected_account_id = account_id or task.account_id
+
+    try:
+        await get_task_service().update_task(
+            task_id,
+            {
+                "account_id": selected_account_id,
+                "target_peers": targets,
+                "expected_revision": expected_revision,
+            },
+            owner_user_id,
+        )
+    except HTTPException as exc:
+        detail = exc.detail.get("message") if isinstance(exc.detail, dict) else str(exc.detail)
+        await event.answer(detail, alert=True)
+        return
 
     await event.answer(f"✅ 已保存 {len(targets)} 个目标")
 

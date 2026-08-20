@@ -88,7 +88,7 @@ pip install -r requirements.txt
 pip install -r requirements-dev.txt
 ruff check backend tests --select F --ignore F401,F403,F405
 pylint backend tests --disable=all --enable=E0601,E0606
-python -m unittest discover -s tests -t .
+python -m pytest -q
 ```
 
 GitHub Actions 约定：
@@ -273,9 +273,15 @@ ssh root@your-host "docker logs --tail 100 tgmsg-app"
 | start_at | bigint | 开始时间（Unix 时间戳）|
 | end_at | bigint | 终止时间（Unix 时间戳）|
 | text | text | HTML 文本 |
-| media_type | enum | 媒体类型 |
-| media_file_id | string | Telegram file_id |
-| buttons | json | 按钮数组 |
+| content_contract_version | int | 内容合同版本；新任务为 V2 |
+| revision | bigint | 用户可见配置的 CAS 版本号 |
+| media_type | enum | `none/photo/video/animation`；V1 兼容期仍可能有 sticker |
+| media_source_account_id | UUID | V2 Saved Messages 所属执行账号 |
+| media_source_message_id | bigint | V2 Saved Messages 消息 ID |
+| media_source_meta | json | 不含文件内容与 file reference 的展示元数据 |
+| media_source_state | string | `none/valid/migration_pending/invalid` |
+| media_file_id | string | 仅保留给 V1 迁移和回滚兼容 |
+| buttons | json | V1 兼容字段；Userbot V2 任务不支持消息按钮 |
 | delete_previous | boolean | 删除上一条 |
 | pin_message | boolean | 是否置顶 |
 | last_sent_message_id | int | 上次发送消息 ID |
@@ -308,10 +314,11 @@ ssh root@your-host "docker logs --tail 100 tgmsg-app"
 ### H5 控制台操作
 
 1. **富文本编辑**：在文本框中输入 HTML 格式内容
-2. **媒体上传**：点击「📤 上传媒体」选择图片/视频
-3. **按钮编排**：点击「+ 添加按钮行」添加按钮
-4. **批量操作**：在任务列表页选择多个任务进行批量操作
-5. **查看日志**：滚动到底部查看发送历史
+2. **媒体设置**：先保存任务，再点击「前往 Telegram Bot 设置媒体」，使用执行账号回复 Bot 提示并发送一张图片、一个视频或一个动图
+3. **媒体存储**：媒体复制到执行账号自己的 Telegram 收藏夹；服务器不接收、不下载、不保存文件
+4. **媒体清除**：使用专用清除按钮只删除任务引用，不删除 Telegram 收藏夹原消息
+5. **消息按钮**：当前发送身份是 Userbot，V2 任务不支持 Telegram 消息按钮
+6. **查看日志**：滚动到底部查看发送历史
 
 ### 管理员卡密后台（非用户 H5）
 

@@ -18,7 +18,7 @@
 4. `Deploy Production` 先重新运行：
    - `ruff`
    - `pylint`
-   - `python -m unittest discover -s tests -t .`
+   - `python -m pytest -q`
 5. 检查通过后，workflow 构建并推送后端/前端 GHCR 镜像
 6. workflow 通过 SSH 调用 `deploy/release.sh`
 7. 生产机收到 release 包，拉取指定镜像并完成更新

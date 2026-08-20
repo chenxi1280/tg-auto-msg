@@ -49,7 +49,7 @@ jobs:
           set -euo pipefail
           pylint backend tests --disable=all --enable=E0601,E0606
 
-      - name: Unittest
+      - name: Pytest
         env:
           PYTHONPATH: ${{ github.workspace }}
           TG_API_ID: "123456"
@@ -60,7 +60,7 @@ jobs:
           JWT_SECRET_KEY: "test-secret-key"
         run: |
           set -euo pipefail
-          python -m unittest discover -s tests -t .
+          python -m pytest -q
 
   build-images:
     runs-on: ubuntu-latest

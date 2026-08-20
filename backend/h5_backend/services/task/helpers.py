@@ -2,13 +2,9 @@
 from typing import Any, Dict, List, Optional
 import random
 
-from fastapi import HTTPException, UploadFile
+from fastapi import HTTPException
 
 from backend.database.schema.models import Account, MediaType
-
-MAX_TASK_MEDIA_SIZE = 20 * 1024 * 1024  # 20MB
-TELEGRAM_MEDIA_REF_PREFIX = "tgmsg://"
-
 
 def media_value(value: object) -> str:
     """Normalize enum/string media type output to lowercase value."""
@@ -128,24 +124,3 @@ def build_auto_delay_profile(priority: int, account: Optional[Account]) -> tuple
     delay_max = random.randint(delay_max_low, max_range[1])
     jitter_seconds = random.randint(30, min(delay_max, 300))
     return delay_min, delay_max, jitter_seconds
-
-
-def resolve_upload_media_type(upload: UploadFile) -> MediaType:
-    """Resolve media type from upload file metadata."""
-    content_type = (upload.content_type or "").lower()
-    filename = (upload.filename or "").lower()
-
-    if content_type.startswith("image/"):
-        if content_type == "image/gif" or filename.endswith(".gif"):
-            return MediaType.ANIMATION
-        return MediaType.PHOTO
-    if content_type.startswith("video/"):
-        return MediaType.VIDEO
-    if filename.endswith(".gif"):
-        return MediaType.ANIMATION
-    raise HTTPException(status_code=400, detail="仅支持图片/GIF/视频文件上传")
-
-
-def build_telegram_media_ref(account_id: str, message_id: int) -> str:
-    """Build Telegram media ref string: tgmsg://{account_id}/{message_id}."""
-    return f"{TELEGRAM_MEDIA_REF_PREFIX}{account_id}/{message_id}"

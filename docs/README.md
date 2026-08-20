@@ -25,6 +25,11 @@
 - `architecture/H5_BACKEND_ARCHITECTURE.md`：H5 后端架构
 - `architecture/SCHEDULER_ARCHITECTURE.md`：调度器架构
 
+## 设计规格
+
+- `superpowers/specs/2026-08-20-telegram-native-task-media-design.md`：任务媒体只支持单张图片、单个视频或单个动图，并通过 Telegram 来源消息原生复用发送的 V2 设计
+- `superpowers/specs/2026-08-20-telegram-native-task-media-migration.md`：V1 媒体任务清点、Telegram 回读迁移、阻断项、回滚与 V2 切换门槛
+
 ## 其他文档
 
 - `BRANCHING_AND_RELEASES.md`：分支与发布规范

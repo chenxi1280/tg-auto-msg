@@ -119,7 +119,7 @@ def get_task_settings_keyboard(task: ScheduledMessageTask) -> list:
         ])
 
     # 编辑入口
-    buttons.append([
+    content_buttons = [
         Button.inline(
             f"📝 文本 {'✅' if task.text else '❌'}",
             data=f"edit_text:{task.task_id}"
@@ -128,11 +128,10 @@ def get_task_settings_keyboard(task: ScheduledMessageTask) -> list:
             f"🖼️ 媒体 {'✅' if task.media_type != MediaType.NONE else '❌'}",
             data=f"edit_media:{task.task_id}"
         ),
-        Button.inline(
-            f"🧷 按钮 {'✅' if task.buttons else '❌'}",
-            data=f"edit_buttons:{task.task_id}"
-        ),
-    ])
+    ]
+    if task.buttons:
+        content_buttons.append(Button.inline("🧹 清除旧消息按钮", data=f"edit_buttons:{task.task_id}"))
+    buttons.append(content_buttons)
 
     # 时间控制
     if not is_manual_shortcut:

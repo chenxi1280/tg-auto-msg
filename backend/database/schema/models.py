@@ -769,6 +769,23 @@ class ScheduledMessageTask(Base):
     )
     media_file_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="Telegram file_id")
     buttons: Mapped[Optional[List[Any]]] = mapped_column(JSON, nullable=True, comment="二维按钮数组")
+    content_contract_version: Mapped[int] = mapped_column(Integer, default=2, nullable=False, comment="内容合同版本")
+    revision: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False, comment="配置版本号")
+    media_source_account_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey(
+            "accounts.account_id",
+            ondelete="SET NULL",
+            name="fk_task_media_source_account",
+        ),
+        nullable=True,
+        comment="Telegram Saved Messages 所属账号",
+    )
+    media_source_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, comment="Saved Messages 消息 ID")
+    media_source_meta: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True, comment="Telegram 媒体展示元数据")
+    media_source_state: Mapped[str] = mapped_column(String(24), default="none", nullable=False, comment="媒体来源状态")
+    media_source_error_code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, comment="媒体来源错误码")
+    media_source_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="媒体最近回读时间")
 
     # 执行设置
     delete_previous: Mapped[bool] = mapped_column(Boolean, default=True, comment="删除上一条")

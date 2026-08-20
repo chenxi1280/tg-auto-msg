@@ -17,6 +17,7 @@ from backend.database.runtime.migration_manager import (
     rollback_migrations,
 )
 from backend.database.schema.models import Base
+from backend.database.schema.task_media_models import TaskMediaCaptureSession  # noqa: F401
 
 
 def _build_connect_args() -> dict:
@@ -68,6 +69,20 @@ REQUIRED_TASK_COLUMNS = {
     "delay_max_seconds",
     "jitter_seconds",
     "next_run_at",
+    "content_contract_version",
+    "revision",
+    "media_source_account_id",
+    "media_source_message_id",
+    "media_source_meta",
+    "media_source_state",
+    "media_source_error_code",
+    "media_source_verified_at",
+}
+REQUIRED_TASK_MEDIA_INDEXES = {
+    "uq_task_media_capture_active",
+    "idx_task_media_capture_task_state",
+    "idx_task_media_capture_actor_prompt",
+    "idx_task_media_capture_expires",
 }
 
 
@@ -95,6 +110,22 @@ async def _validate_required_columns() -> None:
         if missing_columns:
             raise RuntimeError(
                 "scheduled_message_tasks 缺少关键列: " + ", ".join(missing_columns)
+            )
+        index_result = await conn.execute(
+            text(
+                """
+                SELECT indexname
+                FROM pg_indexes
+                WHERE schemaname = current_schema()
+                  AND tablename = 'task_media_capture_sessions'
+                """
+            )
+        )
+        existing_indexes = {row[0] for row in index_result}
+        missing_indexes = sorted(REQUIRED_TASK_MEDIA_INDEXES - existing_indexes)
+        if missing_indexes:
+            raise RuntimeError(
+                "task_media_capture_sessions 缺少关键索引: " + ", ".join(missing_indexes)
             )
 
 

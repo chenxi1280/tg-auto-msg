@@ -1,0 +1,63 @@
+.editor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.8rem;
+}
+
+.card {
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  padding: 1rem;
+}
+
+.card h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  color: #2c3e50;
+}
+
+.grid-two {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.8rem;
+}
+
+.form-actions,
+.media-actions {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.hint-text {
+  margin-top: 0.35rem;
+  color: #606266;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+@media (max-width: 768px) {
+  .card { padding: 0.85rem; }
+  .editor-header {
+    align-items: flex-start;
+    gap: 0.4rem;
+    flex-direction: column;
+  }
+  .grid-two {
+    grid-template-columns: 1fr;
+    gap: 0.2rem;
+  }
+  .media-actions,
+  .form-actions { flex-wrap: wrap; }
+  .media-actions :deep(.el-button),
+  .form-actions :deep(.el-button) {
+    flex: 1 1 calc(50% - 0.3rem);
+    min-width: 0;
+  }
+}
+
+@media (max-width: 480px) {
+  .media-actions :deep(.el-button),
+  .form-actions :deep(.el-button) { flex-basis: 100%; }
+}

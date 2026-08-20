@@ -24,7 +24,7 @@
 4. `Deploy Production` 在 GitHub Actions 中再次运行：
    - `ruff`
    - `pylint`
-   - `python -m unittest discover -s tests -t .`
+   - `python -m pytest -q`
 5. 检查通过后，workflow 通过 SSH 调用 `deploy/release.sh`
 6. 服务器接收 release 包，执行 `deploy/server-install-release.sh`
 7. 服务器拉取指定 GHCR 镜像，完成数据库迁移、释放前端静态文件、更新容器、切换 `/data/tgmsg/current`

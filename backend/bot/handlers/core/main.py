@@ -23,6 +23,7 @@ from backend.bot.handlers.core.command_handlers import (
     handle_start_command,
 )
 from backend.h5_backend.services.admin_panel.service import get_admin_panel_service
+from backend.task_media.capture_service import try_consume_capture_reply
 
 
 # ============ 命令处理 ============
@@ -209,6 +210,9 @@ async def message_handler(event):
     state = fsm_storage.get_state(user_id)
     onboarding_service = get_onboarding_service()
     text = (event.raw_text or event.message.message or "").strip()
+
+    if await try_consume_capture_reply(event):
+        return
 
     if state == FSMState.NONE:
         # 容错：如果搜索输入状态丢失，但选择器上下文仍在，继续按搜索词处理

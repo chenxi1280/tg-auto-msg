@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from fastapi import HTTPException
 from sqlalchemy import func, select
 from telethon import events
-from telethon.tl.types import MessageMediaDocument, MessageMediaPhoto
 
 from backend.bot.state.fsm import FSMState, fsm_storage
 from backend.bot.ui.keyboards import (
@@ -20,14 +20,16 @@ from backend.bot.handlers.core.helpers import (
     format_buttons as _format_buttons,
     parse_buttons,
 )
-from backend.bot.handlers.task.manual_helpers import (
-    store_task_media_from_bot_message,
-    task_has_manual_content,
-)
+from backend.bot.handlers.task.manual_helpers import task_has_content
 from backend.bot.handlers.task.queries import get_user_task as _get_user_task
 from backend.bot.ui.messages import *
 from backend.database.schema.models import MediaType, ScheduledMessageTask, TaskTriggerMode
 from backend.database.runtime.session import get_async_session
+from backend.task_media.capture_service import (
+    activate_capture_from_start,
+    create_capture,
+)
+from backend.task_media.contract import TaskMediaError, validate_message_length
 
 MIN_REPEAT_INTERVAL_MINUTES = 60
 MAX_REPEAT_INTERVAL_MINUTES = 43200
@@ -80,6 +82,7 @@ async def _set_start_at_value(event, user_id: int, task_id: str, timestamp: int)
                 await _notify_event(event, ERROR_END_BEFORE_START, alert=True)
                 return
             task.start_at = timestamp
+            task.revision = int(task.revision) + 1
             await session.commit()
 
     fsm_storage.reset_state(user_id)
@@ -96,6 +99,7 @@ async def _set_end_at_value(event, user_id: int, task_id: str, timestamp: int):
                 await _notify_event(event, ERROR_END_BEFORE_START, alert=True)
                 return
             task.end_at = timestamp
+            task.revision = int(task.revision) + 1
             await session.commit()
 
     fsm_storage.reset_state(user_id)
@@ -109,6 +113,7 @@ async def toggle_delete_previous(event, user_id: int, task_id: str):
         task = await _get_user_task(session, task_id, user_id)
         if task:
             task.delete_previous = not task.delete_previous
+            task.revision = int(task.revision) + 1
             await session.commit()
             await _show_task_settings(event, user_id, task_id)
 
@@ -119,6 +124,7 @@ async def toggle_pin_message(event, user_id: int, task_id: str):
         task = await _get_user_task(session, task_id, user_id)
         if task:
             task.pin_message = not task.pin_message
+            task.revision = int(task.revision) + 1
             await session.commit()
             await _show_task_settings(event, user_id, task_id)
 
@@ -136,9 +142,9 @@ async def toggle_trigger_mode(event, user_id: int, task_id: str):
             )
             task.trigger_mode = next_mode
             if next_mode == TaskTriggerMode.MANUAL_SHORTCUT.value:
-                if not task_has_manual_content(task):
+                if not task_has_content(task):
                     task.trigger_mode = current_mode
-                    await _notify_event(event, "请先补充文本、按钮或媒体内容后，再切换为手动任务。", alert=True)
+                    await _notify_event(event, "请先补充文本或媒体内容后，再切换为手动任务。", alert=True)
                     return
                 existing_manual_tasks = (
                     await session.execute(
@@ -171,6 +177,7 @@ async def toggle_trigger_mode(event, user_id: int, task_id: str):
                     now_ts = int(datetime.now().timestamp())
                     start_at_ts = int(task.start_at or 0)
                     task.next_run_at = max(now_ts, start_at_ts) if start_at_ts > 0 else now_ts
+            task.revision = int(task.revision) + 1
             await session.commit()
     from backend.bot.onboarding import get_onboarding_service
     await get_onboarding_service().sync_home_reply_keyboard(user_id)
@@ -198,8 +205,8 @@ async def set_shortcut_slot(event, user_id: int, task_id: str, slot_value: Optio
             return
         else:
             if str(task.trigger_mode or TaskTriggerMode.SCHEDULED.value) != TaskTriggerMode.MANUAL_SHORTCUT.value:
-                if not task_has_manual_content(task):
-                    await _notify_event(event, "请先补充文本、按钮或媒体内容后，再加入手动快捷栏。", alert=True)
+                if not task_has_content(task):
+                    await _notify_event(event, "请先补充文本或媒体内容后，再加入手动快捷栏。", alert=True)
                     return
                 task.trigger_mode = TaskTriggerMode.MANUAL_SHORTCUT.value
                 task.shortcut_label = str(task.shortcut_label or "").strip() or str(task.title or "手动任务").strip()[:20]
@@ -224,6 +231,7 @@ async def set_shortcut_slot(event, user_id: int, task_id: str, slot_value: Optio
                 await _notify_event(event, f"快捷栏位置 {slot} 已被其他任务占用", alert=True)
                 return
             task.shortcut_slot = slot
+            task.revision = int(task.revision) + 1
             await session.commit()
             from backend.bot.onboarding import get_onboarding_service
             await get_onboarding_service().sync_home_reply_keyboard(user_id)
@@ -267,8 +275,8 @@ async def handle_shortcut_label_input(event, user_id: int, task_id: str, text: s
         if task:
             task.shortcut_label = value
             if str(task.trigger_mode or "") != TaskTriggerMode.MANUAL_SHORTCUT.value:
-                if not task_has_manual_content(task):
-                    await event.respond("❌ 请先补充文本、按钮或媒体内容后，再改成手动任务。")
+                if not task_has_content(task):
+                    await event.respond("❌ 请先补充文本或媒体内容后，再改成手动任务。")
                     return
                 existing_manual_tasks = (
                     await session.execute(
@@ -294,6 +302,7 @@ async def handle_shortcut_label_input(event, user_id: int, task_id: str, text: s
             ):
                 await event.respond("❌ 手动任务按钮名称已存在，请换一个名称。")
                 return
+            task.revision = int(task.revision) + 1
             await session.commit()
 
     fsm_storage.reset_state(user_id)
@@ -319,14 +328,16 @@ async def start_edit_text(event, user_id: int, task_id: str):
 
 async def handle_text_input(event, user_id: int, task_id: str, text: str):
     """处理文本输入。"""
-    if len(text) > 4096:
-        await event.respond(ERROR_TEXT_TOO_LONG)
-        return
-
     async with get_async_session() as session:
         task = await _get_user_task(session, task_id, user_id)
         if task:
+            try:
+                validate_message_length(text, has_media=task.media_type != MediaType.NONE)
+            except TaskMediaError as exc:
+                await event.respond(f"❌ {exc.code}：{exc}")
+                return
             task.text = text
+            task.revision = int(task.revision) + 1
             await session.commit()
 
     fsm_storage.reset_state(user_id)
@@ -335,88 +346,37 @@ async def handle_text_input(event, user_id: int, task_id: str, text: str):
 
 
 async def start_edit_media(event, user_id: int, task_id: str):
-    """开始编辑媒体。"""
+    """Start a persistent Telegram-native media capture."""
     async with get_async_session() as session:
         task = await _get_user_task(session, task_id, user_id)
         if not task:
             return
-
-    fsm_storage.set_state(user_id, FSMState.WAIT_MEDIA)
-    fsm_storage.update_data(user_id, task_id=task_id)
-    media_status = task.media_type.value if task.media_type != MediaType.NONE else "无"
-    text = EDIT_MEDIA_PROMPT.format(current_media=media_status)
-    keyboard = get_cancel_keyboard(task_id)
-    await event.edit(text, buttons=keyboard, parse_mode="markdown")
-
-
-async def handle_media_input(event, user_id: int, task_id: str, media):
-    """处理媒体输入。"""
-    media_type = MediaType.NONE
-
-    if isinstance(media, MessageMediaPhoto):
-        media_type = MediaType.PHOTO
-    elif isinstance(media, MessageMediaDocument):
-        for attr in media.document.attributes:
-            if hasattr(attr, "video"):
-                media_type = MediaType.VIDEO
-            elif hasattr(attr, "animated"):
-                media_type = MediaType.ANIMATION
-
-    if media_type == MediaType.NONE:
-        await event.respond(ERROR_INVALID_MEDIA)
-        return
-
-    async with get_async_session() as session:
-        task = await _get_user_task(session, task_id, user_id)
-        if task:
-            task.media_type = media_type
-            try:
-                task.media_file_id = await store_task_media_from_bot_message(
-                    account_id=str(task.account_id or ""),
-                    event=event,
-                    media=media,
-                    media_type=media_type,
-                )
-            except HTTPException as exc:
-                await event.respond(f"❌ {exc.detail}")
-                return
-            await session.commit()
-
-    fsm_storage.reset_state(user_id)
-    await event.respond(SUCCESS_MEDIA_UPDATED)
-    await _show_task_settings(event, user_id, task_id)
+        owner_user_id = int(task.user_id)
+        revision = int(task.revision)
+    try:
+        capture = await create_capture(
+            task_id=task_id,
+            user_id=owner_user_id,
+            expected_revision=revision,
+        )
+        token = capture.bot_deep_link.rsplit("media_", 1)[1]
+        fsm_storage.reset_state(user_id)
+        await activate_capture_from_start(event, token)
+    except HTTPException as exc:
+        await _notify_event(event, str(exc.detail), alert=True)
 
 
 async def start_edit_buttons(event, user_id: int, task_id: str):
-    """开始编辑按钮。"""
+    """Clear legacy message buttons; Userbot tasks cannot create new ones."""
     async with get_async_session() as session:
         task = await _get_user_task(session, task_id, user_id)
         if not task:
             return
-
-    fsm_storage.set_state(user_id, FSMState.WAIT_BUTTONS)
-    fsm_storage.update_data(user_id, task_id=task_id)
-    current_buttons = _format_buttons(task.buttons) if task.buttons else "无"
-    text = EDIT_BUTTONS_PROMPT.format(current_buttons=current_buttons)
-    keyboard = get_cancel_keyboard(task_id)
-    await event.edit(text, buttons=keyboard, parse_mode="markdown")
-
-
-async def handle_buttons_input(event, user_id: int, task_id: str, text: str):
-    """处理按钮输入。"""
-    try:
-        buttons = parse_buttons(text)
-        async with get_async_session() as session:
-            task = await _get_user_task(session, task_id, user_id)
-            if task:
-                task.buttons = buttons
-                await session.commit()
-
-        fsm_storage.reset_state(user_id)
-        await event.respond(SUCCESS_BUTTONS_UPDATED)
-        await _show_task_settings(event, user_id, task_id)
-    except Exception as e:
-        await event.respond(f"{ERROR_INVALID_BUTTON_FORMAT}\n错误: {str(e)}")
+        if task.buttons:
+            task.buttons = None
+            task.revision = int(task.revision) + 1
+    await _notify_event(event, "已清除旧消息按钮；执行账号不是 Bot，V2 任务不支持消息按钮。")
+    await _show_task_settings(event, user_id, task_id)
 
 
 async def show_interval_selection(event, user_id: int, task_id: str):
@@ -456,6 +416,7 @@ async def set_interval(event, user_id: int, task_id: str, interval: int):
                 task.next_run_at = max(now_ts + interval * 60, start_at_ts)
             else:
                 task.next_run_at = now_ts + interval * 60
+        task.revision = int(task.revision) + 1
         await session.commit()
         await _notify_event(event, SUCCESS_INTERVAL_UPDATED.format(interval=interval))
         await _show_task_settings(event, user_id, task_id)
@@ -509,6 +470,7 @@ async def set_hour(event, user_id: int, task_id: str, is_start: bool, hour: int)
         if task:
             task.day_start_hour = day_start_hour
             task.day_end_hour = day_end_hour
+            task.revision = int(task.revision) + 1
             await session.commit()
 
     fsm_storage.reset_state(user_id)
@@ -526,6 +488,7 @@ async def set_hours_allday(event, user_id: int, task_id: str):
             task.day_start_hour = 0
             # 调度判断是 start <= hour < end，全天应设置为 [0, 24)。
             task.day_end_hour = 24
+            task.revision = int(task.revision) + 1
             await session.commit()
 
     fsm_storage.reset_state(user_id)

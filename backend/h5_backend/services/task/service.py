@@ -2,15 +2,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-import io
 import re
 from typing import Any, Dict, List, Optional
 
-from fastapi import HTTPException, UploadFile
+from fastapi import HTTPException
 from loguru import logger
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 
-from backend.bot.account.manager import get_account_manager
 from backend.bot.account.proxy_observation import (
     format_observation_block_message,
     is_proxy_observation_active,
@@ -38,12 +36,15 @@ from backend.h5_backend.services.task.serializers import (
     serialize_task_list_item,
     serialize_task_logs,
 )
-from backend.h5_backend.services.task.helpers import (
-    MAX_TASK_MEDIA_SIZE,
-    build_telegram_media_ref,
-    resolve_upload_media_type,
-)
 from backend.scheduler.core.task_runner import execute_task_once
+from backend.h5_backend.services.task.v2_payload import (
+    cancel_task_captures,
+    clear_task_media_fields,
+    extract_expected_revision,
+    prepare_v2_create_payload,
+    reject_task_delete_while_capturing,
+    reject_media_source_input,
+)
 
 
 class TaskService:
@@ -232,6 +233,7 @@ class TaskService:
 
     async def create_task(self, task_data: dict, user_id: int) -> str:
         payload = dict(task_data or {})
+        prepare_v2_create_payload(payload)
         payload["user_id"] = user_id
         account = await self._resolve_account(payload, user_id)
         if account is not None:
@@ -260,9 +262,11 @@ class TaskService:
         await self._sync_user_shortcut_keyboards(user_id)
         return created_task_id
 
-    async def update_task(self, task_id: str, task_data: dict, user_id: int) -> None:
+    async def update_task(self, task_id: str, task_data: dict, user_id: int) -> int:
         original_task = await check_task_permission(task_id, user_id)
         payload = dict(task_data or {})
+        expected_revision = extract_expected_revision(payload, original_task)
+        reject_media_source_input(payload)
         now_ts = int(datetime.now().timestamp())
 
         account = await self._resolve_account(payload, user_id, default_account_id=original_task.account_id)
@@ -279,20 +283,54 @@ class TaskService:
                 payload=payload,
                 current_task_id=task_id,
             )
-            task = await session.merge(original_task)
+            task = await session.scalar(
+                select(ScheduledMessageTask)
+                .where(
+                    ScheduledMessageTask.task_id == task_id,
+                    ScheduledMessageTask.user_id == user_id,
+                )
+                .with_for_update()
+            )
+            if not task or int(task.revision) != expected_revision:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "TASK_REVISION_CONFLICT", "message": "任务已被其他操作修改，请刷新后重试"},
+                )
             was_enabled = bool(task.enabled)
+            previous_account_id = task.account_id
             apply_update_payload(task, payload)
             ensure_initial_next_run(payload, now_ts, current_task=task, was_enabled=was_enabled)
-
-            await session.commit()
-            await session.refresh(task)
+            account_changed = previous_account_id != task.account_id
+            if account_changed:
+                clear_task_media_fields(task)
+                await cancel_task_captures(session, task_id)
+                if task.enabled and not str(task.text or "").strip():
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "code": "TASK_CONTENT_REQUIRED",
+                            "message": "切换执行账号会清除媒体，请先禁用任务或保留文本内容",
+                        },
+                    )
+            task.revision = expected_revision + 1
         await self._sync_user_shortcut_keyboards(user_id)
+        return expected_revision + 1
 
     async def delete_task(self, task_id: str, user_id: int) -> None:
         await check_task_permission(task_id, user_id)
         async with get_async_session() as session:
-            await session.execute(delete(ScheduledMessageTask).where(ScheduledMessageTask.task_id == task_id))
-            await session.commit()
+            task = await session.scalar(
+                select(ScheduledMessageTask)
+                .where(
+                    ScheduledMessageTask.task_id == task_id,
+                    ScheduledMessageTask.user_id == user_id,
+                )
+                .with_for_update()
+            )
+            if not task:
+                raise HTTPException(status_code=404, detail="任务不存在")
+            await reject_task_delete_while_capturing(session, task_id)
+            await session.delete(task)
         await self._sync_user_shortcut_keyboards(user_id)
 
     async def list_task_logs(self, task_id: str, user_id: int, limit: int = 50) -> List[Dict[str, Any]]:
@@ -361,6 +399,14 @@ class TaskService:
                 task = result.scalar_one_or_none()
                 if not task:
                     continue
+                if int(task.content_contract_version or 1) == 2:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "code": "TASK_BATCH_UPDATE_UNSUPPORTED_FOR_V2",
+                            "message": "V2 任务必须逐条携带 expected_revision 更新",
+                        },
+                    )
 
                 for key, value in update_data.items():
                     if hasattr(task, key) and key not in {"user_id", "task_id"}:
@@ -380,58 +426,6 @@ class TaskService:
         if count > 0:
             await self._sync_user_shortcut_keyboards(user_id)
         return count
-
-    async def upload_media(self, account_id: str, user_id: int, media: UploadFile) -> Dict[str, Any]:
-        await check_account_permission(account_id, user_id)
-
-        if not media.filename:
-            raise HTTPException(status_code=400, detail="媒体文件名为空")
-
-        media_type = resolve_upload_media_type(media)
-        filename = media.filename
-        account_manager = get_account_manager()
-        client = await account_manager.get_client(account_id)
-        if not client:
-            raise HTTPException(status_code=400, detail="账号客户端不可用，请重新绑定该账号")
-
-        total_size = 0
-        raw_data = bytearray()
-        try:
-            while True:
-                chunk = await media.read(1024 * 1024)
-                if not chunk:
-                    break
-                total_size += len(chunk)
-                if total_size > MAX_TASK_MEDIA_SIZE:
-                    max_mb = MAX_TASK_MEDIA_SIZE // (1024 * 1024)
-                    raise HTTPException(status_code=400, detail=f"媒体文件过大，最大支持 {max_mb}MB")
-                raw_data.extend(chunk)
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"读取媒体文件失败: {exc}") from exc
-        finally:
-            await media.close()
-
-        if total_size <= 0:
-            raise HTTPException(status_code=400, detail="媒体文件为空")
-
-        file_buffer = io.BytesIO(bytes(raw_data))
-        file_buffer.name = filename
-
-        try:
-            sent_msg = await client.send_file("me", file=file_buffer, caption=f"[task-media] {filename}")
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"上传到 Telegram 失败: {exc}") from exc
-
-        media_ref = build_telegram_media_ref(account_id, int(sent_msg.id))
-        return {
-            "media_type": media_type.value,
-            "media_file_id": media_ref,
-            "filename": filename,
-            "size": total_size,
-            "storage": "telegram",
-        }
 
     async def _resolve_account(
         self,

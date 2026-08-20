@@ -4,7 +4,6 @@ from __future__ import annotations
 from datetime import datetime
 
 from telethon import Button, events
-from telethon.tl.types import MessageMediaDocument, MessageMediaPhoto
 from sqlalchemy import func, select
 from fastapi import HTTPException
 from loguru import logger
@@ -35,7 +34,7 @@ from backend.bot.handlers.core.user_link import (
 )
 from backend.bot.handlers.core.helpers import parse_buttons
 from backend.bot.state.fsm import FSMState, fsm_storage
-from backend.bot.handlers.task.manual_helpers import store_task_media_from_bot_message, task_has_manual_content
+from backend.bot.handlers.task.manual_helpers import task_has_content
 from backend.bot.ui.keyboards import (
     get_confirm_delete_keyboard,
     get_task_list_keyboard,
@@ -68,9 +67,7 @@ from backend.bot.handlers.task.target_selection import (
 
 # Editing flows (kept import-compatible for callback/message dispatch modules)
 from backend.bot.handlers.task.editing import (
-    handle_buttons_input,
     handle_end_at_input,
-    handle_media_input,
     handle_start_at_input,
     handle_text_input,
     set_hour,
@@ -511,12 +508,8 @@ async def toggle_task(event, user_id: int, task_id: str):
         task = await _get_user_task(session, task_id, user_id)
         if task:
             next_enabled = not task.enabled
-            if (
-                next_enabled
-                and str(task.trigger_mode or TaskTriggerMode.SCHEDULED.value) == TaskTriggerMode.MANUAL_SHORTCUT.value
-                and not task_has_manual_content(task)
-            ):
-                await event.answer("请先补充文本、按钮或媒体内容后，再启用手动任务。", alert=True)
+            if next_enabled and not task_has_content(task):
+                await event.answer("请先补充文本或媒体内容后，再启用任务。", alert=True)
                 return
             task.enabled = next_enabled
             if (
@@ -527,6 +520,7 @@ async def toggle_task(event, user_id: int, task_id: str):
                 now_ts = int(datetime.now().timestamp())
                 start_at_ts = int(task.start_at or 0)
                 task.next_run_at = max(now_ts, start_at_ts) if start_at_ts > 0 else now_ts
+            task.revision = int(task.revision) + 1
             await session.commit()
             await event.answer(f"✅ 任务已{'启用' if task.enabled else '禁用'}")
             await show_task_list(event, user_id)
@@ -549,8 +543,14 @@ async def delete_task(event, user_id: int, task_id: str):
         if not task:
             await event.answer("任务不存在或无权限", alert=True)
             return
-        await session.delete(task)
-        await session.commit()
+        owner_user_id = int(task.user_id)
+
+    try:
+        await get_task_service().delete_task(task_id, owner_user_id)
+    except HTTPException as exc:
+        detail = exc.detail.get("message") if isinstance(exc.detail, dict) else str(exc.detail)
+        await event.answer(detail, alert=True)
+        return
 
     await event.answer("✅ 任务已删除")
     await show_task_list(event, user_id)
@@ -561,12 +561,8 @@ async def update_task_enabled(event, user_id: int, task_id: str, enabled: bool):
     async with get_async_session() as session:
         task = await _get_user_task(session, task_id, user_id)
         if task:
-            if (
-                enabled
-                and str(task.trigger_mode or TaskTriggerMode.SCHEDULED.value) == TaskTriggerMode.MANUAL_SHORTCUT.value
-                and not task_has_manual_content(task)
-            ):
-                await event.answer("请先补充文本、按钮或媒体内容后，再启用手动任务。", alert=True)
+            if enabled and not task_has_content(task):
+                await event.answer("请先补充文本或媒体内容后，再启用任务。", alert=True)
                 return
             task.enabled = enabled
             if (
@@ -577,6 +573,7 @@ async def update_task_enabled(event, user_id: int, task_id: str, enabled: bool):
                 now_ts = int(datetime.now().timestamp())
                 start_at_ts = int(task.start_at or 0)
                 task.next_run_at = max(now_ts, start_at_ts) if start_at_ts > 0 else now_ts
+            task.revision = int(task.revision) + 1
             await session.commit()
             await event.answer(SUCCESS_TASK_ENABLED if enabled else SUCCESS_TASK_DISABLED)
             await show_task_settings(event, user_id, task_id)
@@ -611,216 +608,6 @@ async def open_task_logs_page(event, user_id: int, task_id: str):
         return
 
     await event.answer(f"📊 请在浏览器打开任务发送记录:\n{url}", alert=True)
-
-
-async def handle_manual_task_shortcut_label_create(event, user_id: int, text: str):
-    """Handle shortcut label input for manual task creation wizard."""
-    value = str(text or "").strip()
-    if not value:
-        await event.respond("❌ 手动任务必须填写按钮名称。")
-        return
-    if len(value) > 20:
-        await event.respond("❌ 按钮名称最长 20 个字符。")
-        return
-
-    draft = dict(fsm_storage.get_data(user_id).get("pending_manual_task_create") or {})
-    if not draft:
-        fsm_storage.reset_state(user_id)
-        await event.respond("⚠️ 当前手动任务创建流程已失效，请重新开始。")
-        return
-
-    account_id = str(draft.get("account_id") or "").strip()
-    if not account_id:
-        fsm_storage.reset_state(user_id)
-        await event.respond("⚠️ 未找到执行账号，请重新开始创建手动任务。")
-        return
-
-    async with get_async_session() as session:
-        access_ctx = await _resolve_actor_access_context(session, user_id)
-        db_user_id = access_ctx.system_user_id
-        if db_user_id is None:
-            fsm_storage.reset_state(user_id)
-            await event.respond("⚠️ 当前 Telegram 账号还未绑定系统账号，请先发送 /start。")
-            return
-        result = await session.execute(
-            select(ScheduledMessageTask.task_id).where(
-                ScheduledMessageTask.user_id == int(db_user_id),
-                ScheduledMessageTask.trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value,
-                func.lower(ScheduledMessageTask.shortcut_label) == value.lower(),
-            )
-        )
-        if result.scalar_one_or_none() is not None:
-            await event.respond("❌ 手动任务按钮名称已存在，请换一个名称。")
-            return
-
-    draft["shortcut_label"] = value
-    fsm_storage.update_data(user_id, pending_manual_task_create=draft)
-    fsm_storage.set_state(user_id, FSMState.WAIT_MANUAL_TASK_TEXT)
-    await event.respond(
-        "📝 **创建手动任务**\n\n"
-        f"按钮名称：`{_escape_markdown(value)}`\n\n"
-        "这个名称会显示在 Bot 底部按钮中。\n\n"
-        "下一步：请输入这次点击按钮后要发送的文本内容。\n"
-        "如果想只发按钮或媒体，也可以发送 `skip` 跳过这一步。",
-        parse_mode="markdown",
-    )
-
-
-async def handle_manual_task_text_create(event, user_id: int, text: str):
-    """Handle text input for manual task creation wizard."""
-    value = str(text or "").strip()
-    if value.lower() in {"skip", "跳过"}:
-        value = ""
-    if len(value) > 4096:
-        await event.respond(ERROR_TEXT_TOO_LONG)
-        return
-
-    draft = dict(fsm_storage.get_data(user_id).get("pending_manual_task_create") or {})
-    if not draft:
-        fsm_storage.reset_state(user_id)
-        await event.respond("⚠️ 当前手动任务创建流程已失效，请重新开始。")
-        return
-
-    draft["text"] = value or None
-    fsm_storage.update_data(user_id, pending_manual_task_create=draft)
-    fsm_storage.set_state(user_id, FSMState.WAIT_MANUAL_TASK_BUTTONS)
-    current_text = _escape_markdown(value) if value else "（已跳过）"
-    await event.respond(
-        "🔘 **创建手动任务**\n\n"
-        f"文本内容：{current_text}\n\n"
-        "下一步：请输入按钮内容，格式为 `文字 - 链接`，每行一组；\n"
-        "如果不需要按钮，请发送 `skip`。",
-        parse_mode="markdown",
-    )
-
-
-async def handle_manual_task_buttons_create(event, user_id: int, text: str):
-    """Handle buttons input for manual task creation wizard."""
-    raw = str(text or "").strip()
-    buttons = None
-    if raw.lower() not in {"skip", "跳过"}:
-        try:
-            buttons = parse_buttons(raw)
-        except Exception as exc:
-            await event.respond(f"{ERROR_INVALID_BUTTON_FORMAT}\n错误: {str(exc)}")
-            return
-
-    draft = dict(fsm_storage.get_data(user_id).get("pending_manual_task_create") or {})
-    if not draft:
-        fsm_storage.reset_state(user_id)
-        await event.respond("⚠️ 当前手动任务创建流程已失效，请重新开始。")
-        return
-
-    draft["buttons"] = buttons
-    fsm_storage.update_data(user_id, pending_manual_task_create=draft)
-    fsm_storage.set_state(user_id, FSMState.WAIT_MANUAL_TASK_MEDIA)
-    buttons_preview = _escape_markdown(_format_buttons(buttons) if buttons else "（已跳过）")
-    await event.respond(
-        "🖼️ **创建手动任务**\n\n"
-        f"按钮配置：{buttons_preview}\n\n"
-        "下一步：请发送一张图片、视频或 GIF 作为媒体；\n"
-        "如果不需要媒体，请发送 `skip`。",
-        parse_mode="markdown",
-    )
-
-
-async def handle_manual_task_media_text_input(event, user_id: int, text: str):
-    """Handle textual skip/invalid input during media step."""
-    value = str(text or "").strip().lower()
-    if value in {"skip", "跳过"}:
-        await _finalize_manual_task_create(event, user_id)
-        return
-    await event.respond("❌ 这一步请发送图片、视频、GIF，或者发送 `skip` 跳过。", parse_mode="markdown")
-
-
-async def handle_manual_task_media_create(event, user_id: int, task_id: str, media):
-    """Handle media upload for manual task creation wizard."""
-    del task_id
-    media_type = MediaType.NONE
-
-    if isinstance(media, MessageMediaPhoto):
-        media_type = MediaType.PHOTO
-    elif isinstance(media, MessageMediaDocument):
-        for attr in media.document.attributes:
-            if hasattr(attr, "video"):
-                media_type = MediaType.VIDEO
-            elif hasattr(attr, "animated"):
-                media_type = MediaType.ANIMATION
-
-    if media_type == MediaType.NONE:
-        await event.respond(ERROR_INVALID_MEDIA)
-        return
-
-    draft = dict(fsm_storage.get_data(user_id).get("pending_manual_task_create") or {})
-    if not draft:
-        fsm_storage.reset_state(user_id)
-        await event.respond("⚠️ 当前手动任务创建流程已失效，请重新开始。")
-        return
-
-    draft["media_type"] = media_type.value
-    account_id = str(draft.get("account_id") or "").strip()
-    if not account_id:
-        fsm_storage.reset_state(user_id)
-        await event.respond("⚠️ 未找到执行账号，请重新开始创建手动任务。")
-        return
-    try:
-        draft["media_file_id"] = await store_task_media_from_bot_message(
-            account_id=account_id,
-            event=event,
-            media=media,
-            media_type=media_type,
-        )
-    except HTTPException as exc:
-        await event.respond(f"❌ {exc.detail}")
-        return
-    fsm_storage.update_data(user_id, pending_manual_task_create=draft)
-    await _finalize_manual_task_create(event, user_id)
-
-
-async def _finalize_manual_task_create(event, user_id: int):
-    """Persist pending manual task draft."""
-    draft = dict(fsm_storage.get_data(user_id).get("pending_manual_task_create") or {})
-    if not draft:
-        fsm_storage.reset_state(user_id)
-        await event.respond("⚠️ 当前手动任务创建流程已失效，请重新开始。")
-        return
-
-    text_value = str(draft.get("text") or "").strip() or None
-    buttons = draft.get("buttons")
-    media_type = str(draft.get("media_type") or MediaType.NONE.value)
-    media_file_id = str(draft.get("media_file_id") or "").strip() or None
-
-    payload = {
-        "account_id": draft.get("account_id"),
-        "target_peers": list(draft.get("targets") or []),
-        "title": str(draft.get("shortcut_label") or "手动任务"),
-        "enabled": True,
-        "trigger_mode": TaskTriggerMode.MANUAL_SHORTCUT.value,
-        "shortcut_label": str(draft.get("shortcut_label") or "").strip(),
-        "repeat_interval_min": 60,
-        "text": text_value,
-        "media_type": media_type,
-        "media_file_id": media_file_id,
-        "buttons": buttons,
-        "delete_previous": False,
-    }
-    async with get_async_session() as session:
-        access_ctx = await _resolve_actor_access_context(session, user_id)
-        db_user_id = access_ctx.system_user_id
-    if db_user_id is None:
-        fsm_storage.reset_state(user_id)
-        await event.respond("⚠️ 当前 Telegram 账号还未绑定系统账号，请先发送 /start。")
-        return
-
-    try:
-        created_task_id = await get_task_service().create_task(payload, int(db_user_id))
-    except HTTPException as exc:
-        await event.respond(f"❌ {exc.detail}")
-        return
-
-    fsm_storage.reset_state(user_id)
-    await event.respond("✅ 手动任务已创建，底部按钮已同步。")
-    await show_task_settings(event, user_id, created_task_id)
 
 
 async def trigger_task_once_from_bot(event, user_id: int, task_id: str):

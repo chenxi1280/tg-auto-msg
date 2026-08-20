@@ -2,8 +2,6 @@
  * Pure utility functions extracted from Tasks.vue.
  * No Vue reactivity dependencies — safe to import anywhere.
  */
-import type { TaskDetail } from '@/api/task'
-
 export interface ResourceOption {
   peer_id: number
   peer_type: string
@@ -45,76 +43,6 @@ export const resourceLabel = (res: ResourceOption) => {
   const name = displayResourceName(res)
   const suffix = res.username && !name.includes(`@${res.username}`) ? ` (@${res.username})` : ''
   return `${meta.icon} ${meta.label} · ${name}${suffix}`
-}
-
-/* ------------------------------------------------------------------ */
-/*  Button helpers                                                    */
-/* ------------------------------------------------------------------ */
-
-export const normalizeButtonUrl = (rawUrl: string): string => {
-  const candidate = rawUrl.trim()
-  if (!candidate) return ''
-  const withProtocol = /^https?:\/\//i.test(candidate) ? candidate : `https://${candidate}`
-  try {
-    const parsed = new URL(withProtocol)
-    if (!['http:', 'https:'].includes(parsed.protocol)) return ''
-    return parsed.toString()
-  } catch (_err) {
-    return ''
-  }
-}
-
-export const parseButtonsText = (text: string): Array<Array<{ text: string; url: string }>> | null => {
-  const normalized = (text || '').trim()
-  if (!normalized) return null
-
-  const rows = normalized
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-  if (rows.length > 3) {
-    throw new Error('最多支持 3 行按钮')
-  }
-
-  const buttons: Array<Array<{ text: string; url: string }>> = []
-  for (const row of rows) {
-    const cols = row
-      .split('&&')
-      .map((col) => col.trim())
-      .filter(Boolean)
-    if (cols.length > 3) {
-      throw new Error('每行最多支持 3 个按钮')
-    }
-
-    const rowButtons: Array<{ text: string; url: string }> = []
-    for (const col of cols) {
-      const delimiterIndex = col.indexOf(' - ')
-      if (delimiterIndex <= 0) {
-        throw new Error(`按钮格式错误: ${col}（请使用 "文字 - 链接"）`)
-      }
-
-      const textPart = col.slice(0, delimiterIndex).trim()
-      const urlPart = col.slice(delimiterIndex + 3).trim()
-      const url = normalizeButtonUrl(urlPart)
-      if (!textPart || !url) {
-        throw new Error(`按钮格式错误: ${col}`)
-      }
-      rowButtons.push({ text: textPart, url })
-    }
-
-    if (rowButtons.length > 0) {
-      buttons.push(rowButtons)
-    }
-  }
-
-  return buttons.length > 0 ? buttons : null
-}
-
-export const formatButtonsText = (buttons: TaskDetail['buttons']): string => {
-  if (!buttons || buttons.length === 0) return ''
-  return buttons
-    .map((row) => row.map((btn) => `${btn.text} - ${btn.url}`).join(' && '))
-    .join('\n')
 }
 
 /* ------------------------------------------------------------------ */

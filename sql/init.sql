@@ -563,6 +563,14 @@ CREATE TABLE IF NOT EXISTS scheduled_message_tasks (
     media_type VARCHAR(20) DEFAULT 'none' NOT NULL,
     media_file_id VARCHAR(255),
     buttons JSONB,
+    content_contract_version INTEGER DEFAULT 2 NOT NULL,
+    revision BIGINT DEFAULT 1 NOT NULL,
+    media_source_account_id VARCHAR(36) CONSTRAINT fk_task_media_source_account REFERENCES accounts(account_id) ON DELETE SET NULL,
+    media_source_message_id BIGINT,
+    media_source_meta JSONB,
+    media_source_state VARCHAR(24) DEFAULT 'none' NOT NULL,
+    media_source_error_code VARCHAR(64),
+    media_source_verified_at TIMESTAMP,
 
     delete_previous BOOLEAN DEFAULT TRUE NOT NULL,
     pin_message BOOLEAN DEFAULT FALSE NOT NULL,
@@ -593,6 +601,35 @@ CREATE INDEX IF NOT EXISTS idx_task_user_trigger_shortcut ON scheduled_message_t
 CREATE UNIQUE INDEX IF NOT EXISTS uq_task_user_shortcut_slot
     ON scheduled_message_tasks(user_id, shortcut_slot)
     WHERE shortcut_slot IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS task_media_capture_sessions (
+    capture_id VARCHAR(36) PRIMARY KEY,
+    token_hash VARCHAR(64) NOT NULL UNIQUE,
+    task_id VARCHAR(36) NOT NULL REFERENCES scheduled_message_tasks(task_id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    account_id VARCHAR(36) NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+    actor_tg_user_id BIGINT NOT NULL,
+    expected_task_revision BIGINT NOT NULL,
+    prompt_message_id BIGINT,
+    source_message_id BIGINT,
+    saved_message_id BIGINT,
+    state VARCHAR(20) DEFAULT 'waiting' NOT NULL,
+    error_code VARCHAR(64),
+    expires_at TIMESTAMP NOT NULL,
+    consumed_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT task_media_capture_state_check
+        CHECK (state IN ('waiting', 'processing', 'completed', 'expired', 'cancelled', 'failed'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_task_media_capture_active
+    ON task_media_capture_sessions(task_id) WHERE state IN ('waiting', 'processing');
+CREATE INDEX IF NOT EXISTS idx_task_media_capture_task_state
+    ON task_media_capture_sessions(task_id, state);
+CREATE INDEX IF NOT EXISTS idx_task_media_capture_actor_prompt
+    ON task_media_capture_sessions(actor_tg_user_id, prompt_message_id);
+CREATE INDEX IF NOT EXISTS idx_task_media_capture_expires
+    ON task_media_capture_sessions(expires_at);
 
 -- ========================================
 -- 14) 任务日志

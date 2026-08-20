@@ -11,9 +11,10 @@ from telethon.extensions import html as telethon_html
 from telethon.tl import types
 
 from backend.bot.circuit.breaker import get_circuit_breaker
-from backend.bot.ui.keyboards import build_inline_buttons
 from backend.bot.safety.rate_limiter import get_rate_limiter
 from backend.database.schema.models import MediaType, ScheduledMessageTask
+from backend.scheduler.core.task_media_runtime import resolve_v2_task_media
+from backend.task_media.contract import TaskMediaError, validate_message_length
 
 TARGET_DELIVERY_SUSPENDED = "suspended"
 TELEGRAM_USERNAME_PATTERN = re.compile(r"@[A-Za-z0-9_]{5,32}")
@@ -310,89 +311,87 @@ async def do_send_message(
     media_ref_prefix: str,
 ) -> Optional[int]:
     """Send one task message and return sent message id."""
-    text = task.text
-    if text:
-        rate_limiter = get_rate_limiter()
-        text = rate_limiter.add_invisible_variation(text)
-    send_text, formatting_entities = build_telegram_text_and_entities(text)
-
-    buttons = build_inline_buttons(task.buttons)
-
-    def _is_button_markup_error(error: Exception) -> bool:
-        message = str(error).lower()
-        keywords = (
-            "button",
-            "reply markup",
-            "reply_markup",
-            "keyboard",
-            "inline",
-            "url invalid",
-            "bot",
-        )
-        return any(key in message for key in keywords)
-
-    async def _send_with_buttons(send_buttons):
-        if task.media_type != MediaType.NONE:
-            if not task.media_file_id:
-                raise ValueError("媒体任务缺少 media_file_id")
-
-            send_media = await resolve_task_media(
-                client=client,
-                media_file_id=task.media_file_id,
-                account_id=task.account_id,
-                media_ref_prefix=media_ref_prefix,
-            )
-
-            if isinstance(send_media, str) and os.path.isabs(send_media) and not os.path.exists(send_media):
-                raise FileNotFoundError(f"媒体文件不存在: {send_media}")
-
-            if task.media_type in {MediaType.PHOTO, MediaType.VIDEO, MediaType.ANIMATION}:
-                return await client.send_file(
-                    send_target,
-                    file=send_media,
-                    caption=send_text,
-                    buttons=send_buttons,
-                    parse_mode=None,
-                    formatting_entities=formatting_entities,
-                )
-            if task.media_type == MediaType.STICKER:
-                return await client.send_file(send_target, file=send_media, buttons=send_buttons)
-
-            raise ValueError(f"不支持的媒体类型: {task.media_type}")
-
-        return await client.send_message(
-            send_target,
-            send_text,
-            buttons=send_buttons,
-            parse_mode=None,
-            formatting_entities=formatting_entities,
-        )
-
+    send_text, formatting_entities = _prepare_task_content(task)
     if task.delete_previous and previous_message_id:
         try:
             await client.delete_messages(send_target, [previous_message_id])
-        except Exception as e:
+        except Exception as exc:
             logger.warning(
                 "删除上一条消息失败 task={}, previous_message_id={}: {}",
-                task.task_id, previous_message_id, e,
+                task.task_id, previous_message_id, exc,
             )
-
-    try:
-        msg = await _send_with_buttons(buttons)
-    except Exception as e:
-        if buttons and _is_button_markup_error(e):
-            logger.warning("任务 {} 按钮发送失败，自动降级为无按钮消息: {}", task.task_id, e)
-            msg = await _send_with_buttons(None)
-        else:
-            raise
-
-    if msg and task.pin_message:
+    message = await _send_task_content(
+        client=client,
+        task=task,
+        send_target=send_target,
+        send_text=send_text,
+        formatting_entities=formatting_entities,
+        media_ref_prefix=media_ref_prefix,
+    )
+    if message and task.pin_message:
         try:
-            await client.pin_message(send_target, msg.id, notify=False)
-        except Exception as e:
-            logger.warning("置顶消息失败 task={}: {}", task.task_id, e)
+            await client.pin_message(send_target, message.id, notify=False)
+        except Exception as exc:
+            logger.warning("置顶消息失败 task={}: {}", task.task_id, exc)
+    return message.id if message else None
 
-    return msg.id if msg else None
+
+def _prepare_task_content(task: ScheduledMessageTask):
+    text = task.text
+    if text:
+        text = get_rate_limiter().add_invisible_variation(text)
+    send_text, formatting_entities = build_telegram_text_and_entities(text)
+    validate_message_length(send_text, has_media=task.media_type != MediaType.NONE)
+    if task.buttons:
+        raise TaskMediaError(
+            "TASK_BUTTONS_UNSUPPORTED_FOR_USER_ACCOUNT",
+            "执行账号不是 Bot，任务消息不能携带按钮",
+        )
+    return send_text, formatting_entities
+
+
+async def _send_task_content(
+    *, client, task, send_target, send_text, formatting_entities, media_ref_prefix
+):
+    if task.media_type == MediaType.NONE:
+        return await client.send_message(
+            send_target,
+            send_text,
+            buttons=None,
+            parse_mode=None,
+            formatting_entities=formatting_entities,
+        )
+    send_media = await _resolve_send_media(
+        client=client, task=task, media_ref_prefix=media_ref_prefix
+    )
+    if task.media_type in {MediaType.PHOTO, MediaType.VIDEO, MediaType.ANIMATION}:
+        return await client.send_file(
+            send_target,
+            file=send_media,
+            caption=send_text,
+            buttons=None,
+            parse_mode=None,
+            formatting_entities=formatting_entities,
+        )
+    if task.media_type == MediaType.STICKER:
+        return await client.send_file(send_target, file=send_media, buttons=None)
+    raise ValueError(f"不支持的媒体类型: {task.media_type}")
+
+
+async def _resolve_send_media(*, client, task, media_ref_prefix):
+    if int(task.content_contract_version or 1) == 2:
+        return await resolve_v2_task_media(client=client, task=task)
+    if not task.media_file_id:
+        raise ValueError("V1 媒体任务缺少 media_file_id")
+    media = await resolve_task_media(
+        client=client,
+        media_file_id=task.media_file_id,
+        account_id=task.account_id,
+        media_ref_prefix=media_ref_prefix,
+    )
+    if isinstance(media, str) and os.path.isabs(media) and not os.path.exists(media):
+        raise FileNotFoundError(f"媒体文件不存在: {media}")
+    return media
 
 
 async def send_with_protections(
