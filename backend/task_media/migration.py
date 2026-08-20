@@ -9,6 +9,7 @@ from typing import Optional
 from sqlalchemy import select, update
 
 from backend.bot.account.manager import get_account_manager
+from backend.bot.account.reauth import is_reauth_required_account
 from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import MediaType, ScheduledMessageTask
 from backend.task_media.contract import TaskMediaError, classify_message_media, utc_now
@@ -134,6 +135,11 @@ async def migrate_account_batch(
 
 async def _open_migration_client(account_id: str):
     manager = get_account_manager()
+    account = await manager.get_account(account_id)
+    if is_reauth_required_account(account):
+        raise TaskMediaError(
+            "MIGRATION_ACCOUNT_REAUTH_REQUIRED", "迁移账号需要重新授权"
+        )
     try:
         client = await manager.get_client(account_id)
     except Exception as exc:
@@ -141,6 +147,11 @@ async def _open_migration_client(account_id: str):
             "MIGRATION_ACCOUNT_CLIENT_UNAVAILABLE", "迁移账号客户端连接失败"
         ) from exc
     if not client:
+        account = await manager.get_account(account_id)
+        if is_reauth_required_account(account):
+            raise TaskMediaError(
+                "MIGRATION_ACCOUNT_REAUTH_REQUIRED", "迁移账号需要重新授权"
+            )
         raise TaskMediaError(
             "MIGRATION_ACCOUNT_CLIENT_UNAVAILABLE", "迁移账号客户端不可用"
         )

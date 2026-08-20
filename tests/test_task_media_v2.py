@@ -288,6 +288,52 @@ async def test_migration_rpc_failure_is_retained_per_task():
 
 
 @pytest.mark.asyncio
+async def test_migration_reports_persisted_reauth_before_opening_client():
+    from backend.task_media.migration import _open_migration_client
+
+    manager = SimpleNamespace(
+        get_account=AsyncMock(
+            return_value=SimpleNamespace(
+                reauth_required=True,
+                reauth_reason="session_unauthorized",
+            )
+        ),
+        get_client=AsyncMock(),
+    )
+    with patch(
+        "backend.task_media.migration.get_account_manager", return_value=manager
+    ):
+        with pytest.raises(TaskMediaError) as exc:
+            await _open_migration_client("acc-1")
+    assert exc.value.code == "MIGRATION_ACCOUNT_REAUTH_REQUIRED"
+    manager.get_client.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_migration_reports_reauth_marked_while_opening_client():
+    from backend.task_media.migration import _open_migration_client
+
+    manager = SimpleNamespace(
+        get_account=AsyncMock(
+            side_effect=[
+                SimpleNamespace(reauth_required=False, reauth_reason=None),
+                SimpleNamespace(
+                    reauth_required=True,
+                    reauth_reason="session_unauthorized",
+                ),
+            ]
+        ),
+        get_client=AsyncMock(return_value=None),
+    )
+    with patch(
+        "backend.task_media.migration.get_account_manager", return_value=manager
+    ):
+        with pytest.raises(TaskMediaError) as exc:
+            await _open_migration_client("acc-1")
+    assert exc.value.code == "MIGRATION_ACCOUNT_REAUTH_REQUIRED"
+
+
+@pytest.mark.asyncio
 async def test_task_delete_is_rejected_during_media_copy():
     from backend.h5_backend.services.task.v2_payload import (
         reject_task_delete_while_capturing,
