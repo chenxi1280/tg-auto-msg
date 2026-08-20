@@ -167,7 +167,7 @@ jobs:
         run: |
           set -euo pipefail
           BASE_DIR="${PRODUCTION_BASE_DIR:-/data/tgmsg}"
-          BRANCHES="${RELEASE_BRANCHES:-release main master}"
+          BRANCHES="${RELEASE_BRANCHES:-release master main}"
           bash deploy/release.sh \
             --host production-server \
             --base-dir "${BASE_DIR}" \

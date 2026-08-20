@@ -8,7 +8,7 @@ BASE_DIR="${BASE_DIR:-/data/tgmsg}"
 REF_NAME="${REF_NAME:-HEAD}"
 ALLOW_DIRTY="${ALLOW_DIRTY:-0}"
 KEEP_ARCHIVE="${KEEP_ARCHIVE:-0}"
-EXPECTED_BRANCHES="${EXPECTED_BRANCHES:-release main master}"
+EXPECTED_BRANCHES="${EXPECTED_BRANCHES:-release master main}"
 CONFIRM_PRODUCTION_DEPLOY="${CONFIRM_PRODUCTION_DEPLOY:-0}"
 IMAGE_NAMESPACE="${IMAGE_NAMESPACE:-ghcr.io/chenxi1280}"
 STATIC_KEEP_RELEASES="${STATIC_KEEP_RELEASES:-5}"
@@ -35,7 +35,7 @@ Options:
   --allow-dirty         Allow releasing with local uncommitted changes
   --confirm-production-deploy
                         Confirm emergency local deploy to production
-  --branch-list "..."   Allowed release branches, default "release main master"
+  --branch-list "..."   Allowed release branches, default "release master main"
   --ssh-opt OPT         Extra ssh/scp option, can be repeated
   -h, --help            Show this help
 
@@ -201,10 +201,6 @@ done
 if [[ "$branch_allowed" != "1" ]]; then
   echo "Refusing to release from branch '${current_branch}'. Allowed branches: ${EXPECTED_BRANCHES}" >&2
   exit 1
-fi
-
-if [[ "$current_branch" == "master" ]]; then
-  echo "Warning: releasing from legacy branch 'master'. Migrate to 'main' when possible." >&2
 fi
 
 if [[ "$ALLOW_DIRTY" != "1" ]] && [[ -n "$(git status --porcelain)" ]]; then

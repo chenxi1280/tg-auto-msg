@@ -92,12 +92,12 @@ python -m pytest -q
 ```
 
 GitHub Actions 约定：
-- `pull_request` 与 `main` 运行 `Python Checks`
+- `pull_request` 与 `master` 运行 `Python Checks`
 - `release` 分支只运行 `Deploy Production`，并在 workflow 内先检查再部署
 - 手动触发 `Deploy Production` 时，同样会先跑检查再部署
 
 当前标准生产发布路径：
-1. 功能代码合入 `main`，由 `Python Checks` 做静态检查与单测
+1. 功能代码合入 `master`，由 `Python Checks` 做静态检查与单测
 2. 需要上线时，推送 `release`，或手动触发 `Deploy Production`
 3. `Deploy Production` 在 GitHub Actions 中再次执行 `ruff`、`pylint`、`unittest`
 4. 检查通过后，GitHub Actions 构建并推送后端/前端 GHCR 镜像
@@ -202,7 +202,7 @@ python main.py
 
 当前生产环境的标准入口不是 Supervisor，也不是本地直接发版，而是 GitHub Actions：
 
-1. `pull_request` 与 `main` 只跑 `Python Checks`
+1. `pull_request` 与 `master` 只跑 `Python Checks`
 2. `release` 分支触发 `Deploy Production`
 3. `Deploy Production` 先跑检查，再通过 SSH 调用 `deploy/release.sh`
 4. 服务器执行 `deploy/server-install-release.sh`

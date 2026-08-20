@@ -168,7 +168,7 @@ jobs:
         run: |
           set -euo pipefail
           BASE_DIR="${SECONDARY_PRODUCTION_BASE_DIR:-/data/tgmsg}"
-          BRANCHES="${SECONDARY_RELEASE_BRANCHES:-release main master}"
+          BRANCHES="${SECONDARY_RELEASE_BRANCHES:-release master main}"
           STATIC_DIR="${SECONDARY_TGMSG_FRONTEND_STATIC_BASE_DIR:-/data/infra/www/tgmsgus.telema.cn}"
           test -n "${STATIC_DIR}"
           TGMSG_FRONTEND_STATIC_BASE_DIR="${STATIC_DIR}" \

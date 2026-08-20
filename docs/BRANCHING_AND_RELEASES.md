@@ -6,12 +6,12 @@
 
 ## 1. 当前真实分支职责
 
-当前仓库不是 `main` 直接自动上线，而是：
+当前仓库不是 `master` 直接自动上线，而是：
 
-- `main`
+- `master`
   - 主要开发主干
   - 合并功能与修复
-  - `pull_request` 与 `push main` 只跑 `Python Checks`
+  - `pull_request` 与 `push master` 只跑 `Python Checks`
 - `release`
   - 当前生产发布分支
   - `push release` 会触发 `Deploy Production`
@@ -27,14 +27,14 @@
 推荐节奏：
 
 1. 在 `feature/*` 或 `fix/*` 开发
-2. 提交 PR，合入 `main`
-3. `main` 上通过 `Python Checks`
+2. 提交 PR，合入 `master`
+3. `master` 上通过 `Python Checks`
 4. 需要上线时，把已确认要发布的提交同步到 `release`
 5. push `release`，触发 `Deploy Production`
 
 这意味着：
 
-- `main` 是主要集成分支
+- `master` 是主要集成分支
 - `release` 是当前生产发布入口
 - 生产上线不依赖本地手工覆盖目录
 
@@ -136,11 +136,11 @@ ls -lah /data/tgmsg/releases
 
 后续如果要继续简化流程，可以考虑把：
 
-- `main` 既作为开发主干，也作为唯一发布主干
+- `master` 既作为开发主干，也作为唯一发布主干
 
 但这是未来可选优化，不是当前真实线上流程。当前仍以：
 
-- `main` 做检查
+- `master` 做检查
 - `release` 做部署
 
 为准。

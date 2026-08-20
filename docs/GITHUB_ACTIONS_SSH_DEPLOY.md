@@ -12,8 +12,8 @@
 
 当前仓库的发布链路如下：
 
-1. 代码合入 `main`
-2. `pull_request` 与 `push main` 运行 `Python Checks`
+1. 代码合入 `master`
+2. `pull_request` 与 `push master` 运行 `Python Checks`
 3. `push release` 或手动点击 `Deploy Production`
 4. `Deploy Production` 先重新运行：
    - `ruff`
@@ -25,7 +25,7 @@
 
 重要结论：
 
-- `main` 当前不会自动部署
+- `master` 当前不会自动部署
 - `release` 是当前自动部署分支
 - 手动 `workflow_dispatch` 也会先检查再部署
 
@@ -54,7 +54,7 @@ Settings -> Secrets and variables -> Actions
 - `PRODUCTION_BASE_DIR`
   - 默认 `/data/tgmsg`
 - `RELEASE_BRANCHES`
-  - 默认 `release main master`
+  - 默认 `release master main`
 
 ## 3. 首次准备服务器
 
@@ -119,7 +119,7 @@ ADMIN_BOOTSTRAP_PASSWORD=
 触发：
 
 - `pull_request`
-- `push main`
+- `push master`
 
 动作：
 
@@ -177,7 +177,7 @@ bash deploy/release.sh --host production-server --base-dir "${PRODUCTION_BASE_DI
   - 默认 `/data/tgmsg`
   - 新服务器独立运行时可以继续使用默认值
 - `SECONDARY_RELEASE_BRANCHES`
-  - 默认 `release main master`
+  - 默认 `release master main`
 - `SECONDARY_TGMSG_FRONTEND_STATIC_BASE_DIR`
   - 默认 `/data/infra/www/tgmsgus.telema.cn`
   - 发布脚本会把前端静态文件释放到该目录下的 `current`

@@ -18,8 +18,8 @@
 
 标准链路如下：
 
-1. 开发分支合入 `main`
-2. `pull_request` 与 `main` 自动运行 `Python Checks`
+1. 开发分支合入 `master`
+2. `pull_request` 与 `master` 自动运行 `Python Checks`
 3. 需要上线时，push 到 `release`，或手动触发 `Deploy Production`
 4. `Deploy Production` 在 GitHub Actions 中再次运行：
    - `ruff`
@@ -36,7 +36,7 @@
 当前仓库有两条相关 workflow：
 
 - `Python Checks`
-  - 触发：`pull_request`、`push main`
+  - 触发：`pull_request`、`push master`
   - 用途：只检查，不部署
 - `Deploy Production`
   - 触发：`push release`、手动 `workflow_dispatch`
@@ -44,7 +44,7 @@
 
 这意味着：
 
-- `main` 不会自动上线
+- `master` 不会自动上线
 - `release` 才是当前生产发布入口
 - 手动点 `Deploy Production` 也会先跑同一套检查
 
@@ -71,7 +71,7 @@
 - `PRODUCTION_BASE_DIR`
   - 默认 `/data/tgmsg`
 - `RELEASE_BRANCHES`
-  - 默认 `release main master`
+  - 默认 `release master main`
 
 ### 3.2 服务器目录
 
