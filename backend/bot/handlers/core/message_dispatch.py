@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from backend.bot.state.fsm import FSMState
-from backend.bot.handlers.task.target_selection import handle_target_search_input
+from backend.bot.handlers.task.target_search import handle_target_search_input
+from backend.bot.handlers.task.creation import handle_task_creation_text_input
 from backend.bot.handlers.task.editing import (
     handle_interval_input,
     handle_shortcut_label_input,
@@ -26,6 +27,7 @@ _TEXT_STATE_HANDLERS = {
     FSMState.WAIT_START_AT: handle_start_at_input,
     FSMState.WAIT_END_AT: handle_end_at_input,
     FSMState.WAIT_SHORTCUT_LABEL: handle_shortcut_label_input,
+    FSMState.WAIT_TASK_CREATE_TEXT: handle_task_creation_text_input,
 }
 
 async def dispatch_message_by_state(event, user_id: int, state: FSMState, task_id: str):
