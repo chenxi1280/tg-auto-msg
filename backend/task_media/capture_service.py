@@ -18,6 +18,7 @@ from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import Account, ScheduledMessageTask, SystemSession
 from backend.database.schema.task_media_models import TaskMediaCaptureSession
 from backend.task_media.capture_authorization import (
+    UNCLAIMED_CAPTURE_ACTOR_ID,
     resolve_capture_actor as _resolve_capture_actor,
     validate_capture_target as _validate_capture_target,
 )
@@ -196,7 +197,11 @@ async def activate_capture_from_start(event, token: str) -> bool:
             return True
         actor_tg_user_id = int(event.sender_id)
         linked_user_id = await get_linked_system_user_id(session, actor_tg_user_id)
-        error = _validate_activation(capture, actor_tg_user_id)
+        error = _validate_activation(
+            capture,
+            actor_tg_user_id,
+            linked_user_id=linked_user_id,
+        )
         if error is None:
             task = await session.get(ScheduledMessageTask, capture.task_id)
             account = await session.get(Account, capture.account_id)
@@ -218,10 +223,20 @@ async def activate_capture_from_start(event, token: str) -> bool:
     return True
 
 
-def _validate_activation(capture: TaskMediaCaptureSession, actor_tg_user_id: int):
-    if capture.actor_tg_user_id != actor_tg_user_id:
+def _validate_activation(
+    capture: TaskMediaCaptureSession,
+    actor_tg_user_id: int,
+    *,
+    linked_user_id: int | None,
+):
+    if linked_user_id != capture.user_id:
         return TaskMediaError(
             "MEDIA_CAPTURE_OPERATOR_MISMATCH", "请使用当前系统账号绑定的 Telegram 用户打开此链接"
+        )
+    allowed_actor_ids = (UNCLAIMED_CAPTURE_ACTOR_ID, actor_tg_user_id)
+    if capture.actor_tg_user_id not in allowed_actor_ids:
+        return TaskMediaError(
+            "MEDIA_CAPTURE_OPERATOR_MISMATCH", "该媒体设置链接已由另一个 Telegram 用户使用"
         )
     if capture.expires_at <= utc_now():
         capture.state = "expired"
@@ -229,6 +244,7 @@ def _validate_activation(capture: TaskMediaCaptureSession, actor_tg_user_id: int
         return TaskMediaError("MEDIA_CAPTURE_EXPIRED", "媒体设置链接已过期")
     if capture.state != "waiting" or capture.prompt_message_id is not None:
         return TaskMediaError("MEDIA_CAPTURE_ALREADY_CONSUMED", "媒体设置链接已使用")
+    capture.actor_tg_user_id = actor_tg_user_id
     return None
 
 

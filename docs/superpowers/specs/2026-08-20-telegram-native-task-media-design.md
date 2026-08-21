@@ -120,7 +120,7 @@ FSM 只负责展示，捕获事实必须持久化，不能只存在进程内存�
 | `task_id` | UUID | 目标任务；新建流程必须先持久化 `enabled=false` 任务 |
 | `user_id` | bigint | 任务所属系统用户 |
 | `account_id` | UUID | 冻结的执行账号 |
-| `actor_tg_user_id` | bigint | 允许提交媒体的 Bot 操作账号 Telegram UID |
+| `actor_tg_user_id` | bigint | Bot 操作账号 Telegram UID；H5 创建时为 `0`，首次授权打开时原子认领 |
 | `expected_task_revision` | bigint | 捕获开始时的任务版本 |
 | `prompt_message_id` | bigint | Bot 媒体提示消息 ID |
 | `source_message_id` | bigint nullable | 验证后的 Bot update 消息 ID |
@@ -144,6 +144,7 @@ MEDIA_CAPTURE_TTL_SECONDS=600
 - token 使用 192-bit CSPRNG 生成并编码为 base64url，原文只返回一次；
 - 数据库、日志和状态接口只保存或输出 token hash，不回传 token 原文；
 - token 只用于定位 capture，不代表授权，仍需验证 actor、任务、账号、revision 和 TTL；
+- H5 创建的 capture 不提前猜测 Telegram 操作身份，首次打开时仅允许绑定到同一系统用户的 actor 原子认领；
 - capture 只能从 `waiting` 原子切换到 `processing` 一次；
 - 进程重启后仍可读取状态；
 - 过期任务返回 `MEDIA_CAPTURE_EXPIRED`，不能继续写入。
@@ -151,10 +152,11 @@ MEDIA_CAPTURE_TTL_SECONDS=600
 ## 6. Bot 媒体捕获流程
 
 1. 新建流程的任务必须已经以 `enabled=false` 持久化；首次媒体设置完成前不得启用。编辑已有任务时继续由 revision CAS 防止覆盖并发修改。
-2. 创建 capture，冻结 `task_id/account_id/actor_tg_user_id/expected_task_revision`。
+2. 创建 capture，冻结 `task_id/account_id/expected_task_revision`；Bot 内创建时同时冻结
+   actor，H5 创建时等待首次授权 actor 认领。
 3. Bot 发送带 capture 标识的媒体提示，并保存 `prompt_message_id`。
 4. 用户必须回复这条提示消息，并发送一份媒体。
-5. Bot 校验 reply anchor、capture token、actor UID、TTL 和 capture state。
+5. Bot 校验 reply anchor、capture token、actor 与系统用户绑定、TTL 和 capture state。
 6. Bot 根据消息结构自动判定 `photo/video/animation`，不展示媒体模式选择。
 7. 执行账号使用 Bot update 中的 `message.media` Telegram 原生引用直接复制到
    Saved Messages，不下载文件，不携带来源 caption 和按钮。
@@ -311,7 +313,6 @@ MAX_TEXT_MESSAGE_UTF16=4096
 创建阶段：
 
 ```text
-MEDIA_CAPTURE_OPERATOR_UNAVAILABLE
 MEDIA_CAPTURE_OPERATOR_UNAUTHORIZED
 MEDIA_CAPTURE_OPERATOR_MISMATCH
 MEDIA_CAPTURE_ACCOUNT_UNAVAILABLE
