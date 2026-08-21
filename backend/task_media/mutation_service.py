@@ -101,3 +101,21 @@ async def fail_capture(capture_id: str, error_code: str) -> None:
             )
             .values(state="failed", error_code=error_code, consumed_at=utc_now())
         )
+
+
+async def release_capture_for_retry(capture_id: str, error_code: str) -> None:
+    """Return a failed Telegram copy claim to its original reply prompt."""
+    async with get_async_session() as session:
+        await session.execute(
+            update(TaskMediaCaptureSession)
+            .where(
+                TaskMediaCaptureSession.capture_id == capture_id,
+                TaskMediaCaptureSession.state == "processing",
+            )
+            .values(
+                state="waiting",
+                error_code=error_code,
+                source_message_id=None,
+                consumed_at=None,
+            )
+        )

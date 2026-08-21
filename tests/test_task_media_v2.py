@@ -24,7 +24,6 @@ from backend.task_media.contract import (
     validate_message_length,
 )
 from backend.task_media.migration import V1TaskSnapshot, parse_legacy_media_ref
-from backend.task_media.telegram_gateway import copy_bot_message_to_saved
 
 
 def _message(media, **values):
@@ -220,54 +219,6 @@ async def test_new_capture_does_not_cancel_processing_capture():
         await _replace_waiting_capture(session, "task-1")
     assert exc.value.detail["code"] == "MEDIA_CAPTURE_PROCESSING"
     assert processing.state == "processing"
-
-
-@pytest.mark.asyncio
-async def test_saved_message_readback_validation_uses_copy_error_code():
-    bot_media = MessageMediaPhoto(photo=SimpleNamespace(id=101))
-    bot_message = _message(bot_media, id=10, reply_to_msg_id=5)
-    invalid_saved = _message(_document([DocumentAttributeFilename("report.pdf")]))
-    client = SimpleNamespace(
-        get_messages=AsyncMock(return_value=invalid_saved),
-        send_file=AsyncMock(return_value=SimpleNamespace(id=20)),
-    )
-    manager = SimpleNamespace(get_client=AsyncMock(return_value=client))
-
-    with patch(
-        "backend.task_media.telegram_gateway.get_account_manager",
-        return_value=manager,
-    ):
-        with pytest.raises(TaskMediaError) as exc:
-            await copy_bot_message_to_saved(account_id="acc-1", bot_message=bot_message)
-    assert exc.value.code == "MEDIA_SOURCE_COPY_FAILED"
-    assert client.send_file.await_args.kwargs["file"] is bot_media
-
-
-@pytest.mark.asyncio
-async def test_operator_media_copies_directly_to_execution_account_saved_messages():
-    bot_media = MessageMediaPhoto(photo=SimpleNamespace(id=101))
-    bot_message = _message(bot_media, id=10, reply_to_msg_id=5)
-    saved = _message(bot_media, id=20)
-    client = SimpleNamespace(
-        get_messages=AsyncMock(return_value=saved),
-        send_file=AsyncMock(return_value=SimpleNamespace(id=20)),
-    )
-    manager = SimpleNamespace(get_client=AsyncMock(return_value=client))
-
-    with patch(
-        "backend.task_media.telegram_gateway.get_account_manager",
-        return_value=manager,
-    ):
-        copied = await copy_bot_message_to_saved(
-            account_id="execution-account", bot_message=bot_message
-        )
-
-    assert copied.media_type == "photo"
-    assert copied.source_message_id == 10
-    assert copied.saved_message_id == 20
-    client.send_file.assert_awaited_once_with(
-        "me", file=bot_media, caption=None, buttons=None
-    )
 
 
 def test_capture_context_allows_operator_and_execution_account_to_differ():
@@ -474,8 +425,11 @@ def test_new_media_surfaces_do_not_accept_server_file_uploads():
     assert '<el-form-item v-if="editingTaskId" label="Telegram 媒体' in editor_source
     assert "createAsMediaDraft" not in editor_source
     assert "H5 创建任务请填写消息文本" in editor_source
+    assert "iter_download" in gateway_source
     assert "download_media" not in gateway_source
     assert "BytesIO" not in gateway_source
+    assert "NamedTemporaryFile" not in gateway_source
+    assert "TemporaryDirectory" not in gateway_source
     assert 'ScheduledMessageTask.media_source_state != "invalid"' in migration_source
 
 

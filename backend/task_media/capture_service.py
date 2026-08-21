@@ -29,7 +29,11 @@ from backend.task_media.contract import (
     utc_now,
     validate_message_length,
 )
-from backend.task_media.mutation_service import fail_capture, update_task_from_capture
+from backend.task_media.mutation_service import (
+    fail_capture,
+    release_capture_for_retry,
+    update_task_from_capture,
+)
 from backend.task_media.telegram_gateway import copy_bot_message_to_saved
 
 MEDIA_CAPTURE_TTL_SECONDS = 600
@@ -220,18 +224,24 @@ async def try_consume_capture_reply(event) -> bool:
 
     try:
         copied = await copy_bot_message_to_saved(
+            source_client=event.client,
             account_id=capture.account_id,
             bot_message=event.message,
         )
-        await _complete_capture(capture.capture_id, copied)
     except TaskMediaError as exc:
-        await fail_capture(capture.capture_id, exc.code)
+        await release_capture_for_retry(capture.capture_id, exc.code)
         logger.warning(
-            "task media capture failed: capture_id={}, account_id={}, error_code={}",
+            "task media capture copy released for retry: capture_id={}, account_id={}, error_code={}",
             capture.capture_id,
             capture.account_id,
             exc.code,
         )
+        await event.respond(f"❌ {exc.code}：{exc}\n请继续回复原提示消息重试。")
+        return True
+    try:
+        await _complete_capture(capture.capture_id, copied)
+    except TaskMediaError as exc:
+        await fail_capture(capture.capture_id, exc.code)
         await event.respond(f"❌ {exc.code}：{exc}")
         return True
     await event.respond("✅ 媒体已保存到执行账号的 Telegram 收藏夹，并已更新任务。")
