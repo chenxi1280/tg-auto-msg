@@ -104,8 +104,9 @@ Bot 操作账号是两个独立身份，执行账号只负责保存和发送任�
 ### 4.2 Owner 管理多个账号
 
 Owner 在操作账号 A 的 Bot 会话或 H5 中为执行账号 B 点击“设置媒体”时，继续使用
-操作账号 A 打开 deep link 并提交媒体，不要求切换到账号 B。Bot 收到 token 后重新
-验证操作账号 A 与系统用户的绑定，以及任务、执行账号、revision 和过期时间。
+操作账号 A 提交媒体，不要求切换到账号 B。H5 入口通过一次性 deep link 定位 capture；
+Bot 会话内的入口直接通过内部 `capture_id` 激活，不生成链接后再拆解 token。两类入口都要
+重新验证操作账号 A 与系统用户的绑定，以及任务、执行账号、revision 和过期时间。
 
 ## 5. 可持久媒体捕获会话
 
@@ -154,9 +155,10 @@ MEDIA_CAPTURE_TTL_SECONDS=600
 1. 新建流程的任务必须已经以 `enabled=false` 持久化；首次媒体设置完成前不得启用。编辑已有任务时继续由 revision CAS 防止覆盖并发修改。
 2. 创建 capture，冻结 `task_id/account_id/expected_task_revision`；Bot 内创建时同时冻结
    actor，H5 创建时等待首次授权 actor 认领。
-3. Bot 发送带 capture 标识的媒体提示，并保存 `prompt_message_id`。
+3. H5 deep link 使用 token hash 定位 capture；Bot 内入口使用 `capture_id` 定位 capture。
+   验证通过后 Bot 发送带 capture 标识的媒体提示，并保存 `prompt_message_id`。
 4. 用户必须回复这条提示消息，并发送一份媒体。
-5. Bot 校验 reply anchor、capture token、actor 与系统用户绑定、TTL 和 capture state。
+5. Bot 校验 reply anchor、capture、actor 与系统用户绑定、TTL 和 capture state。
 6. Bot 根据消息结构自动判定 `photo/video/animation`，不展示媒体模式选择。
 7. 执行账号使用 Bot update 中的 `message.media` Telegram 原生引用直接复制到
    Saved Messages，不下载文件，不携带来源 caption 和按钮。
@@ -417,6 +419,8 @@ WHERE task_id = :task_id
 - CAS 冲突不覆盖新任务；
 - H5 普通编辑遗漏媒体字段时保留媒体；
 - H5 新建任务不展示媒体入口，且空文本不能创建任务；
+- Bot 内媒体入口不生成 deep link 后再解析 token；
+- Bot 帮助文案不宣传贴纸或消息按钮能力；
 - H5 不存在文件 input 和媒体 multipart API；
 - 媒体链路不调用 `download_media`，不创建文件字节缓冲；
 - caption 使用 UTF-16 计数并在最终变化后校验；

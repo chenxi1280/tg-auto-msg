@@ -1,7 +1,7 @@
 """Task editing flows for Telegram bot handlers."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -10,11 +10,8 @@ from telethon import events
 from backend.bot.state.fsm import FSMState, fsm_storage
 from backend.bot.ui.keyboards import (
     get_cancel_keyboard,
-    get_end_time_keyboard,
-    get_hour_select_keyboard,
     get_interval_keyboard,
     get_shortcut_slot_keyboard,
-    get_start_time_keyboard,
 )
 from backend.bot.handlers.core.helpers import (
     format_buttons as _format_buttons,
@@ -25,14 +22,14 @@ from backend.bot.handlers.task.queries import get_user_task as _get_user_task
 from backend.bot.ui.messages import *
 from backend.database.schema.models import MediaType, ScheduledMessageTask, TaskTriggerMode
 from backend.database.runtime.session import get_async_session
-from backend.task_media.capture_service import (
-    activate_capture_from_start,
-    create_capture,
-)
+from backend.task_media.capture_activation import activate_capture_for_actor
+from backend.task_media.capture_service import create_capture
 from backend.task_media.contract import TaskMediaError, validate_message_length
 
 MIN_REPEAT_INTERVAL_MINUTES = 60
 MAX_REPEAT_INTERVAL_MINUTES = 43200
+MAX_MANUAL_TASKS = 3
+SHORTCUT_SLOTS = (1, 2, 3)
 
 
 async def _show_task_settings(event, user_id: int, task_id: str):
@@ -67,46 +64,6 @@ async def _manual_shortcut_label_exists(session, *, user_id: int, label: str, cu
     return result.scalar_one_or_none() is not None
 
 
-def _next_midnight(base_dt: datetime) -> datetime:
-    """Return next midnight based on local datetime."""
-    next_day = base_dt.date() + timedelta(days=1)
-    return datetime.combine(next_day, datetime.min.time())
-
-
-async def _set_start_at_value(event, user_id: int, task_id: str, timestamp: int):
-    """Persist selected start time."""
-    async with get_async_session() as session:
-        task = await _get_user_task(session, task_id, user_id)
-        if task:
-            if task.end_at and timestamp >= task.end_at:
-                await _notify_event(event, ERROR_END_BEFORE_START, alert=True)
-                return
-            task.start_at = timestamp
-            task.revision = int(task.revision) + 1
-            await session.commit()
-
-    fsm_storage.reset_state(user_id)
-    await _notify_event(event, SUCCESS_START_AT_UPDATED)
-    await _show_task_settings(event, user_id, task_id)
-
-
-async def _set_end_at_value(event, user_id: int, task_id: str, timestamp: int):
-    """Persist selected end time."""
-    async with get_async_session() as session:
-        task = await _get_user_task(session, task_id, user_id)
-        if task:
-            if task.start_at and timestamp <= task.start_at:
-                await _notify_event(event, ERROR_END_BEFORE_START, alert=True)
-                return
-            task.end_at = timestamp
-            task.revision = int(task.revision) + 1
-            await session.commit()
-
-    fsm_storage.reset_state(user_id)
-    await _notify_event(event, SUCCESS_END_AT_UPDATED)
-    await _show_task_settings(event, user_id, task_id)
-
-
 async def toggle_delete_previous(event, user_id: int, task_id: str):
     """切换删除上一条设置。"""
     async with get_async_session() as session:
@@ -135,54 +92,80 @@ async def toggle_trigger_mode(event, user_id: int, task_id: str):
         task = await _get_user_task(session, task_id, user_id)
         if task:
             current_mode = str(task.trigger_mode or TaskTriggerMode.SCHEDULED.value)
-            next_mode = (
-                TaskTriggerMode.MANUAL_SHORTCUT.value
-                if current_mode != TaskTriggerMode.MANUAL_SHORTCUT.value
-                else TaskTriggerMode.SCHEDULED.value
-            )
+            next_mode = _opposite_trigger_mode(current_mode)
             task.trigger_mode = next_mode
             if next_mode == TaskTriggerMode.MANUAL_SHORTCUT.value:
-                if not task_has_content(task):
-                    task.trigger_mode = current_mode
-                    await _notify_event(event, "请先补充文本或媒体内容后，再切换为手动任务。", alert=True)
+                configured = await _configure_manual_trigger(
+                    session=session,
+                    task=task,
+                    previous_mode=current_mode,
+                    event=event,
+                )
+                if not configured:
                     return
-                existing_manual_tasks = (
-                    await session.execute(
-                        select(ScheduledMessageTask).where(
-                            ScheduledMessageTask.user_id == task.user_id,
-                            ScheduledMessageTask.trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value,
-                            ScheduledMessageTask.task_id != task.task_id,
-                        )
-                    )
-                ).scalars().all()
-                if len(existing_manual_tasks) >= 3:
-                    await _notify_event(event, "当前最多只能保留 3 个手动任务，请先删除一个后再试。", alert=True)
-                    return
-                used_slots = {int(item.shortcut_slot) for item in existing_manual_tasks if item.shortcut_slot is not None}
-                task.shortcut_slot = next((slot for slot in (1, 2, 3) if slot not in used_slots), None)
-                task.shortcut_label = str(task.shortcut_label or "").strip() or str(task.title or "手动任务").strip()[:20]
-                if await _manual_shortcut_label_exists(
-                    session,
-                    user_id=task.user_id,
-                    label=task.shortcut_label,
-                    current_task_id=task.task_id,
-                ):
-                    await _notify_event(event, "手动任务按钮名称已存在，请先修改任务名称或快捷名称。", alert=True)
-                    return
-                task.next_run_at = None
             else:
-                task.shortcut_slot = None
-                task.shortcut_label = None
-                if task.enabled and task.next_run_at is None:
-                    now_ts = int(datetime.now().timestamp())
-                    start_at_ts = int(task.start_at or 0)
-                    task.next_run_at = max(now_ts, start_at_ts) if start_at_ts > 0 else now_ts
+                _configure_scheduled_trigger(task)
             task.revision = int(task.revision) + 1
             await session.commit()
     from backend.bot.onboarding import get_onboarding_service
     await get_onboarding_service().sync_home_reply_keyboard(user_id)
     await _notify_event(event, SUCCESS_TRIGGER_MODE_UPDATED)
     await _show_task_settings(event, user_id, task_id)
+
+
+def _opposite_trigger_mode(current_mode: str) -> str:
+    if current_mode == TaskTriggerMode.MANUAL_SHORTCUT.value:
+        return TaskTriggerMode.SCHEDULED.value
+    return TaskTriggerMode.MANUAL_SHORTCUT.value
+
+
+async def _configure_manual_trigger(*, session, task, previous_mode: str, event) -> bool:
+    if not task_has_content(task):
+        task.trigger_mode = previous_mode
+        await _notify_event(event, "请先补充文本或媒体内容后，再切换为手动任务。", alert=True)
+        return False
+    manual_tasks = (
+        await session.execute(
+            select(ScheduledMessageTask).where(
+                ScheduledMessageTask.user_id == task.user_id,
+                ScheduledMessageTask.trigger_mode == TaskTriggerMode.MANUAL_SHORTCUT.value,
+                ScheduledMessageTask.task_id != task.task_id,
+            )
+        )
+    ).scalars().all()
+    if len(manual_tasks) >= MAX_MANUAL_TASKS:
+        await _notify_event(event, "当前最多只能保留 3 个手动任务，请先删除一个后再试。", alert=True)
+        return False
+    used_slots = {
+        int(item.shortcut_slot)
+        for item in manual_tasks
+        if item.shortcut_slot is not None
+    }
+    task.shortcut_slot = next(
+        (slot for slot in SHORTCUT_SLOTS if slot not in used_slots), None
+    )
+    current_label = str(task.shortcut_label or "").strip()
+    task.shortcut_label = current_label or str(task.title or "手动任务").strip()[:20]
+    if await _manual_shortcut_label_exists(
+        session,
+        user_id=task.user_id,
+        label=task.shortcut_label,
+        current_task_id=task.task_id,
+    ):
+        await _notify_event(event, "手动任务按钮名称已存在，请先修改任务名称或快捷名称。", alert=True)
+        return False
+    task.next_run_at = None
+    return True
+
+
+def _configure_scheduled_trigger(task) -> None:
+    task.shortcut_slot = None
+    task.shortcut_label = None
+    if not task.enabled or task.next_run_at is not None:
+        return
+    now_ts = int(datetime.now().timestamp())
+    start_at_ts = int(task.start_at or 0)
+    task.next_run_at = max(now_ts, start_at_ts) if start_at_ts > 0 else now_ts
 
 
 async def show_shortcut_slot_selection(event, user_id: int, task_id: str):
@@ -360,11 +343,18 @@ async def start_edit_media(event, user_id: int, task_id: str):
             expected_revision=revision,
             actor_tg_user_id=int(event.sender_id),
         )
-        token = capture.bot_deep_link.rsplit("media_", 1)[1]
         fsm_storage.reset_state(user_id)
-        await activate_capture_from_start(event, token)
+        await activate_capture_for_actor(event, capture.capture_id)
     except HTTPException as exc:
-        await _notify_event(event, str(exc.detail), alert=True)
+        await _notify_event(event, _http_detail_text(exc), alert=True)
+
+
+def _http_detail_text(exc: HTTPException) -> str:
+    if not isinstance(exc.detail, dict):
+        return str(exc.detail)
+    code = str(exc.detail.get("code") or "")
+    message = str(exc.detail.get("message") or "媒体设置失败")
+    return f"{code}：{message}" if code else message
 
 
 async def start_edit_buttons(event, user_id: int, task_id: str):
@@ -443,143 +433,3 @@ async def handle_interval_input(event, user_id: int, task_id: str, text: str):
     updated = await set_interval(event, user_id, task_id, interval)
     if updated:
         fsm_storage.reset_state(user_id)
-
-
-async def start_edit_hours(event, user_id: int, task_id: str):
-    """开始编辑时段。"""
-    fsm_storage.set_state(user_id, FSMState.WAIT_DAY_START)
-    fsm_storage.update_data(user_id, task_id=task_id)
-    keyboard = get_hour_select_keyboard(task_id, for_start=True)
-    await event.edit(SELECT_START_HOUR, buttons=keyboard, parse_mode="markdown")
-
-
-async def set_hour(event, user_id: int, task_id: str, is_start: bool, hour: int):
-    """设置小时。"""
-    data = fsm_storage.get_data(user_id)
-
-    if is_start:
-        fsm_storage.set_state(user_id, FSMState.WAIT_DAY_END)
-        fsm_storage.update_data(user_id, day_start_hour=hour)
-        keyboard = get_hour_select_keyboard(task_id, for_start=False)
-        await event.edit(SELECT_END_HOUR, buttons=keyboard, parse_mode="markdown")
-        return
-
-    day_start_hour = data.get("day_start_hour")
-    day_end_hour = hour
-    async with get_async_session() as session:
-        task = await _get_user_task(session, task_id, user_id)
-        if task:
-            task.day_start_hour = day_start_hour
-            task.day_end_hour = day_end_hour
-            task.revision = int(task.revision) + 1
-            await session.commit()
-
-    fsm_storage.reset_state(user_id)
-    await event.answer(
-        SUCCESS_TIME_RANGE_UPDATED.format(start=day_start_hour, end=day_end_hour)
-    )
-    await _show_task_settings(event, user_id, task_id)
-
-
-async def set_hours_allday(event, user_id: int, task_id: str):
-    """设置发送时段为全天。"""
-    async with get_async_session() as session:
-        task = await _get_user_task(session, task_id, user_id)
-        if task:
-            task.day_start_hour = 0
-            # 调度判断是 start <= hour < end，全天应设置为 [0, 24)。
-            task.day_end_hour = 24
-            task.revision = int(task.revision) + 1
-            await session.commit()
-
-    fsm_storage.reset_state(user_id)
-    await event.answer(SUCCESS_TIME_RANGE_UPDATED.format(start=0, end=24))
-    await _show_task_settings(event, user_id, task_id)
-
-
-async def start_edit_start_at(event, user_id: int, task_id: str):
-    """开始编辑开始时间。"""
-    fsm_storage.set_state(user_id, FSMState.WAIT_START_AT)
-    fsm_storage.update_data(user_id, task_id=task_id)
-    now_dt = datetime.now().replace(second=0, microsecond=0)
-    keyboard = get_start_time_keyboard(
-        task_id,
-        int(now_dt.timestamp()),
-        int((now_dt + timedelta(minutes=10)).timestamp()),
-        now_dt.strftime("%Y-%m-%d %H:%M"),
-        (now_dt + timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M"),
-    )
-    await event.edit(
-        EDIT_START_AT_PROMPT.format(now=now_dt.strftime("%Y-%m-%d %H:%M")),
-        buttons=keyboard,
-        parse_mode="markdown",
-    )
-
-
-async def handle_start_at_input(event, user_id: int, task_id: str, text: str):
-    """处理开始时间输入。"""
-    try:
-        raw_text = (text or "").strip()
-        dt = datetime.strptime(raw_text, "%Y-%m-%d %H:%M")
-        timestamp = int(dt.timestamp())
-        await _set_start_at_value(event, user_id, task_id, timestamp)
-    except ValueError:
-        await event.respond(
-            f"{ERROR_INVALID_TIME_FORMAT}\n"
-            "示例：`2026-03-16 18:30`\n"
-            "下一步：请重新输入开始时间，或点击下方按钮返回任务设置。",
-            buttons=get_cancel_keyboard(task_id),
-            parse_mode="markdown",
-        )
-
-
-async def start_edit_end_at(event, user_id: int, task_id: str):
-    """开始编辑结束时间。"""
-    fsm_storage.set_state(user_id, FSMState.WAIT_END_AT)
-    fsm_storage.update_data(user_id, task_id=task_id)
-    async with get_async_session() as session:
-        task = await _get_user_task(session, task_id, user_id)
-
-    base_dt = datetime.now().replace(second=0, microsecond=0)
-    if task and task.start_at:
-        base_dt = datetime.fromtimestamp(task.start_at).replace(second=0, microsecond=0)
-    next_midnight = _next_midnight(base_dt)
-    keyboard = get_end_time_keyboard(
-        task_id,
-        int(next_midnight.timestamp()),
-        int((next_midnight + timedelta(days=1)).timestamp()),
-        next_midnight.strftime("%Y-%m-%d %H:%M"),
-        (next_midnight + timedelta(days=1)).strftime("%Y-%m-%d %H:%M"),
-    )
-    await event.edit(
-        EDIT_END_AT_PROMPT.format(suggested_end=next_midnight.strftime("%Y-%m-%d %H:%M")),
-        buttons=keyboard,
-        parse_mode="markdown",
-    )
-
-
-async def handle_end_at_input(event, user_id: int, task_id: str, text: str):
-    """处理结束时间输入。"""
-    try:
-        raw_text = (text or "").strip()
-        dt = datetime.strptime(raw_text, "%Y-%m-%d %H:%M")
-        timestamp = int(dt.timestamp())
-        await _set_end_at_value(event, user_id, task_id, timestamp)
-    except ValueError:
-        await event.respond(
-            f"{ERROR_INVALID_TIME_FORMAT}\n"
-            "示例：`2026-03-17 00:00`\n"
-            "下一步：请重新输入结束时间，或点击下方按钮返回任务设置。",
-            buttons=get_cancel_keyboard(task_id),
-            parse_mode="markdown",
-        )
-
-
-async def set_start_at_timestamp(event, user_id: int, task_id: str, timestamp: int):
-    """通过快捷按钮设置开始时间。"""
-    await _set_start_at_value(event, user_id, task_id, timestamp)
-
-
-async def set_end_at_timestamp(event, user_id: int, task_id: str, timestamp: int):
-    """通过快捷按钮设置结束时间。"""
-    await _set_end_at_value(event, user_id, task_id, timestamp)

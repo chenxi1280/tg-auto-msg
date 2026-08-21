@@ -67,20 +67,22 @@ from backend.bot.handlers.task.target_selection import (
 
 # Editing flows (kept import-compatible for callback/message dispatch modules)
 from backend.bot.handlers.task.editing import (
-    handle_end_at_input,
-    handle_start_at_input,
     handle_text_input,
-    set_hour,
     set_interval,
     show_interval_selection,
     start_edit_buttons,
-    start_edit_end_at,
-    start_edit_hours,
     start_edit_media,
-    start_edit_start_at,
     start_edit_text,
     toggle_delete_previous,
     toggle_pin_message,
+)
+from backend.bot.handlers.task.time_editing import (
+    handle_end_at_input,
+    handle_start_at_input,
+    set_hour,
+    start_edit_end_at,
+    start_edit_hours,
+    start_edit_start_at,
 )
 
 

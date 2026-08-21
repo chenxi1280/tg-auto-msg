@@ -20,7 +20,7 @@ from backend.bot.handlers.account.management import show_accounts_list, show_pro
 from backend.bot.onboarding import get_onboarding_service
 from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import Account
-from backend.task_media.capture_service import activate_capture_from_start
+from backend.task_media.capture_activation import activate_capture_from_start
 
 
 async def handle_start_command(event):

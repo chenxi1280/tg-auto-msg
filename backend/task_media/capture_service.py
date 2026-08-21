@@ -3,24 +3,24 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-import hashlib
 import secrets
 
 from fastapi import HTTPException
 from loguru import logger
 from sqlalchemy import select, update
-from telethon import Button
 
-from backend.bot.account.reauth import is_reauth_required_account
 from backend.bot.operator_link import get_linked_system_user_id
 from backend.config.core.settings import settings
 from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import Account, ScheduledMessageTask, SystemSession
 from backend.database.schema.task_media_models import TaskMediaCaptureSession
 from backend.task_media.capture_authorization import (
-    UNCLAIMED_CAPTURE_ACTOR_ID,
     resolve_capture_actor as _resolve_capture_actor,
     validate_capture_target as _validate_capture_target,
+)
+from backend.task_media.capture_activation import (
+    hash_capture_token,
+    validate_activation_context,
 )
 from backend.task_media.contract import (
     CaptureStart,
@@ -34,10 +34,6 @@ from backend.task_media.telegram_gateway import copy_bot_message_to_saved
 
 MEDIA_CAPTURE_TTL_SECONDS = 600
 ACTIVE_CAPTURE_STATES = ("waiting", "processing")
-
-
-def _token_hash(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def _error(status_code: int, code: str, message: str) -> HTTPException:
@@ -66,38 +62,15 @@ async def create_capture(
     token = secrets.token_urlsafe(24)
     expires_at = utc_now() + timedelta(seconds=MEDIA_CAPTURE_TTL_SECONDS)
     async with get_async_session() as session:
-        task = await _lock_capture_task(
-            session=session, task_id=task_id, user_id=user_id
-        )
-        if not task:
-            raise _error(404, "TASK_NOT_FOUND", "任务不存在")
-        if int(task.revision) != int(expected_revision):
-            raise _error(
-                409, "TASK_REVISION_CONFLICT", "任务已被其他操作修改，请刷新后重试"
-            )
-        account = await session.get(Account, task.account_id)
-        _validate_capture_target(task, account)
-        capture_actor_id = await _resolve_capture_actor(
+        capture, account_id, username = await _create_capture_record(
             session=session,
-            user_id=user_id,
-            actor_tg_user_id=actor_tg_user_id,
-        )
-        username = await _resolve_bot_username(session)
-        if not username:
-            raise _error(503, "MEDIA_CAPTURE_BOT_UNAVAILABLE", "系统 Bot 用户名未配置")
-
-        await _replace_waiting_capture(session, task_id)
-        capture = TaskMediaCaptureSession(
-            token_hash=_token_hash(token),
             task_id=task_id,
             user_id=user_id,
-            account_id=str(task.account_id),
-            actor_tg_user_id=capture_actor_id,
-            expected_task_revision=int(task.revision),
-            state="waiting",
+            expected_revision=expected_revision,
+            actor_tg_user_id=actor_tg_user_id,
+            token=token,
             expires_at=expires_at,
         )
-        session.add(capture)
         await session.flush()
         capture_id = capture.capture_id
 
@@ -105,7 +78,7 @@ async def create_capture(
         "task media capture created: capture_id={}, task_id={}, account_id={}, revision={}",
         capture_id,
         task_id,
-        task.account_id,
+        account_id,
         expected_revision,
     )
     return CaptureStart(
@@ -114,6 +87,46 @@ async def create_capture(
         expires_at=expires_at,
         bot_deep_link=f"https://t.me/{username}?start=media_{token}",
     )
+
+
+async def _create_capture_record(
+    session,
+    *,
+    task_id: str,
+    user_id: int,
+    expected_revision: int,
+    actor_tg_user_id: int | None,
+    token: str,
+    expires_at: datetime,
+):
+    task = await _lock_capture_task(session=session, task_id=task_id, user_id=user_id)
+    if not task:
+        raise _error(404, "TASK_NOT_FOUND", "任务不存在")
+    if int(task.revision) != int(expected_revision):
+        raise _error(409, "TASK_REVISION_CONFLICT", "任务已被其他操作修改，请刷新后重试")
+    account = await session.get(Account, task.account_id)
+    _validate_capture_target(task, account)
+    actor_id = await _resolve_capture_actor(
+        session=session,
+        user_id=user_id,
+        actor_tg_user_id=actor_tg_user_id,
+    )
+    username = await _resolve_bot_username(session)
+    if not username:
+        raise _error(503, "MEDIA_CAPTURE_BOT_UNAVAILABLE", "系统 Bot 用户名未配置")
+    await _replace_waiting_capture(session, task_id)
+    capture = TaskMediaCaptureSession(
+        token_hash=hash_capture_token(token),
+        task_id=task_id,
+        user_id=user_id,
+        account_id=str(task.account_id),
+        actor_tg_user_id=actor_id,
+        expected_task_revision=int(task.revision),
+        state="waiting",
+        expires_at=expires_at,
+    )
+    session.add(capture)
+    return capture, task.account_id, username
 
 
 async def _replace_waiting_capture(session, task_id: str) -> None:
@@ -182,110 +195,6 @@ def _serialize_capture(capture: TaskMediaCaptureSession) -> dict:
             else None
         ),
     }
-
-
-async def activate_capture_from_start(event, token: str) -> bool:
-    """Validate a deep-link token and send the anchored reply prompt."""
-    async with get_async_session() as session:
-        capture = await session.scalar(
-            select(TaskMediaCaptureSession)
-            .where(TaskMediaCaptureSession.token_hash == _token_hash(token))
-            .with_for_update()
-        )
-        if not capture:
-            await event.respond("❌ MEDIA_CAPTURE_NOT_FOUND：媒体设置链接无效。")
-            return True
-        actor_tg_user_id = int(event.sender_id)
-        linked_user_id = await get_linked_system_user_id(session, actor_tg_user_id)
-        error = _validate_activation(
-            capture,
-            actor_tg_user_id,
-            linked_user_id=linked_user_id,
-        )
-        if error is None:
-            task = await session.get(ScheduledMessageTask, capture.task_id)
-            account = await session.get(Account, capture.account_id)
-            error = _validate_activation_context(
-                capture, task, account, linked_user_id=linked_user_id
-            )
-            if error:
-                capture.state = "failed"
-                capture.error_code = error.code
-        if error:
-            await event.respond(f"❌ {error.code}：{error}")
-            return True
-        prompt = await event.respond(
-            "请直接回复本条消息，并发送一张图片、一个视频或一个动图。\n"
-            "普通文件、贴纸、语音和相册不支持。",
-            buttons=Button.force_reply(single_use=True, selective=True),
-        )
-        capture.prompt_message_id = int(prompt.id)
-    return True
-
-
-def _validate_activation(
-    capture: TaskMediaCaptureSession,
-    actor_tg_user_id: int,
-    *,
-    linked_user_id: int | None,
-):
-    if linked_user_id != capture.user_id:
-        return TaskMediaError(
-            "MEDIA_CAPTURE_OPERATOR_MISMATCH", "请使用当前系统账号绑定的 Telegram 用户打开此链接"
-        )
-    allowed_actor_ids = (UNCLAIMED_CAPTURE_ACTOR_ID, actor_tg_user_id)
-    if capture.actor_tg_user_id not in allowed_actor_ids:
-        return TaskMediaError(
-            "MEDIA_CAPTURE_OPERATOR_MISMATCH", "该媒体设置链接已由另一个 Telegram 用户使用"
-        )
-    if capture.expires_at <= utc_now():
-        capture.state = "expired"
-        capture.error_code = "MEDIA_CAPTURE_EXPIRED"
-        return TaskMediaError("MEDIA_CAPTURE_EXPIRED", "媒体设置链接已过期")
-    if capture.state != "waiting" or capture.prompt_message_id is not None:
-        return TaskMediaError("MEDIA_CAPTURE_ALREADY_CONSUMED", "媒体设置链接已使用")
-    capture.actor_tg_user_id = actor_tg_user_id
-    return None
-
-
-def _validate_activation_context(
-    capture, task, account, *, linked_user_id: int | None
-) -> TaskMediaError | None:
-    if not task:
-        return TaskMediaError(
-            "TASK_REVISION_CONFLICT", "任务配置已经变化，请重新创建媒体设置链接"
-        )
-    if not account:
-        return TaskMediaError("MEDIA_CAPTURE_ACCOUNT_UNAVAILABLE", "执行账号已不存在")
-    if (
-        not account.is_active
-        or account.is_banned
-        or is_reauth_required_account(account)
-    ):
-        return TaskMediaError(
-            "MEDIA_CAPTURE_ACCOUNT_UNAVAILABLE", "执行账号当前不可用，请先恢复账号授权"
-        )
-    identity_matches = bool(
-        account.user_id == capture.user_id and account.tg_user_id
-    )
-    if not identity_matches:
-        return TaskMediaError(
-            "MEDIA_CAPTURE_ACCOUNT_UNAVAILABLE", "执行账号绑定关系已经变化"
-        )
-    if linked_user_id != capture.user_id:
-        return TaskMediaError(
-            "MEDIA_CAPTURE_OPERATOR_MISMATCH", "当前 Telegram 用户与系统账号的绑定已经变化"
-        )
-    task_matches = (
-        task.user_id == capture.user_id
-        and task.account_id == capture.account_id
-        and task.revision == capture.expected_task_revision
-    )
-    if not task_matches:
-        return TaskMediaError(
-            "TASK_REVISION_CONFLICT", "任务配置已经变化，请重新创建媒体设置链接"
-        )
-    return None
 
 
 async def try_consume_capture_reply(event) -> bool:
@@ -379,7 +288,7 @@ async def _claim_capture(
             return TaskMediaError("MEDIA_CAPTURE_EXPIRED", "媒体捕获会话已过期")
         account = await session.get(Account, capture.account_id)
         linked_user_id = await get_linked_system_user_id(session, actor_tg_user_id)
-        context_error = _validate_activation_context(
+        context_error = validate_activation_context(
             capture, task, account, linked_user_id=linked_user_id
         )
         if context_error:
@@ -395,47 +304,15 @@ async def _claim_capture(
 
 async def _complete_capture(capture_id: str, copied: SavedMediaCopy) -> None:
     now = utc_now()
-    failure: TaskMediaError | None = None
     async with get_async_session() as session:
-        task_id = await session.scalar(
-            select(TaskMediaCaptureSession.task_id).where(
-                TaskMediaCaptureSession.capture_id == capture_id
-            )
+        capture, task = await _lock_completion_entities(session, capture_id)
+        failure = await _completion_error(
+            session=session,
+            capture=capture,
+            task=task,
+            copied=copied,
+            now=now,
         )
-        task = (
-            await session.scalar(
-                select(ScheduledMessageTask)
-                .where(ScheduledMessageTask.task_id == task_id)
-                .with_for_update()
-            )
-            if task_id
-            else None
-        )
-        capture = await session.scalar(
-            select(TaskMediaCaptureSession)
-            .where(TaskMediaCaptureSession.capture_id == capture_id)
-            .with_for_update()
-        )
-        if not capture:
-            failure = TaskMediaError(
-                "MEDIA_CAPTURE_ALREADY_CONSUMED", "媒体捕获会话不存在"
-            )
-        elif capture.state != "processing":
-            _record_orphan_copy(capture, copied, now)
-            failure = TaskMediaError(
-                "MEDIA_CAPTURE_ALREADY_CONSUMED", "媒体捕获会话状态已变化"
-            )
-        elif capture.expires_at <= now:
-            _fail_completed_copy(capture, copied, now, "MEDIA_CAPTURE_EXPIRED")
-            failure = TaskMediaError("MEDIA_CAPTURE_EXPIRED", "媒体捕获会话已过期")
-        else:
-            failure = await _apply_completed_copy(
-                session=session,
-                capture=capture,
-                copied=copied,
-                now=now,
-                task=task,
-            )
     if failure:
         logger.warning(
             "task media capture completion rejected: capture_id={}, saved_message_id={}, error_code={}",
@@ -448,6 +325,42 @@ async def _complete_capture(capture_id: str, copied: SavedMediaCopy) -> None:
         "task media capture completed: capture_id={}, saved_message_id={}",
         capture_id,
         copied.saved_message_id,
+    )
+
+
+async def _lock_completion_entities(session, capture_id: str):
+    capture = await session.scalar(
+        select(TaskMediaCaptureSession)
+        .where(TaskMediaCaptureSession.capture_id == capture_id)
+        .with_for_update()
+    )
+    if not capture:
+        return None, None
+    task = await session.scalar(
+        select(ScheduledMessageTask)
+        .where(ScheduledMessageTask.task_id == capture.task_id)
+        .with_for_update()
+    )
+    return capture, task
+
+
+async def _completion_error(*, session, capture, task, copied, now):
+    if not capture:
+        return TaskMediaError("MEDIA_CAPTURE_ALREADY_CONSUMED", "媒体捕获会话不存在")
+    if capture.state != "processing":
+        _record_orphan_copy(capture, copied, now)
+        return TaskMediaError(
+            "MEDIA_CAPTURE_ALREADY_CONSUMED", "媒体捕获会话状态已变化"
+        )
+    if capture.expires_at <= now:
+        _fail_completed_copy(capture, copied, now, "MEDIA_CAPTURE_EXPIRED")
+        return TaskMediaError("MEDIA_CAPTURE_EXPIRED", "媒体捕获会话已过期")
+    return await _apply_completed_copy(
+        session=session,
+        capture=capture,
+        copied=copied,
+        now=now,
+        task=task,
     )
 
 

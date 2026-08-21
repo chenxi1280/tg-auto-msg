@@ -271,7 +271,7 @@ async def test_operator_media_copies_directly_to_execution_account_saved_message
 
 
 def test_capture_context_allows_operator_and_execution_account_to_differ():
-    from backend.task_media.capture_service import _validate_activation_context
+    from backend.task_media.capture_activation import validate_activation_context
 
     capture = SimpleNamespace(user_id=1, account_id="acc-1", expected_task_revision=3)
     task = SimpleNamespace(user_id=1, account_id="acc-1", revision=3)
@@ -284,7 +284,7 @@ def test_capture_context_allows_operator_and_execution_account_to_differ():
         reauth_reason=None,
     )
 
-    assert _validate_activation_context(
+    assert validate_activation_context(
         capture, task, account, linked_user_id=1
     ) is None
 

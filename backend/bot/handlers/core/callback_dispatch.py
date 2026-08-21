@@ -29,25 +29,27 @@ from backend.bot.handlers.task.target_selection import (
     start_select_task_targets,
 )
 from backend.bot.handlers.task.editing import (
-    set_hours_allday,
-    set_end_at_timestamp,
-    set_hour,
     set_interval,
     set_shortcut_slot,
-    set_start_at_timestamp,
     show_interval_selection,
     show_shortcut_slot_selection,
     start_custom_interval_input,
     start_edit_buttons,
-    start_edit_end_at,
-    start_edit_hours,
     start_edit_media,
     start_edit_shortcut_label,
-    start_edit_start_at,
     start_edit_text,
     toggle_delete_previous,
     toggle_pin_message,
     toggle_trigger_mode,
+)
+from backend.bot.handlers.task.time_editing import (
+    set_end_at_timestamp,
+    set_hour,
+    set_hours_allday,
+    set_start_at_timestamp,
+    start_edit_end_at,
+    start_edit_hours,
+    start_edit_start_at,
 )
 from backend.bot.handlers.core.helpers import (
     login_help_text as _login_help_text,

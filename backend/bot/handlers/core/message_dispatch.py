@@ -4,11 +4,13 @@ from __future__ import annotations
 from backend.bot.state.fsm import FSMState
 from backend.bot.handlers.task.target_selection import handle_target_search_input
 from backend.bot.handlers.task.editing import (
-    handle_end_at_input,
     handle_interval_input,
     handle_shortcut_label_input,
-    handle_start_at_input,
     handle_text_input,
+)
+from backend.bot.handlers.task.time_editing import (
+    handle_end_at_input,
+    handle_start_at_input,
 )
 from backend.bot.onboarding import get_onboarding_service
 

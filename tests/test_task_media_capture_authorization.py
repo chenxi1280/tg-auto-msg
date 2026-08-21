@@ -43,7 +43,7 @@ async def test_capture_rejects_an_operator_linked_to_another_system_user():
 
 
 def test_first_authorized_operator_atomically_claims_h5_capture():
-    from backend.task_media.capture_service import _validate_activation
+    from backend.task_media.capture_activation import validate_activation
 
     capture = SimpleNamespace(
         actor_tg_user_id=0,
@@ -52,13 +52,13 @@ def test_first_authorized_operator_atomically_claims_h5_capture():
         state="waiting",
         prompt_message_id=None,
     )
-    error = _validate_activation(capture, 100, linked_user_id=7)
+    error = validate_activation(capture, 100, linked_user_id=7)
     assert error is None
     assert capture.actor_tg_user_id == 100
 
 
 def test_unlinked_operator_cannot_claim_h5_capture():
-    from backend.task_media.capture_service import _validate_activation
+    from backend.task_media.capture_activation import validate_activation
 
     capture = SimpleNamespace(
         actor_tg_user_id=0,
@@ -67,6 +67,6 @@ def test_unlinked_operator_cannot_claim_h5_capture():
         state="waiting",
         prompt_message_id=None,
     )
-    error = _validate_activation(capture, 100, linked_user_id=8)
+    error = validate_activation(capture, 100, linked_user_id=8)
     assert error.code == "MEDIA_CAPTURE_OPERATOR_MISMATCH"
     assert capture.actor_tg_user_id == 0
