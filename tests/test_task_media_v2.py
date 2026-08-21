@@ -57,6 +57,14 @@ def test_animation_takes_precedence_over_video():
     assert classified.media_type == "animation"
 
 
+def test_media_classifier_infers_regular_video_without_a_mode_choice():
+    attributes = [
+        DocumentAttributeVideo(duration=2, w=640, h=360, round_message=False)
+    ]
+    classified = classify_message_media(_message(_document(attributes)))
+    assert classified.media_type == "video"
+
+
 @pytest.mark.parametrize(
     "attributes",
     [
@@ -218,28 +226,67 @@ async def test_new_capture_does_not_cancel_processing_capture():
 async def test_saved_message_readback_validation_uses_copy_error_code():
     bot_media = MessageMediaPhoto(photo=SimpleNamespace(id=101))
     bot_message = _message(bot_media, id=10, reply_to_msg_id=5)
-    source = _message(bot_media, id=10, reply_to_msg_id=5, out=True)
     invalid_saved = _message(_document([DocumentAttributeFilename("report.pdf")]))
     client = SimpleNamespace(
-        get_entity=AsyncMock(return_value=SimpleNamespace(id=99)),
-        get_messages=AsyncMock(side_effect=[source, invalid_saved]),
+        get_messages=AsyncMock(return_value=invalid_saved),
         send_file=AsyncMock(return_value=SimpleNamespace(id=20)),
     )
     manager = SimpleNamespace(get_client=AsyncMock(return_value=client))
 
-    with (
-        patch(
-            "backend.task_media.telegram_gateway.get_account_manager",
-            return_value=manager,
-        ),
-        patch(
-            "backend.task_media.telegram_gateway.bot_client.get_me",
-            new=AsyncMock(return_value=SimpleNamespace(id=99, username="system_bot")),
-        ),
+    with patch(
+        "backend.task_media.telegram_gateway.get_account_manager",
+        return_value=manager,
     ):
         with pytest.raises(TaskMediaError) as exc:
             await copy_bot_message_to_saved(account_id="acc-1", bot_message=bot_message)
     assert exc.value.code == "MEDIA_SOURCE_COPY_FAILED"
+    assert client.send_file.await_args.kwargs["file"] is bot_media
+
+
+@pytest.mark.asyncio
+async def test_operator_media_copies_directly_to_execution_account_saved_messages():
+    bot_media = MessageMediaPhoto(photo=SimpleNamespace(id=101))
+    bot_message = _message(bot_media, id=10, reply_to_msg_id=5)
+    saved = _message(bot_media, id=20)
+    client = SimpleNamespace(
+        get_messages=AsyncMock(return_value=saved),
+        send_file=AsyncMock(return_value=SimpleNamespace(id=20)),
+    )
+    manager = SimpleNamespace(get_client=AsyncMock(return_value=client))
+
+    with patch(
+        "backend.task_media.telegram_gateway.get_account_manager",
+        return_value=manager,
+    ):
+        copied = await copy_bot_message_to_saved(
+            account_id="execution-account", bot_message=bot_message
+        )
+
+    assert copied.media_type == "photo"
+    assert copied.source_message_id == 10
+    assert copied.saved_message_id == 20
+    client.send_file.assert_awaited_once_with(
+        "me", file=bot_media, caption=None, buttons=None
+    )
+
+
+def test_capture_context_allows_operator_and_execution_account_to_differ():
+    from backend.task_media.capture_service import _validate_activation_context
+
+    capture = SimpleNamespace(user_id=1, account_id="acc-1", expected_task_revision=3)
+    task = SimpleNamespace(user_id=1, account_id="acc-1", revision=3)
+    account = SimpleNamespace(
+        user_id=1,
+        tg_user_id=200,
+        is_active=True,
+        is_banned=False,
+        reauth_required=False,
+        reauth_reason=None,
+    )
+
+    assert _validate_activation_context(
+        capture, task, account, linked_user_id=1
+    ) is None
 
 
 @pytest.mark.asyncio

@@ -49,7 +49,7 @@ export const useTaskMediaCapture = (form: TaskMediaFormState, taskId: Ref<string
       captureId.value = capture.capture_id
       captureState.value = capture.state
       telegramWindow.location.href = capture.bot_deep_link
-      ElMessage.info(`请使用执行账号 ${capture.required_tg_user_id} 在 Bot 中回复提示消息`)
+      ElMessage.info('请在 Bot 中直接回复一张图片、一个视频或一个 GIF，系统会自动识别类型')
     } catch (error) {
       telegramWindow.close()
       throw error

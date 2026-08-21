@@ -12,10 +12,15 @@ from sqlalchemy import select, update
 from telethon import Button
 
 from backend.bot.account.reauth import is_reauth_required_account
+from backend.bot.operator_link import get_linked_system_user_id
 from backend.config.core.settings import settings
 from backend.database.runtime.session import get_async_session
 from backend.database.schema.models import Account, ScheduledMessageTask, SystemSession
 from backend.database.schema.task_media_models import TaskMediaCaptureSession
+from backend.task_media.capture_authorization import (
+    resolve_capture_actor as _resolve_capture_actor,
+    validate_capture_target as _validate_capture_target,
+)
 from backend.task_media.contract import (
     CaptureStart,
     SavedMediaCopy,
@@ -34,11 +39,6 @@ def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def _masked_tg_user_id(tg_user_id: int) -> str:
-    value = str(tg_user_id)
-    return f"***{value[-4:]}" if len(value) > 4 else "***"
-
-
 def _error(status_code: int, code: str, message: str) -> HTTPException:
     return HTTPException(
         status_code=status_code, detail={"code": code, "message": message}
@@ -55,7 +55,11 @@ async def _resolve_bot_username(session) -> str:
 
 
 async def create_capture(
-    *, task_id: str, user_id: int, expected_revision: int
+    *,
+    task_id: str,
+    user_id: int,
+    expected_revision: int,
+    actor_tg_user_id: int | None = None,
 ) -> CaptureStart:
     """Create one single-use persistent capture and return its token exactly once."""
     token = secrets.token_urlsafe(24)
@@ -72,6 +76,11 @@ async def create_capture(
             )
         account = await session.get(Account, task.account_id)
         _validate_capture_target(task, account)
+        capture_actor_id = await _resolve_capture_actor(
+            session=session,
+            user_id=user_id,
+            actor_tg_user_id=actor_tg_user_id,
+        )
         username = await _resolve_bot_username(session)
         if not username:
             raise _error(503, "MEDIA_CAPTURE_BOT_UNAVAILABLE", "系统 Bot 用户名未配置")
@@ -82,7 +91,7 @@ async def create_capture(
             task_id=task_id,
             user_id=user_id,
             account_id=str(task.account_id),
-            actor_tg_user_id=int(account.tg_user_id),
+            actor_tg_user_id=capture_actor_id,
             expected_task_revision=int(task.revision),
             state="waiting",
             expires_at=expires_at,
@@ -103,43 +112,7 @@ async def create_capture(
         state="waiting",
         expires_at=expires_at,
         bot_deep_link=f"https://t.me/{username}?start=media_{token}",
-        required_tg_user_id=_masked_tg_user_id(int(account.tg_user_id)),
     )
-
-
-def _validate_capture_target(
-    task: ScheduledMessageTask, account: Account | None
-) -> None:
-    if task.buttons:
-        raise _error(
-            400,
-            "TASK_BUTTONS_UNSUPPORTED_FOR_USER_ACCOUNT",
-            "请先删除任务消息按钮，再设置媒体",
-        )
-    try:
-        validate_message_length(task.text, has_media=True)
-    except TaskMediaError as exc:
-        raise _error(400, exc.code, str(exc)) from exc
-    if (
-        not account
-        or not account.tg_user_id
-        or int(account.user_id) != int(task.user_id)
-    ):
-        raise _error(
-            400,
-            "MEDIA_CAPTURE_ACCOUNT_SWITCH_REQUIRED",
-            "执行账号尚未正确绑定 Telegram UID",
-        )
-    if (
-        not account.is_active
-        or account.is_banned
-        or is_reauth_required_account(account)
-    ):
-        raise _error(
-            409,
-            "MEDIA_CAPTURE_ACCOUNT_UNAVAILABLE",
-            "执行账号当前不可用，请先恢复账号授权",
-        )
 
 
 async def _replace_waiting_capture(session, task_id: str) -> None:
@@ -221,11 +194,15 @@ async def activate_capture_from_start(event, token: str) -> bool:
         if not capture:
             await event.respond("❌ MEDIA_CAPTURE_NOT_FOUND：媒体设置链接无效。")
             return True
-        error = _validate_activation(capture, int(event.sender_id))
+        actor_tg_user_id = int(event.sender_id)
+        linked_user_id = await get_linked_system_user_id(session, actor_tg_user_id)
+        error = _validate_activation(capture, actor_tg_user_id)
         if error is None:
             task = await session.get(ScheduledMessageTask, capture.task_id)
             account = await session.get(Account, capture.account_id)
-            error = _validate_activation_context(capture, task, account)
+            error = _validate_activation_context(
+                capture, task, account, linked_user_id=linked_user_id
+            )
             if error:
                 capture.state = "failed"
                 capture.error_code = error.code
@@ -244,7 +221,7 @@ async def activate_capture_from_start(event, token: str) -> bool:
 def _validate_activation(capture: TaskMediaCaptureSession, actor_tg_user_id: int):
     if capture.actor_tg_user_id != actor_tg_user_id:
         return TaskMediaError(
-            "MEDIA_CAPTURE_ACCOUNT_SWITCH_REQUIRED", "请切换到任务执行账号打开此链接"
+            "MEDIA_CAPTURE_OPERATOR_MISMATCH", "请使用当前系统账号绑定的 Telegram 用户打开此链接"
         )
     if capture.expires_at <= utc_now():
         capture.state = "expired"
@@ -255,7 +232,9 @@ def _validate_activation(capture: TaskMediaCaptureSession, actor_tg_user_id: int
     return None
 
 
-def _validate_activation_context(capture, task, account) -> TaskMediaError | None:
+def _validate_activation_context(
+    capture, task, account, *, linked_user_id: int | None
+) -> TaskMediaError | None:
     if not task:
         return TaskMediaError(
             "TASK_REVISION_CONFLICT", "任务配置已经变化，请重新创建媒体设置链接"
@@ -270,13 +249,16 @@ def _validate_activation_context(capture, task, account) -> TaskMediaError | Non
         return TaskMediaError(
             "MEDIA_CAPTURE_ACCOUNT_UNAVAILABLE", "执行账号当前不可用，请先恢复账号授权"
         )
-    identity_matches = (
-        account.user_id == capture.user_id
-        and account.tg_user_id == capture.actor_tg_user_id
+    identity_matches = bool(
+        account.user_id == capture.user_id and account.tg_user_id
     )
     if not identity_matches:
         return TaskMediaError(
-            "MEDIA_CAPTURE_ACCOUNT_SWITCH_REQUIRED", "执行账号绑定关系已经变化"
+            "MEDIA_CAPTURE_ACCOUNT_UNAVAILABLE", "执行账号绑定关系已经变化"
+        )
+    if linked_user_id != capture.user_id:
+        return TaskMediaError(
+            "MEDIA_CAPTURE_OPERATOR_MISMATCH", "当前 Telegram 用户与系统账号的绑定已经变化"
         )
     task_matches = (
         task.user_id == capture.user_id
@@ -380,7 +362,10 @@ async def _claim_capture(
             capture.error_code = "MEDIA_CAPTURE_EXPIRED"
             return TaskMediaError("MEDIA_CAPTURE_EXPIRED", "媒体捕获会话已过期")
         account = await session.get(Account, capture.account_id)
-        context_error = _validate_activation_context(capture, task, account)
+        linked_user_id = await get_linked_system_user_id(session, actor_tg_user_id)
+        context_error = _validate_activation_context(
+            capture, task, account, linked_user_id=linked_user_id
+        )
         if context_error:
             capture.state = "failed"
             capture.error_code = context_error.code

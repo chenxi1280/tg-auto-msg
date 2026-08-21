@@ -48,11 +48,11 @@
 媒体字节只存在于 Telegram。应用服务器只处理 Telegram 消息对象和定位元数据：
 
 ```text
-用户使用执行账号把媒体发给系统 Bot
+当前系统用户的 Telegram 操作账号把媒体发给系统 Bot
                     ↓
-执行账号回读同一条 Bot 对话消息
+Bot 自动识别图片、视频或动图
                     ↓
-执行账号用 message.media 原生复制到自己的 Saved Messages
+执行账号用 Bot update 的 message.media 原生复制到自己的 Saved Messages
                     ↓
 数据库只保存 account_id + Saved Messages message_id
                     ↓
@@ -73,12 +73,12 @@ Bot 对话只作为媒体采集入口，不作为任务的长期来源：
 - entity cache 丢失时，单独的 peer ID 不足以稳定构造 InputPeer；
 - 同一个长期任务不应依赖管理对话的保留策略。
 
-创建阶段由执行账号读取 Bot 对话后，立即执行：
+创建阶段收到并验证 Bot update 后，立即执行：
 
 ```python
 saved_message = await account_client.send_file(
     "me",
-    file=source_message.media,
+    file=bot_message.media,
     caption=None,
     buttons=None,
 )
@@ -88,7 +88,8 @@ saved_message = await account_client.send_file(
 
 ## 4. 多账号操作合同
 
-媒体必须由任务的执行账号本人发送到系统 Bot。
+媒体由当前系统用户绑定的 Telegram 操作账号发送给系统 Bot。任务执行账号与
+Bot 操作账号是两个独立身份，执行账号只负责保存和发送任务媒体。
 
 ### 4.1 前置条件
 
@@ -96,22 +97,15 @@ saved_message = await account_client.send_file(
 
 - `Account.is_active=true`；
 - 账号已授权且不需要重新登录；
-- 当前 Bot 操作者 Telegram UID 等于 `Account.tg_user_id`；
-- 该 Telegram UID 已绑定到任务所属系统用户；
-- 执行账号能够读取与系统 Bot 的私聊。
+- 当前 Bot 操作者 Telegram UID 已绑定到任务所属系统用户；
+- 执行账号存在有效 Telegram UID，且客户端可用；
+- Bot 收到的 Telegram 媒体引用可由执行账号即时复制到 Saved Messages。
 
 ### 4.2 Owner 管理多个账号
 
-Owner 在账号 A 的 Bot 会话或 H5 中为账号 B 点击“设置媒体”时，系统不得进入一个注定失败的等待状态。系统返回：
-
-```text
-MEDIA_CAPTURE_ACCOUNT_SWITCH_REQUIRED
-请切换到执行账号 B，在该账号中打开系统 Bot 并继续本次媒体设置。
-```
-
-H5 创建捕获会话后返回一个只包含不透明 `capture_token` 的 Bot deep link。用户必须使用账号 B 打开该链接。Bot 收到 token 后重新验证 actor UID、系统用户、任务、账号、revision 和过期时间；使用账号 A 打开时明确拒绝。
-
-账号 B 从未打开系统 Bot 时，先使用账号 B 发送 `/start`。Bot 根据已存在的 `Account.tg_user_id -> Account.user_id` 关系进入 account-scoped 模式，不新建另一个系统用户，也不改变任务所有权。
+Owner 在操作账号 A 的 Bot 会话或 H5 中为执行账号 B 点击“设置媒体”时，继续使用
+操作账号 A 打开 deep link 并提交媒体，不要求切换到账号 B。Bot 收到 token 后重新
+验证操作账号 A 与系统用户的绑定，以及任务、执行账号、revision 和过期时间。
 
 ## 5. 可持久媒体捕获会话
 
@@ -126,10 +120,10 @@ FSM 只负责展示，捕获事实必须持久化，不能只存在进程内存�
 | `task_id` | UUID | 目标任务；新建流程必须先持久化 `enabled=false` 任务 |
 | `user_id` | bigint | 任务所属系统用户 |
 | `account_id` | UUID | 冻结的执行账号 |
-| `actor_tg_user_id` | bigint | 允许提交媒体的 Telegram UID |
+| `actor_tg_user_id` | bigint | 允许提交媒体的 Bot 操作账号 Telegram UID |
 | `expected_task_revision` | bigint | 捕获开始时的任务版本 |
 | `prompt_message_id` | bigint | Bot 媒体提示消息 ID |
-| `source_message_id` | bigint nullable | 验证后的账号视角 Bot 对话消息 ID |
+| `source_message_id` | bigint nullable | 验证后的 Bot update 消息 ID |
 | `saved_message_id` | bigint nullable | 成功复制到 Saved Messages 后的消息 ID |
 | `state` | string | `waiting/processing/completed/expired/cancelled/failed` |
 | `error_code` | string nullable | 明确失败原因 |
@@ -161,13 +155,12 @@ MEDIA_CAPTURE_TTL_SECONDS=600
 3. Bot 发送带 capture 标识的媒体提示，并保存 `prompt_message_id`。
 4. 用户必须回复这条提示消息，并发送一份媒体。
 5. Bot 校验 reply anchor、capture token、actor UID、TTL 和 capture state。
-6. 使用选定执行账号解析系统 Bot：优先使用配置中的 Bot username，回读后校验 Telegram Bot ID 与运行时 Bot ID 一致。
-7. 执行账号按 Bot update 的消息 ID 精确回读该条消息；读不到就返回 `MEDIA_SOURCE_CORRELATION_FAILED`，不得扫描“最近一条”猜测。
-8. 比较 Bot 视角与执行账号视角的 photo/document ID、类型、发送方向和 reply anchor。
-9. 执行账号用 `source_message.media` 原生复制到 Saved Messages，不携带来源 caption 和按钮。
-10. 立即从 Saved Messages 回读复制结果，校验媒体存在且类型一致。
-11. 使用任务 revision 做 CAS，写入规范来源并递增 revision。
-12. capture 标记 `completed`；任何失败均记录明确 error code，不写半成品媒体引用。
+6. Bot 根据消息结构自动判定 `photo/video/animation`，不展示媒体模式选择。
+7. 执行账号使用 Bot update 中的 `message.media` Telegram 原生引用直接复制到
+   Saved Messages，不下载文件，不携带来源 caption 和按钮。
+8. 立即从 Saved Messages 回读复制结果，校验媒体存在且类型一致。
+9. 使用任务 revision 做 CAS，写入规范来源并递增 revision。
+10. capture 标记 `completed`；任何失败均记录明确 error code，不写半成品媒体引用。
 
 如果 Saved Messages 复制成功但任务 CAS 冲突，capture 标记 `failed/TASK_REVISION_CONFLICT`，日志记录孤立 `saved_message_id` 供审计；不得自动删除 Telegram 消息，也不得覆盖新任务配置。
 
@@ -262,8 +255,7 @@ DELETE /api/tasks/{task_id}/media
   "capture_id": "...",
   "state": "waiting",
   "expires_at": "...",
-  "bot_deep_link": "https://t.me/<bot>?start=media_<opaque_token>",
-  "required_tg_user_id": "masked"
+  "bot_deep_link": "https://t.me/<bot>?start=media_<opaque_token>"
 }
 ```
 
@@ -319,13 +311,14 @@ MAX_TEXT_MESSAGE_UTF16=4096
 创建阶段：
 
 ```text
-MEDIA_CAPTURE_ACCOUNT_SWITCH_REQUIRED
+MEDIA_CAPTURE_OPERATOR_UNAVAILABLE
+MEDIA_CAPTURE_OPERATOR_UNAUTHORIZED
+MEDIA_CAPTURE_OPERATOR_MISMATCH
 MEDIA_CAPTURE_ACCOUNT_UNAVAILABLE
 MEDIA_CAPTURE_PROCESSING
 MEDIA_CAPTURE_EXPIRED
 MEDIA_CAPTURE_ALREADY_CONSUMED
 MEDIA_CAPTURE_REPLY_REQUIRED
-MEDIA_SOURCE_CORRELATION_FAILED
 MEDIA_SOURCE_TYPE_UNSUPPORTED
 MEDIA_SOURCE_COPY_FAILED
 TASK_REVISION_CONFLICT
@@ -415,7 +408,7 @@ WHERE task_id = :task_id
 - sticker、document、audio、voice、round video、album 全部拒绝；
 - Userbot 任务配置 buttons 时创建/编辑即失败；
 - 不存在按钮失败后无按钮重发；
-- capture 必须回复准确 prompt，过期、重复和错误账号均失败；
+- capture 必须回复准确 prompt，过期、重复和错误操作账号均失败；
 - 同一 source update 只复制一次；
 - Bot 消息删除后，Saved Messages 规范来源仍可发送；
 - Saved Messages 来源删除后明确失败，不降级；
@@ -430,16 +423,16 @@ WHERE task_id = :task_id
 
 ### 16.2 Telegram 真实验收
 
-使用一个授权测试账号：
+使用一个已绑定的 Bot 操作账号和一个独立执行账号：
 
-1. 从同一账号回复 capture prompt，分别发送图片、视频、动图；
-2. 账号成功回读 Bot 消息并原生复制到 Saved Messages；
+1. 操作账号回复 capture prompt，分别发送图片、视频、动图，不选择媒体模式；
+2. 系统自动分类并由执行账号原生复制到 Saved Messages；
 3. 数据库只出现定位和元数据，无本地路径和文件内容；
 4. 删除 Bot 原消息后，三类任务仍可发送；
 5. 目标收到新媒体消息，无“转发自”，caption 正确；
 6. 配置按钮在保存前明确失败；
 7. 删除 Saved Messages 规范来源后任务明确失败；
-8. 错误账号打开 capture deep link 时明确拒绝；
+8. 未绑定该系统用户的操作账号打开 capture deep link 时明确拒绝；
 9. 目标禁止图片、视频、GIF 时得到对应 typed error；
 10. 上传目录、临时目录和进程内存不存在随媒体大小增长的搬运链路。
 

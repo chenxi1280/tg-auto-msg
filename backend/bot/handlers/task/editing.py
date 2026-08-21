@@ -358,6 +358,7 @@ async def start_edit_media(event, user_id: int, task_id: str):
             task_id=task_id,
             user_id=owner_user_id,
             expected_revision=revision,
+            actor_tg_user_id=int(event.sender_id),
         )
         token = capture.bot_deep_link.rsplit("media_", 1)[1]
         fsm_storage.reset_state(user_id)

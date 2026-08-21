@@ -60,7 +60,6 @@ class CaptureStart:
     state: str
     expires_at: datetime
     bot_deep_link: str
-    required_tg_user_id: str
 
 
 def utf16_length(value: str | None) -> int:

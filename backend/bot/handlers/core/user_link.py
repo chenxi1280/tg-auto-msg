@@ -5,19 +5,20 @@ from typing import Iterable, Optional
 
 from sqlalchemy import select
 
+from backend.bot.operator_link import (
+    USER_LINK_KEY_PREFIX,
+    get_linked_system_user_id,
+    load_latest_linked_tg_user_ids,
+    user_link_key as _user_link_key,
+)
 from backend.database.schema.models import AppSetting
 
-USER_LINK_KEY_PREFIX = "tg_user_link:"
 ACTIVE_ACCOUNT_KEY_PREFIX = "tg_active_acc:"
 USER_MODE_KEY_PREFIX = "tg_user_mode:"
 SCOPED_ACCOUNT_KEY_PREFIX = "tg_user_scoped_acc:"
 
 USER_MODE_OWNER = "owner"
 USER_MODE_ACCOUNT_SCOPED = "account_scoped"
-
-
-def _user_link_key(tg_user_id: int) -> str:
-    return f"{USER_LINK_KEY_PREFIX}{int(tg_user_id)}"
 
 
 def _active_account_key(tg_user_id: int, system_user_id: int) -> str:
@@ -35,18 +36,6 @@ def _scoped_account_key(tg_user_id: int, system_user_id: int) -> str:
 def _parse_linked_tg_user_id(key: str) -> Optional[int]:
     try:
         return int(str(key).split(USER_LINK_KEY_PREFIX, 1)[1])
-    except Exception:
-        return None
-
-
-async def get_linked_system_user_id(session, tg_user_id: int) -> Optional[int]:
-    """Read mapped system user id for Telegram operator."""
-    key = _user_link_key(tg_user_id)
-    row = await session.get(AppSetting, key)
-    if not row:
-        return None
-    try:
-        return int((row.value or "").strip())
     except Exception:
         return None
 
@@ -107,28 +96,6 @@ async def clear_stale_user_links(session, system_user_id: int, *, keep_tg_user_i
             await session.delete(stale_scoped)
 
     return removed_tg_user_ids
-
-
-async def load_latest_linked_tg_user_ids(session) -> dict[int, int]:
-    """Load the latest Telegram binding per system user."""
-    rows = (
-        await session.execute(
-            select(AppSetting.key, AppSetting.value, AppSetting.updated_at, AppSetting.created_at)
-            .where(AppSetting.key.like(f"{USER_LINK_KEY_PREFIX}%"))
-            .order_by(AppSetting.updated_at.desc(), AppSetting.created_at.desc(), AppSetting.key.desc())
-        )
-    ).all()
-
-    user_links: dict[int, int] = {}
-    for key, value, _updated_at, _created_at in rows:
-        try:
-            tg_user_id = int(str(key).split(USER_LINK_KEY_PREFIX, 1)[1])
-            user_id = int(str(value).strip())
-        except Exception:
-            continue
-        if user_id not in user_links:
-            user_links[user_id] = tg_user_id
-    return user_links
 
 
 async def get_active_account_id(session, tg_user_id: int, system_user_id: int) -> Optional[str]:

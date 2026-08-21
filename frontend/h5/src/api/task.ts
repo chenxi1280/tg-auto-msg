@@ -79,7 +79,6 @@ export interface TaskMediaCapture {
   state: string
   expires_at: string
   bot_deep_link: string
-  required_tg_user_id: string
   error_code?: string | null
   completed_revision?: number | null
 }
