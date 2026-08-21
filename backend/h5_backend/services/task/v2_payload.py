@@ -58,6 +58,14 @@ def prepare_v2_create_payload(payload: Dict[str, Any]) -> None:
                 "message": "执行账号不是 Bot，任务不支持消息按钮",
             },
         )
+    if not str(payload.get("text") or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "TASK_CONTENT_REQUIRED",
+                "message": "H5 创建任务必须填写消息文本",
+            },
+        )
     payload.update(
         content_contract_version=2,
         revision=1,

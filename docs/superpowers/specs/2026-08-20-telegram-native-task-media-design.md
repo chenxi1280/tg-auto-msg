@@ -261,7 +261,7 @@ DELETE /api/tasks/{task_id}/media
 }
 ```
 
-当新任务还没有文本或媒体时，H5 先创建 `enabled=false` 草稿并停留在编辑页；媒体捕获完成后，用户再显式启用。执行账号或 caption 有未保存修改时，不允许按数据库旧值创建 capture。
+H5 新建任务只接受文本内容，不展示媒体入口，也不创建等待补媒体的空草稿。任务保存后进入编辑态，用户才能创建 capture；执行账号或 caption 有未保存修改时，不允许按数据库旧值创建 capture。
 
 媒体删除要求 `expected_revision`，只删除数据库引用，不删除 Saved Messages 原消息。删除成功后 revision 加一。
 
@@ -416,6 +416,7 @@ WHERE task_id = :task_id
 - 切换执行账号原子清除媒体和 capture；
 - CAS 冲突不覆盖新任务；
 - H5 普通编辑遗漏媒体字段时保留媒体；
+- H5 新建任务不展示媒体入口，且空文本不能创建任务；
 - H5 不存在文件 input 和媒体 multipart API；
 - 媒体链路不调用 `download_media`，不创建文件字节缓冲；
 - caption 使用 UTF-16 计数并在最终变化后校验；

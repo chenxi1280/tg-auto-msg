@@ -78,11 +78,11 @@
           :rows="5"
           maxlength="4096"
           show-word-limit
-          placeholder="支持文本和表情；有媒体时这里作为媒体说明文字"
+          :placeholder="editingTaskId ? '支持文本和表情；有媒体时这里作为媒体说明文字' : 'H5 创建任务仅支持文本和表情'"
         />
       </el-form-item>
 
-      <el-form-item label="Telegram 媒体（单张图片/视频/动图）">
+      <el-form-item v-if="editingTaskId" label="Telegram 媒体（单张图片/视频/动图）">
         <div class="media-actions">
           <el-button
             type="primary"
@@ -98,8 +98,7 @@
             清除媒体
           </el-button>
         </div>
-        <div class="hint-text" v-if="!editingTaskId">请先保存任务，再通过执行账号进入 Telegram Bot 设置媒体。</div>
-        <div class="hint-text" v-else-if="hasMedia">
+        <div class="hint-text" v-if="hasMedia">
           当前媒体：{{ mediaSummary }}；来源保存在执行账号的 Telegram 收藏夹，服务器不保存文件。
         </div>
         <div class="hint-text" v-else>
@@ -195,7 +194,6 @@ const emit = defineEmits<{
   (e: 'update:resources', resources: ResourceOption[]): void
   (e: 'close'): void
   (e: 'saved'): void
-  (e: 'draftCreated'): void
   (e: 'runOnce', taskId: string, title: string): void
 }>()
 
@@ -376,6 +374,10 @@ const submitTask = async () => {
     ElMessage.warning(shortcutLabelError.value)
     return
   }
+  if (!editingTaskId.value && !form.text.trim()) {
+    ElMessage.warning('H5 创建任务请填写消息文本')
+    return
+  }
 
   const startAt = toUnix(form.startAtLocal)
   const endAt = toUnix(form.endAtLocal)
@@ -395,28 +397,14 @@ const submitTask = async () => {
       return
     }
 
-    const createAsMediaDraft = !editingTaskId.value && !form.text.trim() && !hasMedia.value
-    const payload = {
-      ...buildPayload(targets),
-      ...(createAsMediaDraft ? { enabled: false } : {})
-    }
+    const payload = buildPayload(targets)
 
     if (editingTaskId.value) {
       const response = await updateTask(editingTaskId.value, payload)
       form.revision = response.data.revision
       ElMessage.success('任务已更新')
     } else {
-      const response = await createTask(payload)
-      if (createAsMediaDraft) {
-        editingTaskId.value = response.data.task_id
-        form.revision = response.data.revision
-        form.enabled = false
-        persistedAccountId.value = form.accountId
-        persistedText.value = form.text
-        ElMessage.info('禁用草稿已创建，现在可以前往 Telegram Bot 设置媒体')
-        emit('draftCreated')
-        return
-      }
+      await createTask(payload)
       ElMessage.success(`任务已创建，目标数 ${targets.length}`)
     }
 

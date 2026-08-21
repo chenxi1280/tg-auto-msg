@@ -471,6 +471,9 @@ def test_new_media_surfaces_do_not_accept_server_file_uploads():
     migration_source = (root / "backend/task_media/migration.py").read_text()
     assert "upload-media" not in route_source
     assert 'type="file"' not in editor_source
+    assert '<el-form-item v-if="editingTaskId" label="Telegram 媒体' in editor_source
+    assert "createAsMediaDraft" not in editor_source
+    assert "H5 创建任务请填写消息文本" in editor_source
     assert "download_media" not in gateway_source
     assert "BytesIO" not in gateway_source
     assert 'ScheduledMessageTask.media_source_state != "invalid"' in migration_source

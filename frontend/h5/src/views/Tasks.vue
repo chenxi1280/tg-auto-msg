@@ -39,7 +39,6 @@
         @update:resources="onResourcesUpdate"
         @close="onEditorClose"
         @saved="onEditorSaved"
-        @draft-created="loadTasks"
         @run-once="runTaskOnce"
       />
 
