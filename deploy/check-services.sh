@@ -5,6 +5,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/docker-env.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/service-recovery.sh"
 
 ALERT_ENV_FILE="${ALERT_ENV_FILE:-/etc/tgmsg/service-health.env}"
 LOG_DIR="${LOG_DIR:-${APP_LOG_DIR:-/data/tgmsg/shared/logs}}"
@@ -118,66 +120,6 @@ hash_text() {
   else
     shasum -a 256 | awk '{print $1}'
   fi
-}
-
-service_status() {
-  local service="$1"
-  docker container inspect "$service" --format '{{.State.Status}}' 2>/dev/null || true
-}
-
-service_health() {
-  local service="$1"
-  docker container inspect "$service" --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' 2>/dev/null || true
-}
-
-container_exists() {
-  local service="$1"
-  docker container inspect "$service" >/dev/null 2>&1
-}
-
-service_ok() {
-  local service="$1"
-  local status health
-
-  status="$(service_status "$service")"
-  health="$(service_health "$service")"
-
-  if [[ "$status" != "running" ]]; then
-    return 1
-  fi
-
-  if [[ -n "$health" && "$health" != "healthy" ]]; then
-    return 1
-  fi
-
-  return 0
-}
-
-wait_for_service_ok() {
-  local service="$1"
-  local timeout_seconds="${2:-$RECOVERY_TIMEOUT_SECONDS}"
-  local started_at now elapsed status health
-
-  started_at="$(date +%s)"
-  while true; do
-    if service_ok "$service"; then
-      return 0
-    fi
-
-    status="$(service_status "$service")"
-    health="$(service_health "$service")"
-    if [[ -z "$status" || "$status" == "exited" || "$status" == "dead" || "$health" == "unhealthy" ]]; then
-      return 1
-    fi
-
-    now="$(date +%s)"
-    elapsed=$((now - started_at))
-    if (( elapsed >= timeout_seconds )); then
-      return 1
-    fi
-
-    sleep 2
-  done
 }
 
 expected_app_binding() {
@@ -320,33 +262,6 @@ check_redis_middleware() {
     return
   fi
   rm -f "$stderr_file"
-}
-
-attempt_service_recovery() {
-  local service="$1"
-  local compose_name="$2"
-  local reason="$3"
-
-  log "⚠️ 检测到 ${service} 异常，开始自愈 (reason=${reason})"
-
-  if docker start "$service" >>"$LOG_FILE" 2>&1; then
-    if wait_for_service_ok "$service"; then
-      recovered_services+=("${service}:docker-start")
-      log "✅ ${service} 通过 docker start 恢复成功"
-      return 0
-    fi
-  else
-    log "⚠️ docker start ${service} 失败，回退到 docker compose up -d ${compose_name}"
-  fi
-
-  compose up -d --no-build "$compose_name" >>"$LOG_FILE" 2>&1
-  if wait_for_service_ok "$service"; then
-    recovered_services+=("${service}:compose-up")
-    log "✅ ${service} 通过 docker compose up -d ${compose_name} 恢复成功"
-    return 0
-  fi
-
-  return 1
 }
 
 attempt_app_alignment_recovery() {

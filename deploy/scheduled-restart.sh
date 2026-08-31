@@ -78,7 +78,11 @@ wait_for_app_ready() {
 
 restart_app() {
   log "==> restart app with current release: APP_DIR=$APP_DIR ENV_FILE=$ENV_FILE"
-  run_with_timeout "$RESTART_TIMEOUT_SECONDS" compose up -d --no-build --force-recreate app >>"$LOG_FILE" 2>&1
+  (
+    cd "$APP_DIR"
+    run_with_timeout "$RESTART_TIMEOUT_SECONDS" \
+      docker compose --env-file "$ENV_FILE" up -d --no-build --force-recreate app
+  ) >>"$LOG_FILE" 2>&1
 }
 
 verify_http() {
