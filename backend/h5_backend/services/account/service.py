@@ -211,24 +211,11 @@ class AccountService:
         trigger_source: str,
     ) -> Dict[str, Any]:
         account_manager = get_account_manager()
-        resource_manager = get_resource_manager()
         account = await account_manager.get_account(account_id)
         if not account or not account.is_active:
-            return {
-                "account_id": account_id,
-                "user_id": getattr(account, "user_id", None),
-                "trigger_source": trigger_source,
-                "profile_sync_ok": False,
-                "resource_sync_ok": False,
-                "resource_synced_count": 0,
-                "error": "账号不存在或未启用",
-            }
+            return self._sync_result(account_id, account, trigger_source, error="账号不存在或未启用")
 
-        profile_sync_ok = False
-        resource_sync_ok = False
-        resource_synced_count = 0
-        error: Optional[str] = None
-
+        await account_manager.ensure_account_proxy(account_id)
         client = await account_manager.get_client(account_id)
         if not client:
             error = await diagnose_client_unavailable(account_manager, account_id)
@@ -238,21 +225,67 @@ class AccountService:
                 trigger_source=trigger_source,
                 reason=error,
             )
-            return {
-                "account_id": account_id,
-                "user_id": int(account.user_id),
-                "trigger_source": trigger_source,
-                "profile_sync_ok": False,
-                "resource_sync_ok": False,
-                "resource_synced_count": 0,
-                "error": error,
-            }
+            return self._sync_result(account_id, account, trigger_source, error=error)
 
+        return await self._sync_connected_snapshot(
+            account_manager,
+            client=client,
+            account=account,
+            account_id=account_id,
+            trigger_source=trigger_source,
+        )
+
+    async def _sync_connected_snapshot(
+        self,
+        account_manager,
+        *,
+        client,
+        account,
+        account_id: str,
+        trigger_source: str,
+    ) -> Dict[str, Any]:
+        result: Optional[Dict[str, Any]] = None
         try:
-            me = await asyncio.wait_for(
-                client.get_me(),
-                timeout=self.PROFILE_SYNC_TIMEOUT_SECONDS,
+            profile_ok, error = await self._sync_profile(
+                account_manager,
+                client=client,
+                account=account,
+                account_id=account_id,
+                trigger_source=trigger_source,
             )
+            if not profile_ok:
+                result = self._sync_result(account_id, account, trigger_source, error=error)
+                return result
+            resource_ok, synced_count, error = await self._sync_resources(
+                account_id=account_id,
+                account=account,
+                trigger_source=trigger_source,
+            )
+            result = self._sync_result(
+                account_id,
+                account,
+                trigger_source,
+                profile_sync_ok=True,
+                resource_sync_ok=resource_ok,
+                resource_synced_count=synced_count,
+                error=error,
+            )
+            return result
+        finally:
+            if result is None or not bool(result["resource_sync_ok"]):
+                await account_manager.discard_client(account_id, client)
+
+    async def _sync_profile(
+        self,
+        account_manager,
+        *,
+        client,
+        account,
+        account_id: str,
+        trigger_source: str,
+    ) -> tuple[bool, Optional[str]]:
+        try:
+            me = await asyncio.wait_for(client.get_me(), timeout=self.PROFILE_SYNC_TIMEOUT_SECONDS)
             if me is not None:
                 await account_manager.update_account(
                     account_id,
@@ -262,74 +295,73 @@ class AccountService:
                     phone=getattr(me, "phone", None),
                     health_status=HealthStatus.ONLINE.value,
                 )
-                profile_sync_ok = True
+                return True, None
+            error = "账号资料同步未返回用户信息"
         except TimeoutError:
             error = f"账号资料同步超时: {self.PROFILE_SYNC_TIMEOUT_SECONDS}s"
-            logger.warning(
-                "account profile sync timed out: account_id={}, user_id={}, trigger_source={}, timeout_seconds={}",
-                account_id,
-                int(account.user_id),
-                trigger_source,
-                self.PROFILE_SYNC_TIMEOUT_SECONDS,
-            )
-            await self._mark_account_offline_for_sync_failure(
-                account_manager,
-                account_id,
-                trigger_source=trigger_source,
-                reason=error,
-            )
         except Exception as exc:
             error = f"账号资料同步失败: {type(exc).__name__}: {exc}"
+
+        logger.warning(
+            "account profile sync failed: account_id={}, user_id={}, trigger_source={}, error={}",
+            account_id,
+            int(account.user_id),
+            trigger_source,
+            error,
+        )
+        await self._mark_account_offline_for_sync_failure(
+            account_manager,
+            account_id,
+            trigger_source=trigger_source,
+            reason=error,
+        )
+        return False, error
+
+    async def _sync_resources(
+        self,
+        *,
+        account_id: str,
+        account,
+        trigger_source: str,
+    ) -> tuple[bool, int, Optional[str]]:
+        try:
+            result = await asyncio.wait_for(
+                get_resource_manager().full_sync(account_id),
+                timeout=self.RESOURCE_SYNC_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            error = f"资源同步超时: {self.RESOURCE_SYNC_TIMEOUT_SECONDS}s"
             logger.warning(
-                "account profile sync failed: account_id={}, user_id={}, trigger_source={}, error={}",
+                "account resource sync timed out: account_id={}, user_id={}, trigger_source={}, timeout_seconds={}",
                 account_id,
                 int(account.user_id),
                 trigger_source,
-                exc,
+                self.RESOURCE_SYNC_TIMEOUT_SECONDS,
             )
-            await self._mark_account_offline_for_sync_failure(
-                account_manager,
-                account_id,
-                trigger_source=trigger_source,
-                reason=error,
-            )
+            return False, 0, error
 
-        if profile_sync_ok:
-            try:
-                result = await asyncio.wait_for(
-                    resource_manager.full_sync(account_id),
-                    timeout=self.RESOURCE_SYNC_TIMEOUT_SECONDS,
-                )
-            except TimeoutError:
-                error = f"资源同步超时: {self.RESOURCE_SYNC_TIMEOUT_SECONDS}s"
-                logger.warning(
-                    "account resource sync timed out: account_id={}, user_id={}, trigger_source={}, timeout_seconds={}",
-                    account_id,
-                    int(account.user_id),
-                    trigger_source,
-                    self.RESOURCE_SYNC_TIMEOUT_SECONDS,
-                )
-                return {
-                    "account_id": account_id,
-                    "user_id": int(account.user_id),
-                    "trigger_source": trigger_source,
-                    "profile_sync_ok": profile_sync_ok,
-                    "resource_sync_ok": False,
-                    "resource_synced_count": 0,
-                    "error": error,
-                }
-            resource_synced_count = int(result.synced or 0)
-            resource_sync_ok = not bool(result.error) and not (
-                int(result.synced or 0) == 0 and int(result.failed or 0) > 0
-            )
-            if result.error:
-                error = result.error
-            elif int(result.synced or 0) == 0 and int(result.failed or 0) > 0:
-                error = f"资源同步失败: 全部 {result.failed} 项同步失败"
+        synced_count = int(result.synced or 0)
+        all_failed = synced_count == 0 and int(result.failed or 0) > 0
+        if result.error:
+            return False, synced_count, str(result.error)
+        if all_failed:
+            return False, synced_count, f"资源同步失败: 全部 {result.failed} 项同步失败"
+        return True, synced_count, None
 
+    @staticmethod
+    def _sync_result(
+        account_id: str,
+        account,
+        trigger_source: str,
+        *,
+        profile_sync_ok: bool = False,
+        resource_sync_ok: bool = False,
+        resource_synced_count: int = 0,
+        error: Optional[str],
+    ) -> Dict[str, Any]:
         return {
             "account_id": account_id,
-            "user_id": int(account.user_id),
+            "user_id": getattr(account, "user_id", None),
             "trigger_source": trigger_source,
             "profile_sync_ok": profile_sync_ok,
             "resource_sync_ok": resource_sync_ok,

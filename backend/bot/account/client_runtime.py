@@ -1,6 +1,7 @@
 """Telegram client/proxy runtime helpers for AccountManager."""
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import Any, Dict, Optional
 
 from loguru import logger
@@ -64,24 +65,38 @@ async def close_client(manager, account_id: str) -> None:
         del manager._locks[account_id]
 
 
-async def get_client(manager, account_id: str) -> Optional[TelegramClient]:
-    """Get connected Telegram client for account with cache and authorization checks."""
-    if account_id in manager._clients:
-        client = manager._clients[account_id]
-        if client.is_connected():
-            return client
+async def discard_client(manager, account_id: str, expected_client: TelegramClient) -> bool:
+    """Remove and disconnect one exact cached client instance."""
+    async with await manager.get_client_lock(account_id):
+        cached_client = manager._clients.get(account_id)
+        if cached_client is not expected_client:
+            return False
         del manager._clients[account_id]
 
-    account = await manager.get_account(account_id)
-    if not account:
-        logger.error(f"账号不存在: {account_id}")
-        return None
-
-    if bool(getattr(account, "reauth_required", False)) and str(getattr(account, "reauth_reason", "") or "") == "api_hash_rotated":
-        logger.warning(
-            "账号 {} 带有历史 api_hash_rotated 标记，按兼容策略尝试继续连接并刷新凭证版本",
+    try:
+        await expected_client.disconnect()
+    except Exception as exc:
+        logger.error(
+            "丢弃 TelegramClient 时断开失败: account_id={}, error={}",
             account_id,
+            exc,
         )
+    return True
+
+
+async def _mark_account_offline(manager, account_id: str) -> None:
+    try:
+        await manager.update_health_status(account_id, HealthStatus.OFFLINE)
+    except Exception as exc:
+        logger.warning("更新账号健康状态失败: {}", exc)
+
+
+async def _prepare_account(manager, account, account_id: str) -> bool:
+    legacy_rotation = bool(getattr(account, "reauth_required", False)) and (
+        str(getattr(account, "reauth_reason", "") or "") == "api_hash_rotated"
+    )
+    if legacy_rotation:
+        logger.warning("账号 {} 带有历史 api_hash_rotated 标记，尝试刷新凭证版本", account_id)
         try:
             await manager.update_account(
                 account_id,
@@ -92,94 +107,127 @@ async def get_client(manager, account_id: str) -> Optional[TelegramClient]:
             account.reauth_required = False
             account.reauth_reason = None
             account.reauth_required_at = None
-        except Exception as status_err:
-            logger.warning(f"清理账号 api_hash_rotated 状态失败，将继续尝试连接: {status_err}")
+        except Exception as exc:
+            logger.warning("清理账号 api_hash_rotated 状态失败，将继续尝试连接: {}", exc)
+    if not is_reauth_required_account(account):
+        return True
+    reason = getattr(account, "reauth_reason", "") or "unknown"
+    logger.warning("账号 {} 需要重新绑定后才能继续使用: reason={}", account_id, reason)
+    await _mark_account_offline(manager, account_id)
+    return False
 
-    if is_reauth_required_account(account):
-        reason = getattr(account, "reauth_reason", "") or "unknown"
-        logger.warning(f"账号 {account_id} 需要重新绑定后才能继续使用: reason={reason}")
-        try:
-            await manager.update_health_status(account_id, HealthStatus.OFFLINE)
-        except Exception as status_err:
-            logger.warning(f"更新账号健康状态失败: {status_err}")
-        return None
 
+async def _decrypt_account_session(manager, account, account_id: str) -> Optional[str]:
     try:
-        string_session = decrypt_string_session(account.string_session_encrypted)
-    except Exception as e:
+        return decrypt_string_session(account.string_session_encrypted)
+    except Exception as exc:
         logger.error(
-            f"解密 StringSession 失败: {e} | account_id={account_id}。"
-            "可能是 ENCRYPTION_KEY 变更且未配置 ENCRYPTION_KEY_FALLBACKS，"
-            "或历史会话密文已损坏，请先恢复旧密钥回退配置再判断是否需要重新绑定。"
+            "解密 StringSession 失败: {} | account_id={}。可能是密钥变更或历史会话已损坏",
+            exc,
+            account_id,
         )
-        try:
-            await manager.update_health_status(account_id, HealthStatus.OFFLINE)
-        except Exception as status_err:
-            logger.warning(f"更新账号健康状态失败: {status_err}")
+        await _mark_account_offline(manager, account_id)
         return None
 
-    proxy = None
-    if account.proxy_id:
-        proxy = await get_proxy_config(account.proxy_id)
 
-    async with await manager.get_client_lock(account_id):
-        if account_id in manager._clients:
-            return manager._clients[account_id]
-
-        api_id = int(settings.api_id) if settings.api_id else 0
-        api_hash = str(settings.api_hash or "")
-        developer_app_version = 1
-        try:
-            developer_service = get_developer_app_service()
-            credentials = await developer_service.resolve_credentials_for_account(account_id)
-            api_id = int(credentials.api_id)
-            api_hash = str(credentials.api_hash)
-            developer_app_version = int(getattr(credentials, "credentials_version", None) or 1)
-        except Exception as e:
-            if account.developer_app_id is not None:
-                logger.error(
-                    f"按账号开发者凭证创建客户端失败: account_id={account_id}, "
-                    f"developer_app_id={account.developer_app_id}, error={e}"
-                )
-                try:
-                    await manager.update_health_status(account_id, HealthStatus.OFFLINE)
-                except Exception as status_err:
-                    logger.warning(f"更新账号健康状态失败: {status_err}")
-                return None
-            logger.warning(f"账号未绑定开发者凭证，回退环境凭证: account_id={account_id}, error={e}")
-
-        if api_id <= 0 or not api_hash:
-            logger.error(f"账号 {account_id} 缺少可用 API_ID/API_HASH，无法创建客户端")
-            try:
-                await manager.update_health_status(account_id, HealthStatus.OFFLINE)
-            except Exception as status_err:
-                logger.warning(f"更新账号健康状态失败: {status_err}")
+async def _resolve_credentials(manager, account, account_id: str) -> Optional[tuple[int, str, int]]:
+    api_id = int(settings.api_id) if settings.api_id else 0
+    api_hash = str(settings.api_hash or "")
+    version = 1
+    try:
+        credentials = await get_developer_app_service().resolve_credentials_for_account(account_id)
+        api_id = int(credentials.api_id)
+        api_hash = str(credentials.api_hash)
+        version = int(getattr(credentials, "credentials_version", None) or 1)
+    except Exception as exc:
+        if account.developer_app_id is not None:
+            logger.error(
+                "按账号开发者凭证创建客户端失败: account_id={}, developer_app_id={}, error={}",
+                account_id,
+                account.developer_app_id,
+                exc,
+            )
+            await _mark_account_offline(manager, account_id)
             return None
-        client = TelegramClient(
-            StringSession(string_session),
-            api_id=api_id,
-            api_hash=api_hash,
-            proxy=proxy,
-        )
-        await client.connect()
+        logger.warning("账号未绑定开发者凭证，回退环境凭证: account_id={}, error={}", account_id, exc)
+    if api_id > 0 and api_hash:
+        return api_id, api_hash, version
+    logger.error("账号 {} 缺少可用 API_ID/API_HASH，无法创建客户端", account_id)
+    await _mark_account_offline(manager, account_id)
+    return None
 
+
+async def _connect_client(
+    manager,
+    *,
+    account_id: str,
+    string_session: str,
+    proxy: Optional[Dict[str, Any]],
+    credentials: tuple[int, str, int],
+) -> Optional[TelegramClient]:
+    api_id, api_hash, version = credentials
+    client = TelegramClient(
+        StringSession(string_session),
+        api_id=api_id,
+        api_hash=api_hash,
+        proxy=proxy,
+    )
+    try:
+        await client.connect()
         if not await client.is_user_authorized():
-            logger.error(f"账号 {account_id} 未授权，可能已登出")
+            logger.error("账号 {} 未授权，可能已登出", account_id)
             await client.disconnect()
             await mark_account_reauth_required(account_id, "session_unauthorized")
             return None
-
         await manager.update_account(
             account_id,
-            developer_app_version=developer_app_version,
+            developer_app_version=version,
             reauth_required=False,
             reauth_reason=None,
             reauth_required_at=None,
             health_status=HealthStatus.ONLINE,
         )
-        manager._clients[account_id] = client
-        logger.info(f"创建 TelegramClient: {account_id}")
-        return client
+    except BaseException:
+        with suppress(Exception):
+            await client.disconnect()
+        raise
+    manager._clients[account_id] = client
+    logger.info("创建 TelegramClient: {}", account_id)
+    return client
+
+
+async def get_client(manager, account_id: str) -> Optional[TelegramClient]:
+    """Get connected Telegram client for account with cache and authorization checks."""
+    cached_client = manager._clients.get(account_id)
+    if cached_client is not None and cached_client.is_connected():
+        return cached_client
+    if cached_client is not None:
+        await discard_client(manager, account_id, cached_client)
+
+    account = await manager.get_account(account_id)
+    if not account:
+        logger.error("账号不存在: {}", account_id)
+        return None
+    if not await _prepare_account(manager, account, account_id):
+        return None
+    string_session = await _decrypt_account_session(manager, account, account_id)
+    if string_session is None:
+        return None
+    proxy = await get_proxy_config(account.proxy_id) if account.proxy_id else None
+    async with await manager.get_client_lock(account_id):
+        cached_client = manager._clients.get(account_id)
+        if cached_client is not None:
+            return cached_client
+        credentials = await _resolve_credentials(manager, account, account_id)
+        if credentials is None:
+            return None
+        return await _connect_client(
+            manager,
+            account_id=account_id,
+            string_session=string_session,
+            proxy=proxy,
+            credentials=credentials,
+        )
 
 
 async def ensure_account_proxy(manager, account_id: str) -> Optional[int]:

@@ -383,6 +383,11 @@ class AccountManager:
         from backend.bot.account.client_runtime import close_client
         await close_client(self, account_id)
 
+    async def discard_client(self, account_id: str, expected_client: TelegramClient) -> bool:
+        """仅清理调用方持有的精确客户端实例。"""
+        from backend.bot.account.client_runtime import discard_client
+        return await discard_client(self, account_id, expected_client)
+
     async def _get_proxy_config(self, proxy_id: int) -> Optional[Dict[str, Any]]:
         """获取代理配置"""
         from backend.bot.account.client_runtime import get_proxy_config

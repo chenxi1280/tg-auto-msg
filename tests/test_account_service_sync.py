@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -155,6 +156,7 @@ class AccountServiceSyncTests(unittest.IsolatedAsyncioTestCase):
         service = AccountService()
         account_manager = SimpleNamespace(
             get_account=AsyncMock(return_value=SimpleNamespace(account_id="acc-1", user_id=7, is_active=True)),
+            ensure_account_proxy=AsyncMock(return_value=None),
             get_client=AsyncMock(return_value=None),
             update_account=AsyncMock(),
         )
@@ -173,12 +175,14 @@ class AccountServiceSyncTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result["profile_sync_ok"])
         self.assertEqual(result["error"], "client unavailable")
+        account_manager.ensure_account_proxy.assert_awaited_once_with("acc-1")
         account_manager.update_account.assert_not_awaited()
 
     async def test_manual_client_unavailable_marks_account_offline(self):
         service = AccountService()
         account_manager = SimpleNamespace(
             get_account=AsyncMock(return_value=SimpleNamespace(account_id="acc-1", user_id=7, is_active=True)),
+            ensure_account_proxy=AsyncMock(return_value=None),
             get_client=AsyncMock(return_value=None),
             update_account=AsyncMock(),
         )
@@ -200,3 +204,94 @@ class AccountServiceSyncTests(unittest.IsolatedAsyncioTestCase):
             "acc-1",
             health_status=HealthStatus.OFFLINE.value,
         )
+
+    async def test_profile_timeout_discards_cached_client(self):
+        service = AccountService()
+        service.PROFILE_SYNC_TIMEOUT_SECONDS = 0.001
+
+        async def slow_profile_sync():
+            await asyncio.sleep(1)
+
+        client = SimpleNamespace(get_me=AsyncMock(side_effect=slow_profile_sync))
+        account_manager = SimpleNamespace(
+            get_account=AsyncMock(return_value=SimpleNamespace(account_id="acc-1", user_id=7, is_active=True)),
+            ensure_account_proxy=AsyncMock(return_value=None),
+            get_client=AsyncMock(return_value=client),
+            discard_client=AsyncMock(return_value=True),
+            update_account=AsyncMock(),
+        )
+
+        with patch(
+            "backend.h5_backend.services.account.service.get_account_manager",
+            return_value=account_manager,
+        ), patch(
+            "backend.h5_backend.services.account.service.get_resource_manager",
+            return_value=SimpleNamespace(),
+        ):
+            result = await service.sync_account_snapshot("acc-1", trigger_source=SYNC_TRIGGER_AUTO_TIMER)
+
+        self.assertFalse(result["profile_sync_ok"])
+        account_manager.discard_client.assert_awaited_once_with("acc-1", client)
+
+    async def test_cancelled_resource_sync_discards_cached_client(self):
+        service = AccountService()
+        client = SimpleNamespace(get_me=AsyncMock(return_value=SimpleNamespace(id=1)))
+        resource_sync_started = asyncio.Event()
+
+        async def slow_resource_sync(_account_id):
+            resource_sync_started.set()
+            await asyncio.sleep(1)
+
+        account_manager = SimpleNamespace(
+            get_account=AsyncMock(return_value=SimpleNamespace(account_id="acc-1", user_id=7, is_active=True)),
+            ensure_account_proxy=AsyncMock(return_value=None),
+            get_client=AsyncMock(return_value=client),
+            discard_client=AsyncMock(return_value=True),
+            update_account=AsyncMock(),
+        )
+        resource_manager = SimpleNamespace(full_sync=AsyncMock(side_effect=slow_resource_sync))
+
+        with patch(
+            "backend.h5_backend.services.account.service.get_account_manager",
+            return_value=account_manager,
+        ), patch(
+            "backend.h5_backend.services.account.service.get_resource_manager",
+            return_value=resource_manager,
+        ):
+            task = asyncio.create_task(
+                service.sync_account_snapshot("acc-1", trigger_source=SYNC_TRIGGER_AUTO_TIMER)
+            )
+            await resource_sync_started.wait()
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+        account_manager.discard_client.assert_awaited_once_with("acc-1", client)
+
+    async def test_successful_sync_keeps_cached_client(self):
+        service = AccountService()
+        client = SimpleNamespace(get_me=AsyncMock(return_value=SimpleNamespace(id=1)))
+        account_manager = SimpleNamespace(
+            get_account=AsyncMock(return_value=SimpleNamespace(account_id="acc-1", user_id=7, is_active=True)),
+            ensure_account_proxy=AsyncMock(return_value=None),
+            get_client=AsyncMock(return_value=client),
+            discard_client=AsyncMock(return_value=True),
+            update_account=AsyncMock(),
+        )
+        resource_manager = SimpleNamespace(
+            full_sync=AsyncMock(return_value=SimpleNamespace(synced=3, failed=0, error=None))
+        )
+
+        with patch(
+            "backend.h5_backend.services.account.service.get_account_manager",
+            return_value=account_manager,
+        ), patch(
+            "backend.h5_backend.services.account.service.get_resource_manager",
+            return_value=resource_manager,
+        ):
+            result = await service.sync_account_snapshot("acc-1", trigger_source=SYNC_TRIGGER_AUTO_TIMER)
+
+        self.assertTrue(result["profile_sync_ok"])
+        self.assertTrue(result["resource_sync_ok"])
+        self.assertEqual(result["resource_synced_count"], 3)
+        account_manager.discard_client.assert_not_awaited()

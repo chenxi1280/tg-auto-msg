@@ -97,6 +97,9 @@ SCHEDULER_TASK_TIMEOUT_SECONDS=360
 SCHEDULER_TASK_CONCURRENCY=3
 ACCOUNT_AUTO_SYNC_MAX_CANDIDATES_PER_RUN=0
 ACCOUNT_AUTO_SYNC_SKIP_PROXY_ACCOUNTS=false
+TGMSG_APP_MEMORY_LIMIT=1g
+TGMSG_APP_LOG_MAX_SIZE=50m
+TGMSG_APP_LOG_MAX_FILES=3
 ```
 
 含义：
@@ -114,6 +117,8 @@ ACCOUNT_AUTO_SYNC_SKIP_PROXY_ACCOUNTS=false
 - `SCHEDULER_TASK_CONCURRENCY` 控制单轮最多并发执行的到点任务数。默认 `3`，用于避免多个慢任务串行拖住整个发送队列。
 - `ACCOUNT_AUTO_SYNC_MAX_CANDIDATES_PER_RUN` 控制每轮账号资源同步扫描的候选上限。`0` 表示选取全部陈旧账号，生产默认必须为 `0`；正整数仅用于显式应急限流。
 - `ACCOUNT_AUTO_SYNC_SKIP_PROXY_ACCOUNTS` 控制是否跳过绑定代理的账号。生产默认 `false`，保证所有在线账号进入顺序轮转；只有代理系统故障时才可临时设为 `true`。
+- `TGMSG_APP_MEMORY_LIMIT` 是业务容器的宿主机隔离上限，默认 `1g`；它用于保护 Nginx、SSH、Docker 和共享中间件，不替代客户端生命周期修复。
+- `TGMSG_APP_LOG_MAX_SIZE` 与 `TGMSG_APP_LOG_MAX_FILES` 控制 Docker JSON 日志轮转，默认最多保留 3 个 50 MiB 文件；应用挂载目录中的业务日志仍按应用自身策略管理。
 
 ### 4.1 调度器即时检测
 

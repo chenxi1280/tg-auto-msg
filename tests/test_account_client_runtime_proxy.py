@@ -1,11 +1,40 @@
+import asyncio
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from backend.bot.account.client_runtime import ensure_account_proxy
+from backend.bot.account.client_runtime import discard_client, ensure_account_proxy
 
 
 class AccountClientRuntimeProxyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_discard_client_disconnects_only_expected_cached_instance(self):
+        expected_client = AsyncMock()
+        manager = SimpleNamespace(
+            _clients={"account-1": expected_client},
+            get_client_lock=AsyncMock(return_value=asyncio.Lock()),
+        )
+
+        removed = await discard_client(manager, "account-1", expected_client)
+
+        self.assertTrue(removed)
+        self.assertNotIn("account-1", manager._clients)
+        expected_client.disconnect.assert_awaited_once()
+
+    async def test_discard_client_preserves_concurrent_replacement(self):
+        stale_client = AsyncMock()
+        replacement_client = AsyncMock()
+        manager = SimpleNamespace(
+            _clients={"account-1": replacement_client},
+            get_client_lock=AsyncMock(return_value=asyncio.Lock()),
+        )
+
+        removed = await discard_client(manager, "account-1", stale_client)
+
+        self.assertFalse(removed)
+        self.assertIs(manager._clients["account-1"], replacement_client)
+        stale_client.disconnect.assert_not_awaited()
+        replacement_client.disconnect.assert_not_awaited()
+
     async def test_account_without_proxy_stays_direct(self):
         manager = SimpleNamespace(
             _clients={},

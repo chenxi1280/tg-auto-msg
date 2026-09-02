@@ -5,6 +5,12 @@ services:
     image: ${TGMSG_APP_IMAGE:-tgmsg-app:latest}
     container_name: tgmsg-app
     restart: unless-stopped
+    mem_limit: "${TGMSG_APP_MEMORY_LIMIT:-1g}"
+    logging:
+      driver: json-file
+      options:
+        max-size: "${TGMSG_APP_LOG_MAX_SIZE:-50m}"
+        max-file: "${TGMSG_APP_LOG_MAX_FILES:-3}"
     environment:
       TG_API_ID: ${TG_API_ID:?TG_API_ID is required}
       TG_API_HASH: ${TG_API_HASH:?TG_API_HASH is required}
