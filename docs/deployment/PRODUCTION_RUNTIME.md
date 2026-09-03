@@ -140,6 +140,8 @@ curl -fsS -H "Authorization: Bearer <admin_jwt>" \
 
 账号资源自动同步每小时扫描一次缺失或超过 24 小时未刷新的快照，并按“从未同步、最久未同步、account_id”顺序把全部符合条件的账号加入单 worker 队列。队列逐个连接 Telegram；每个账号的总同步预算为 6 分钟，覆盖资料同步 30 秒与资源同步 5 分钟，不能用更短的外层超时提前取消大 Dialog 账号。单账号失败或超时只记录该账号结果，不阻塞后续账号。
 
+所有账号业务必须通过 `AccountManager.get_client()` 取得客户端。该入口在返回新建或已缓存客户端之前都会执行 MTProto 代理健康校验；已绑定代理不可用时，必须永久解除账号绑定、关闭该账号缓存客户端，并在当次业务中使用服务器直连。上层同步、调度、媒体和恢复流程不得自行绕过该入口。
+
 手动单账号同步使用更高队列优先级。页面按钮先以 `wait=false` 立即入队，再轮询 `/api/accounts/{account_id}/sync-status`；只有 `completed` 才刷新资源并提示成功，`failed`、`idle`（进程重启导致状态丢失）和前端等待超时均明确报错。`wait=true` 仅保留为兼容接口，不再作为页面按钮的长连接。详细契约见 `docs/superpowers/specs/2026-08-10-account-resource-sync-rotation-design.md`。
 
 ## 5. 当前实际 vs 目标架构

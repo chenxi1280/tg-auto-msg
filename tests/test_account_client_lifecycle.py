@@ -26,6 +26,20 @@ class _CancelledConnectClient(_FailingConnectClient):
 
 
 class AccountClientLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_get_client_enforces_proxy_policy_before_returning_cached_client(self):
+        cached_client = SimpleNamespace(is_connected=lambda: True)
+        manager = SimpleNamespace(_clients={"acc-1": cached_client})
+        ensure_proxy = AsyncMock(return_value=None)
+
+        with patch(
+            "backend.bot.account.client_runtime.ensure_account_proxy",
+            ensure_proxy,
+        ):
+            result = await get_client(manager, "acc-1")
+
+        self.assertIs(result, cached_client)
+        ensure_proxy.assert_awaited_once_with(manager, "acc-1")
+
     async def test_connect_failure_disconnects_temporary_client(self):
         account = SimpleNamespace(
             account_id="acc-1",

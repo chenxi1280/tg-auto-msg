@@ -542,7 +542,7 @@ class TaskRunnerReauthTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsInstance(result, _ValidationResult)
         account_manager.health_check.assert_awaited_once_with("acc-recover")
-        account_manager.ensure_account_proxy.assert_awaited_once_with("acc-recover")
+        account_manager.ensure_account_proxy.assert_not_awaited()
         account_manager.get_client.assert_awaited_once_with("acc-recover")
         self.assertEqual(session.commits, 0)
 

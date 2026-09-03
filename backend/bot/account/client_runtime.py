@@ -198,6 +198,7 @@ async def _connect_client(
 
 async def get_client(manager, account_id: str) -> Optional[TelegramClient]:
     """Get connected Telegram client for account with cache and authorization checks."""
+    await ensure_account_proxy(manager, account_id)
     cached_client = manager._clients.get(account_id)
     if cached_client is not None and cached_client.is_connected():
         return cached_client

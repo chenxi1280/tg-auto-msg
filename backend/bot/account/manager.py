@@ -394,11 +394,7 @@ class AccountManager:
         return await get_proxy_config(proxy_id)
 
     async def ensure_account_proxy(self, account_id: str) -> Optional[int]:
-        """
-        确保账号绑定健康代理：
-        - 若当前代理失效，自动从池中替换并更新账号
-        - 若当前无代理，尝试自动分配一个健康代理
-        """
+        """校验现有代理；失效时永久解绑并改用直连。"""
         from backend.bot.account.client_runtime import ensure_account_proxy
         return await ensure_account_proxy(self, account_id)
 

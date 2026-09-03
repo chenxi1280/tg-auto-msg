@@ -215,7 +215,6 @@ class AccountService:
         if not account or not account.is_active:
             return self._sync_result(account_id, account, trigger_source, error="账号不存在或未启用")
 
-        await account_manager.ensure_account_proxy(account_id)
         client = await account_manager.get_client(account_id)
         if not client:
             error = await diagnose_client_unavailable(account_manager, account_id)

@@ -432,7 +432,6 @@ async def _handle_no_targets(
 async def _resolve_client(task, account_manager):
     """Resolve (account_id_str, TelegramClient) for the task."""
     if task.account_id:
-        await account_manager.ensure_account_proxy(task.account_id)
         client = await account_manager.get_client(task.account_id)
         return task.account_id, client
 

@@ -175,7 +175,7 @@ class AccountServiceSyncTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result["profile_sync_ok"])
         self.assertEqual(result["error"], "client unavailable")
-        account_manager.ensure_account_proxy.assert_awaited_once_with("acc-1")
+        account_manager.ensure_account_proxy.assert_not_awaited()
         account_manager.update_account.assert_not_awaited()
 
     async def test_manual_client_unavailable_marks_account_offline(self):
